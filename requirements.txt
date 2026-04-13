@@ -1,5 +1,4 @@
 pyrtlsdr
-gpsd-py3
 requests
 python-dotenv
 geopandas
