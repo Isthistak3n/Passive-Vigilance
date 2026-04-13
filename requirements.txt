@@ -1,0 +1,10 @@
+pyrtlsdr
+gpsd-py3
+requests
+python-dotenv
+geopandas
+fiona
+shapely
+scapy
+bleak
+aiohttp
