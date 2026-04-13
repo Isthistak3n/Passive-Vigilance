@@ -1,0 +1,16 @@
+[Unit]
+Description=Passive Vigilance sensor orchestrator
+After=network.target gpsd.service kismet.service
+Wants=gpsd.service kismet.service
+
+[Service]
+User=survkis
+Group=survkis
+WorkingDirectory=/home/survkis/Passive-Vigilance
+EnvironmentFile=/home/survkis/Passive-Vigilance/.env
+ExecStart=/usr/bin/python3 main.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
