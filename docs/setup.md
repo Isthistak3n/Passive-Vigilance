@@ -230,7 +230,111 @@ sudo dpkg --configure -a
 
 ---
 
+---
+
+## ADS-B (readsb)
+
+### About readsb
+
+`readsb` is a drop-in replacement for `dump1090-fa` and is the ADS-B decoder used by
+this project. It is available in the Debian Trixie repos and serves data on the same
+ports as dump1090-fa.
+
+### Install
+
+```bash
+sudo apt install -y readsb
+```
+
+readsb is enabled as a systemd service automatically and starts when an RTL-SDR dongle is connected.
+
+### Test ADS-B output
+
+```bash
+# JSON aircraft data (HTTP)
+curl http://localhost:8080/data/aircraft.json | python3 -m json.tool | head -30
+
+# SBS-1 BaseStation stream (TCP, used by some tools)
+nc localhost 30003
+```
+
+### adsb.lol API enrichment
+
+The `ADSBModule` optionally enriches aircraft records (registration, type, operator,
+military flag) via the adsb.lol / ADSBExchange API.
+
+1. Register as a feeder at https://www.adsb.lol/docs/
+2. Obtain your RapidAPI key
+3. Add to `.env`:
+   ```ini
+   ADSBXLOL_API_KEY=your-key-here
+   ```
+
+---
+
+## RTL-SDR
+
+### Kernel module blacklist
+
+The DVB-T kernel drivers claim RTL-SDR hardware before the rtlsdr library can.
+Blacklist them:
+
+```bash
+echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/rtlsdr.rules
+echo "blacklist rtl2832"          | sudo tee -a /etc/modprobe.d/rtlsdr.rules
+echo "blacklist rtl2830"          | sudo tee -a /etc/modprobe.d/rtlsdr.rules
+sudo modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true
+```
+
+`deploy/install.sh` does this automatically.
+
+### Test the RTL-SDR dongle
+
+```bash
+rtl_test -t
+```
+
+Expected output: device found, gain values listed, sample rate test passes.
+
+### pyrtlsdr version note
+
+`pyrtlsdr` is pinned to `0.2.93` in `requirements.txt`.  Do **not** upgrade without
+testing — `pyrtlsdr >= 0.3.0` calls `rtlsdr_set_dithering()` which is absent from
+`librtlsdr 2.0.2` (the Osmocom fork in Debian Trixie), causing an `AttributeError` at
+import time.
+
+---
+
+## Drone RF Detection
+
+The `DroneRFModule` passively scans these frequencies for drone command-link and video
+link signals:
+
+| Frequency | Use |
+|---|---|
+| 433 MHz | Hobbyist RC (worldwide) |
+| 868 MHz | EU DJI / drone telemetry |
+| 915 MHz | US DJI / drone telemetry |
+| 2.4 GHz | DJI OcuSync, FPV video — at edge of R820T range |
+| 5.8 GHz | FPV video — **beyond RTL-SDR range, best effort** |
+
+**Note:** Most RTL-SDR dongles (R820T/R820T2 chip) top out around 1750 MHz.
+2.4 GHz may work with an E4000-chip dongle; 5.8 GHz is beyond all common RTL-SDR
+hardware. The module skips frequencies above hardware range gracefully.
+
+Set the detection threshold in `.env`:
+```ini
+DRONE_POWER_THRESHOLD_DB=-20
+```
+
+Lower values (e.g. `-30`) increase sensitivity but also false positives.
+
+**Hardware conflict:** `readsb` and `DroneRFModule` both require an RTL-SDR dongle.
+With a single dongle, stop readsb before running a drone scan, or use two dongles.
+
+---
+
 ## Additional sections
 
-> TODO: RTL-SDR drivers, HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
-> Bluetooth setup, dump1090, Python virtual environment.
+> TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
+> Bluetooth setup, Python virtual environment.
