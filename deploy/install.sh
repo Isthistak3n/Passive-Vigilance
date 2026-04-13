@@ -29,12 +29,22 @@ https://www.kismetwireless.net/repos/apt/release/${DISTRO} \
 ${DISTRO} main" | tee /etc/apt/sources.list.d/kismet.list
 
 apt update -qq
-DEBIAN_FRONTEND=noninteractive apt install -y gpsd gpsd-clients python3-gps python3-pip kismet
+DEBIAN_FRONTEND=noninteractive apt install -y \
+  gpsd gpsd-clients python3-gps python3-pip \
+  kismet readsb \
+  librtlsdr0 librtlsdr-dev
 
 # ── 3. Python dependencies ─────────────────────────────────────────────────
 echo "$LOG Installing Python packages..."
 sudo -u "$PI_USER" pip3 install -r "$REPO_DIR/requirements.txt" \
   --break-system-packages -q
+
+# ── 3b. RTL-SDR kernel module blacklist ────────────────────────────────────
+# Prevent DVB-T drivers from claiming the dongle before rtlsdr can
+echo "$LOG Blacklisting conflicting RTL-SDR kernel modules..."
+echo "blacklist dvb_usb_rtl28xxu" | tee /etc/modprobe.d/rtlsdr.rules > /dev/null
+echo "blacklist rtl2832"          | tee -a /etc/modprobe.d/rtlsdr.rules > /dev/null
+echo "blacklist rtl2830"          | tee -a /etc/modprobe.d/rtlsdr.rules > /dev/null
 
 # ── 4. Groups ──────────────────────────────────────────────────────────────
 echo "$LOG Configuring user groups..."
@@ -99,6 +109,7 @@ echo ""
 echo " Services enabled at boot:"
 echo "   ✓ gpsd"
 echo "   ✓ kismet"
+echo "   ✓ readsb (ADS-B decoder — activates when RTL-SDR dongle is plugged in)"
 echo ""
 if [ "$KISMET_STATUS" = "200" ] || [ "$KISMET_STATUS" = "401" ]; then
   echo "   ✓ Kismet REST API responding on :2501"
@@ -127,6 +138,10 @@ echo " 4. Enable and start the sensor:"
 echo "    sudo systemctl enable passive-vigilance"
 echo "    sudo systemctl start passive-vigilance"
 echo ""
-echo " 5. Take the GPS dongle outside for first fix (30-90 seconds)"
+echo " 5. Plug in RTL-SDR dongle — readsb activates automatically"
+echo "    Test ADS-B: curl http://localhost:8080/data/aircraft.json"
+echo "    Test RTL-SDR: rtl_test -t"
+echo ""
+echo " 6. Take the GPS dongle outside for first fix (30-90 seconds)"
 echo ""
 echo "════════════════════════════════════════"

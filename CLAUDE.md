@@ -91,11 +91,35 @@ feature/* → dev → main
 |---|---|---|
 | Kismet | `2025.09.0` | apt — `kismet-release` trixie repo |
 | Kismet binary | `/usr/bin/kismet` | — |
+| readsb | `3.14.1630` | apt (Trixie main) — dump1090-fa drop-in |
+| readsb binary | `/usr/bin/readsb` | — |
 | gpsd | `3.25` | apt |
 | Python | `3.13` | system |
 | python3-gps | system package | apt (not pip) |
+| pyrtlsdr | `0.2.93` (pinned) | pip — **do not upgrade** |
+| librtlsdr | `2.0.2` (Osmocom fork) | apt |
 
 ---
+
+## ADS-B / readsb Integration
+
+- `readsb` (not dump1090) is the ADS-B decoder; binary at `/usr/bin/readsb`
+- readsb is a drop-in for dump1090-fa — same ports, same JSON format
+- JSON aircraft data: `http://localhost:8080/data/aircraft.json`
+- SBS-1 stream: `tcp://localhost:30003`
+- readsb runs as systemd service, activates automatically when RTL-SDR dongle is connected
+- adsb.lol enrichment API: `https://adsbexchange-com1.p.rapidapi.com/v2/icao/{icao}/`
+  - Header: `x-rapidapi-key: <ADSBXLOL_API_KEY>`
+  - Returns: registration (`r`), type (`t`), operator (`ownOp`), `dbFlags` (bit 0 = military)
+
+## RTL-SDR / Drone RF
+
+- pyrtlsdr pinned to `0.2.93` — **do not upgrade** (librtlsdr 2.0.2 missing `rtlsdr_set_dithering`)
+- Known RTL-SDR USB vendor IDs: `0bda:2832`, `0bda:2838`, `0bda:2813`
+- Drone scan frequencies: 433 MHz, 868 MHz, 915 MHz, 2.4 GHz, 5.8 GHz
+- R820T/R820T2 dongles max ~1750 MHz; 2.4 GHz requires E4000 chip; 5.8 GHz = out of range
+- `DroneRFModule` and `readsb` both need an RTL-SDR — two dongles needed to run simultaneously
+- Kernel modules to blacklist: `dvb_usb_rtl28xxu`, `rtl2832`, `rtl2830`
 
 ## Kismet Integration
 
@@ -151,3 +175,6 @@ so it works on both Bookworm (Pi OS) and Trixie (this dev Pi).
   Using `bookworm` packages on `trixie` fails with `libwebsockets17` dependency errors.
 - **`kismet --version` exits non-zero** even on success — don't rely on its exit code in scripts.
 - **python3-gps vs gpsd-py3:** System package is `import gps`; pip package is `import gpsd`. They are incompatible. Always use the apt package.
+- **pyrtlsdr 0.3.0+ breaks on Trixie:** `librtlsdr 2.0.2` (Osmocom fork) doesn't export `rtlsdr_set_dithering`. Pin stays at `0.2.93`.
+- **readsb JSON port:** readsb serves aircraft JSON on port 8080 (HTTP), not 30003 (SBS-1 TCP). The `.env` `DUMP1090_PORT=30003` is the SBS-1 port; the `ADSBModule` connects to port 8080 directly.
+- **Single RTL-SDR conflict:** readsb and DroneRFModule can't share one dongle simultaneously. Use two dongles or stop readsb before drone scanning.
