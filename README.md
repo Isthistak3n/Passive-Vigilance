@@ -1,8 +1,72 @@
 # Passive Vigilance
 
-Passive RF/WiFi/BT/ADS-B sensor platform on Raspberry Pi using RTL-SDR or HackRF, Kismet,
-dump1090, GPS — with drone detection alerts, WiGLE wardriving uploads, adsb.lol flight
-enrichment, and shapefile output for GIS analysis.
+> A passive RF/WiFi/BT/ADS-B sensor platform for counter-surveillance,
+> situational awareness, and open-source RF intelligence.
+
+---
+
+## What is this?
+
+Passive Vigilance is a field-deployable sensor platform built on a Raspberry Pi
+that helps you understand the RF environment around you — without ever
+transmitting a single packet. It listens. It logs. It alerts.
+
+Originally inspired by [Chasing Your Tail NG](https://github.com/ArgeliusLabs/Chasing-Your-Tail-NG),
+Passive Vigilance extends the counter-surveillance concept into a unified,
+always-on sensor platform covering WiFi, Bluetooth, ADS-B aircraft, and
+drone command links simultaneously — all GPS-stamped and GIS-ready.
+
+If you've ever wanted to know whether you're being followed, whether there's
+a drone overhead, or who's flying above your location and where they came
+from — this is built for that.
+
+**It is entirely passive. It never connects to, transmits to, or interferes
+with any device or network.**
+
+---
+
+## Use cases
+
+- **Counter-surveillance** — detect devices that follow you across multiple
+  locations using WiFi and Bluetooth beacon persistence scoring
+- **Drone detection** — alert when drone command link frequencies
+  (433 MHz, 868 MHz, 915 MHz, 2.4 GHz) are active in your area
+- **Aircraft awareness** — track aircraft overhead with full registration,
+  operator, and origin data via ADS-B and adsb.lol enrichment
+- **Wardriving** — automatically upload session data to WiGLE.net to
+  contribute to the global RF database
+- **GIS analysis** — all detections are GPS-stamped and exported as
+  shapefiles for post-session analysis in QGIS or ArcGIS
+- **Field security** — deploy as a standalone sensor at events, locations,
+  or during travel for passive RF situational awareness
+
+---
+
+## How it works
+
+Every detection from every sensor is tagged with a GPS fix (lat, lon, UTC)
+before being written to disk or triggering an alert. The platform runs
+entirely as background systemd services — plug in power and it starts
+capturing automatically.
+
+---
+
+## Project status
+
+| Module | Status | Description |
+|--------|--------|-------------|
+| GPS daemon | ✅ Complete | gpsd integration, fix quality — 9 tests |
+| Kismet integration | ✅ Complete | REST API, API key auth, WiGLE CSV — 10 tests |
+| ADS-B + drone RF | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
+| WiFi monitor mode | ✅ Complete | MT7610U/RTL8811AU udev + NM unmanaged — 15 tests |
+| Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 22 tests |
+| Persistence engine | 🔄 In progress | Time-window scoring, surveillance detection |
+| Alert engine | ⏳ Planned | Pluggable Ntfy/Telegram/Signal/Discord |
+| Shapefile writer | ⏳ Planned | geopandas/fiona GIS output |
+| WiGLE uploader | ⏳ Planned | Session-end Kismet CSV upload |
+| Orchestrator | ⏳ Planned | asyncio event loop, all modules wired |
+
+**76 tests passing** across completed modules.
 
 ---
 
