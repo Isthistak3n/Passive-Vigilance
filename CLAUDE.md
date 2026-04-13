@@ -52,6 +52,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/kismet.py` | `KismetModule` | Kismet REST API; async WiFi + BT device polling |
 | `modules/dump1090.py` | `ADSBModule` | dump1090 JSON output; aircraft polling |
 | `modules/drone_rf.py` | `DroneRFModule` | pyrtlsdr; passive RF scan for drone signatures |
+| `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` | Abstract alert base + ntfy implementation |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; append events as point features |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net API |
@@ -146,6 +147,21 @@ Re-run the monitor mode commands after any NM restart.
 - API key is generated once via the web UI: http://\<pi-ip\>:2501 → Settings → API Keys
 - Kismet logs WiGLE CSV files to the home directory (`~/Kismet-*.wiglecsv`)
 - `KismetModule` accepts a `GPSModule` instance and stamps every device record
+- `KismetModule` accepts an optional `IgnoreList` instance; ignored devices are silently
+  filtered in `poll_devices()` before the list is returned
+
+## Ignore Lists
+
+- `modules/ignore_list.py` — `IgnoreList` class
+- Data files: `data/ignore_lists/mac_ignore.json`, `data/ignore_lists/ssid_ignore.json`
+- **git-ignored** — never commit personal device data
+- MAC normalization: lowercase colon-separated (`aa:bb:cc:dd:ee:ff`)
+- OUI matching: first 3 octets; any MAC in the vendor range is ignored
+- SSID matching: case-insensitive
+- Atomic saves: write to temp file → `os.rename()` — crash-safe
+- CLI: `scripts/manage_ignore_list.py` — `--add-mac`, `--add-oui`, `--add-ssid`,
+  `--remove-mac`, `--remove-ssid`, `--list`, `--stats`, `--import-kismet`
+- `add_from_kismet(devices)` — bulk-add all devices from a `poll_devices()` result
 
 ---
 

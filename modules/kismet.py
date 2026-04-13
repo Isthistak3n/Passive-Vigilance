@@ -44,8 +44,9 @@ class KismetModule:
     the current GPS fix.
     """
 
-    def __init__(self, gps_module=None) -> None:
+    def __init__(self, gps_module=None, ignore_list=None) -> None:
         self._gps = gps_module
+        self._ignore = ignore_list
         self._session: Optional[aiohttp.ClientSession] = None
 
     # ------------------------------------------------------------------
@@ -155,11 +156,23 @@ class KismetModule:
             return []
 
         devices = []
+        ignored = 0
         for entry in raw if isinstance(raw, list) else []:
+            mac  = entry.get("kismet.device.base.macaddr", "")
+            ssid = entry.get("kismet.device.base.name", "")
+
+            if self._ignore is not None:
+                if mac and self._ignore.is_ignored_mac(mac):
+                    ignored += 1
+                    continue
+                if ssid and self._ignore.is_ignored_ssid(ssid):
+                    ignored += 1
+                    continue
+
             record = {
-                "macaddr":     entry.get("kismet.device.base.macaddr", ""),
+                "macaddr":     mac,
                 "type":        entry.get("kismet.device.base.type", ""),
-                "name":        entry.get("kismet.device.base.name", ""),
+                "name":        ssid,
                 "manuf":       entry.get("kismet.device.base.manuf", ""),
                 "phyname":     entry.get("kismet.device.base.phyname", ""),
                 "first_time":  entry.get("kismet.device.base.first_time", 0),
@@ -171,6 +184,8 @@ class KismetModule:
             }
             devices.append(record)
 
+        if ignored:
+            logger.debug("Ignored %d devices from Kismet (on ignore list)", ignored)
         logger.debug("Polled %d devices from Kismet", len(devices))
         return devices
 

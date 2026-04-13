@@ -408,6 +408,74 @@ With a single dongle, stop readsb before running a drone scan, or use two dongle
 
 ---
 
+## Ignore Lists
+
+Ignore lists let you suppress known-benign devices (your own phone, home AP, etc.)
+from appearing in sensor output and alerts.
+
+### Data files
+
+Ignore list JSON files live in `data/ignore_lists/` and are **git-ignored** so
+personal device data is never committed.
+
+```
+data/ignore_lists/mac_ignore.json   — full MACs and OUI prefixes
+data/ignore_lists/ssid_ignore.json  — SSIDs (case-insensitive)
+```
+
+### Managing entries
+
+Use the CLI tool at `scripts/manage_ignore_list.py`:
+
+```bash
+# Add a device by MAC
+python3 scripts/manage_ignore_list.py --add-mac aa:bb:cc:dd:ee:ff --label "home router"
+
+# Add an OUI (vendor prefix — matches all MACs with that prefix)
+python3 scripts/manage_ignore_list.py --add-oui b8:27:eb --label "Raspberry Pi Foundation"
+
+# Add a known-benign SSID
+python3 scripts/manage_ignore_list.py --add-ssid "MyHomeNetwork" --label "home AP"
+
+# Remove a MAC
+python3 scripts/manage_ignore_list.py --remove-mac aa:bb:cc:dd:ee:ff
+
+# List all entries
+python3 scripts/manage_ignore_list.py --list
+
+# Show counts
+python3 scripts/manage_ignore_list.py --stats
+
+# Bulk-import everything Kismet currently sees (useful for initial seeding)
+python3 scripts/manage_ignore_list.py --import-kismet
+```
+
+### Using the ignore list in code
+
+Pass an `IgnoreList` instance to `KismetModule`:
+
+```python
+from modules.ignore_list import IgnoreList
+from modules.kismet import KismetModule
+
+il = IgnoreList(data_dir="data/ignore_lists")
+km = KismetModule(gps_module=gps, ignore_list=il)
+await km.connect()
+devices = await km.poll_devices()  # ignored devices are silently filtered out
+```
+
+### MAC normalization
+
+All MACs are normalized to lowercase colon-separated form (`aa:bb:cc:dd:ee:ff`)
+before storage and lookup. Dashes and compact forms are accepted on input.
+
+### OUI matching
+
+An OUI entry stores the first three octets (`aa:bb:cc`). Any MAC whose first
+three octets match is treated as ignored.
+
+---
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
