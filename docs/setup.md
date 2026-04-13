@@ -476,6 +476,74 @@ three octets match is treated as ignored.
 
 ---
 
+## Persistence Engine
+
+The persistence engine is the counter-surveillance intelligence layer. It scores
+every detected device on four weighted criteria across four overlapping time
+windows to produce a 0.0–1.0 surveillance confidence score.
+
+### How scoring works
+
+| Component | Weight | Description |
+|-----------|--------|-------------|
+| Temporal | 35% | Fraction of the four time windows (5/10/15/20 min) in which the device was seen |
+| Location | 35% | Number of distinct GPS clusters (100 m threshold) the device appeared at |
+| Frequency | 20% | How consistently the device appears within the largest window |
+| Signal | 10% | Average signal strength — stronger = device is physically nearby |
+
+A device seen in all four windows at two GPS locations with strong signal will
+score approximately 0.70–0.80, which crosses the default threshold of 0.7.
+
+### Alert levels
+
+| Score range | Level | Meaning |
+|-------------|-------|---------|
+| 0.5 – 0.7 | `suspicious` | Possibly following — monitor |
+| 0.7 – 0.9 | `likely` | Probable surveillance — consider action |
+| 0.9+ | `high` | High-confidence tracking behaviour |
+
+### Tuning the threshold
+
+The default threshold of **0.7** is calibrated for typical suburban/rural use.
+
+- **Urban environment** (many ambient devices): raise to `0.8` to reduce noise
+- **Rural environment** (fewer devices): lower to `0.6` for earlier alerts
+- Adjust in `.env`:
+  ```ini
+  PERSISTENCE_ALERT_THRESHOLD=0.8
+  ```
+
+### First-run false positives
+
+On first run, any device that has been near you for a while (ISP router vans,
+delivery drivers, neighbours) may trigger alerts. Suppress them:
+
+```bash
+# Bulk-import everything Kismet currently sees into the ignore list
+python3 scripts/manage_ignore_list.py --import-kismet
+```
+
+Run this after arriving at a new location before the session starts. Devices
+added to the ignore list are silently filtered before the persistence engine
+ever scores them.
+
+### GPS requirement
+
+Location clustering (35% of the score) requires a GPS fix. Without GPS:
+
+- Temporal, frequency, and signal components still work (65% of max score)
+- Maximum achievable score without GPS: ~0.65
+- With default threshold of 0.7, GPS is effectively required to trigger alerts
+- To use temporal-only detection without GPS, lower the threshold to `0.6`
+
+### Poll interval
+
+Set `PERSISTENCE_POLL_INTERVAL_SECONDS` to match your `main.py` polling rate
+(default 30 s). The frequency score uses this to calculate expected vs actual
+observation density — a mismatch degrades frequency scoring accuracy.
+
+---
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),

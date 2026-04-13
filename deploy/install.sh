@@ -38,6 +38,8 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
 echo "$LOG Installing Python packages..."
 sudo -u "$PI_USER" pip3 install -r "$REPO_DIR/requirements.txt" \
   --break-system-packages -q
+# geopy: geodesic distance fallback for persistence engine location clustering
+sudo -u "$PI_USER" pip3 install geopy --break-system-packages -q
 
 # ── 3b. WiFi monitor mode setup ────────────────────────────────────────────
 echo "$LOG Configuring WiFi monitor mode..."

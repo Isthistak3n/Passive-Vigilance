@@ -150,6 +150,24 @@ Re-run the monitor mode commands after any NM restart.
 - `KismetModule` accepts an optional `IgnoreList` instance; ignored devices are silently
   filtered in `poll_devices()` before the list is returned
 
+## Persistence Engine
+
+- `modules/persistence.py` — `PersistenceEngine` class + `DetectionEvent` dataclass
+- `modules/probe_analyzer.py` — `ProbeAnalyzer` class (WiFi probe pattern analysis)
+- Four time windows: 5 / 10 / 15 / 20 minutes (configurable via `window_minutes`)
+- Scoring weights: temporal 35%, location 35%, frequency 20%, signal 10%
+- Alert threshold default: 0.7 (configurable via `PERSISTENCE_ALERT_THRESHOLD` in `.env`)
+- Alert levels: `suspicious` (0.5–0.7), `likely` (0.7–0.9), `high` (0.9+)
+- Location clustering: 100 m threshold, haversine distance, greedy centroid assignment
+- Signal normalisation: −85 dBm → 0.0, −40 dBm → 1.0
+- Minimum 2 observations required before any score is assigned (prevents first-seen false positives)
+- GPS location gate: requires `PERSISTENCE_MIN_LOCATIONS` distinct clusters (default 2)
+  when GPS data is present; bypassed when no GPS observations collected
+- `purge_old_observations()` called on every `update()` — max 60 min history by default
+- `DetectionEvent` fields: `mac`, `score`, `score_breakdown`, `first_seen`, `last_seen`,
+  `locations`, `observation_count`, `manufacturer`, `device_type`, `alert_level`
+- `ProbeAnalyzer` flags: devices probing > 10 unique SSIDs, or probing surveillance-pattern SSIDs
+
 ## Ignore Lists
 
 - `modules/ignore_list.py` — `IgnoreList` class
