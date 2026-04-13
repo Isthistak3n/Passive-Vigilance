@@ -207,6 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 # Passive-Vigilance project-specific
+data/ignore_lists/*.json
 data/
 logs/
 *.kismet
