@@ -1,0 +1,16 @@
+[Unit]
+Description=Kismet passive sensor daemon
+After=network.target gpsd.service
+Wants=gpsd.service
+
+[Service]
+User=kismet
+Group=kismet
+ExecStart=/usr/bin/kismet --no-ncurses-wrapper \
+  --override=httpd_port=2501 \
+  --override=server_name=passive-vigilance
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
