@@ -16,11 +16,17 @@ ls /dev/ttyUSB*
 # expected: /dev/ttyUSB0
 ```
 
-### Install gpsd
+### Install gpsd and the Python bindings
 
 ```bash
 sudo apt install -y gpsd gpsd-clients python3-gps
 ```
+
+> **Important:** The Python GPS bindings (`import gps`) are provided by the
+> `python3-gps` apt package. **Do not** install `gpsd-py3` via pip — it is a
+> different package with an incompatible API and is not used by this project.
+> `python3-gps` is intentionally absent from `requirements.txt` because pip
+> cannot install it correctly on Raspberry Pi OS.
 
 ### Configure gpsd
 

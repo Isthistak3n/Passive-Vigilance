@@ -1,3 +1,5 @@
+# NOTE: python3-gps must be installed via apt, not pip:
+# sudo apt install -y gpsd gpsd-clients python3-gps
 pyrtlsdr
 requests
 python-dotenv
