@@ -1,0 +1,2 @@
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="wlan1", \
+  RUN+="/usr/local/bin/set-monitor-mode.sh"

@@ -101,6 +101,24 @@ feature/* → dev → main
 
 ---
 
+## WiFi Dongle
+
+| Item | Value |
+|---|---|
+| Device | MediaTek MT7610U (`0e8d:7610`) |
+| Interface | `wlan1` |
+| Driver | `mt76` series — **in-kernel, no DKMS needed** |
+| Mode | monitor (set via udev rule at boot) |
+| NM state | unmanaged (`/etc/NetworkManager/conf.d/99-unmanaged-wlan1.conf`) |
+| udev rule | `/etc/udev/rules.d/99-wifi-monitor.rules` |
+| Monitor script | `/usr/local/bin/set-monitor-mode.sh` |
+
+**`wlan0` = Pi built-in WiFi — used for SSH/network. DO NOT set to monitor mode.**
+**`wlan1` = USB dongle — monitor mode only. DO NOT use for network connectivity.**
+
+After `sudo systemctl restart NetworkManager`, NM resets wlan1 to managed once.
+Re-run the monitor mode commands after any NM restart.
+
 ## ADS-B / readsb Integration
 
 - `readsb` (not dump1090) is the ADS-B decoder; binary at `/usr/bin/readsb`
@@ -178,3 +196,4 @@ so it works on both Bookworm (Pi OS) and Trixie (this dev Pi).
 - **pyrtlsdr 0.3.0+ breaks on Trixie:** `librtlsdr 2.0.2` (Osmocom fork) doesn't export `rtlsdr_set_dithering`. Pin stays at `0.2.93`.
 - **readsb JSON port:** readsb serves aircraft JSON on port 8080 (HTTP), not 30003 (SBS-1 TCP). The `.env` `DUMP1090_PORT=30003` is the SBS-1 port; the `ADSBModule` connects to port 8080 directly.
 - **Single RTL-SDR conflict:** readsb and DroneRFModule can't share one dongle simultaneously. Use two dongles or stop readsb before drone scanning.
+- **NM resets wlan1 on restart:** `sudo systemctl restart NetworkManager` resets wlan1 to managed once before the unmanaged rule applies. Re-run monitor mode commands after any NM restart. The udev rule handles boot/plug-in automatically.

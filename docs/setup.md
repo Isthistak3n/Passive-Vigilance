@@ -232,6 +232,80 @@ sudo dpkg --configure -a
 
 ---
 
+## WiFi Monitor Mode
+
+### Hardware
+
+This project uses the **MediaTek MT7610U** USB dongle (`0e8d:7610`) on interface `wlan1`.
+The driver (`mt76` series) is built into the Linux kernel — no DKMS or out-of-tree driver needed.
+
+> **Do not touch `wlan0`** — that is the Pi's built-in WiFi used for network connectivity.
+
+### Verifying monitor mode support
+
+```bash
+iw phy phy6 info | grep monitor
+# Expected: * monitor
+```
+
+### Setting monitor mode manually
+
+```bash
+sudo ip link set wlan1 down
+sudo iw wlan1 set monitor none
+sudo ip link set wlan1 up
+iw dev wlan1 info   # should show: type monitor
+```
+
+### Automatic monitor mode via udev (installed by install.sh)
+
+A udev rule triggers a script whenever `wlan1` appears (boot or plug-in):
+
+```
+/etc/udev/rules.d/99-wifi-monitor.rules
+/usr/local/bin/set-monitor-mode.sh
+```
+
+To reload rules manually:
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+### Preventing NetworkManager from reclaiming wlan1
+
+NetworkManager will reset the interface to managed mode unless told to ignore it:
+
+```bash
+# File: /etc/NetworkManager/conf.d/99-unmanaged-wlan1.conf
+[keyfile]
+unmanaged-devices=interface-name:wlan1
+```
+
+After writing the file:
+```bash
+sudo systemctl restart NetworkManager
+nmcli dev show wlan1 | grep GENERAL.STATE
+# Expected: 10 (unmanaged)
+```
+
+Then re-apply monitor mode (NM resets it once on restart):
+```bash
+sudo ip link set wlan1 down
+sudo iw wlan1 set monitor none
+sudo ip link set wlan1 up
+```
+
+### Troubleshooting: interface reverts to managed
+
+If `wlan1` reverts to managed mode after reboot:
+1. Check udev rule is installed: `cat /etc/udev/rules.d/99-wifi-monitor.rules`
+2. Check script exists and is executable: `ls -la /usr/local/bin/set-monitor-mode.sh`
+3. Check NM unmanaged config: `cat /etc/NetworkManager/conf.d/99-unmanaged-wlan1.conf`
+4. Check logs: `journalctl | grep "Passive Vigilance"`
+
+---
+
 ## ADS-B (readsb)
 
 ### About readsb
