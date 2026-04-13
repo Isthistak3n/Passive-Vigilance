@@ -2,6 +2,7 @@
 
 import logging
 import os
+import subprocess
 from typing import Optional
 
 import aiohttp
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 KISMET_HOST = os.getenv("KISMET_HOST", "localhost")
 KISMET_PORT = int(os.getenv("KISMET_PORT", "2501"))
 KISMET_API_KEY = os.getenv("KISMET_API_KEY", "")
+WIFI_MONITOR_INTERFACE = os.getenv("WIFI_MONITOR_INTERFACE", "wlan1")
 
 _BASE_URL = f"http://{KISMET_HOST}:{KISMET_PORT}"
 
@@ -53,12 +55,27 @@ class KismetModule:
     async def connect(self) -> None:
         """Open an aiohttp session and verify the API key against Kismet.
 
+        Logs a warning if the WiFi monitor interface is not in monitor mode.
+
         Raises:
             ConnectionError: if Kismet is unreachable or the API key is invalid.
         """
         if not KISMET_API_KEY:
             raise ConnectionError(
                 "KISMET_API_KEY is not set — generate one in the Kismet web UI"
+            )
+
+        # Warn if the capture interface is not in monitor mode
+        status = self.get_interface_status()
+        if not status["is_monitor"]:
+            logger.warning(
+                "Interface %s is in '%s' mode, not monitor — "
+                "Kismet may not capture packets. "
+                "Run: sudo ip link set %s down && "
+                "sudo iw %s set monitor none && "
+                "sudo ip link set %s up",
+                status["interface"], status["mode"],
+                status["interface"], status["interface"], status["interface"],
             )
 
         self._session = aiohttp.ClientSession(
@@ -80,7 +97,8 @@ class KismetModule:
                         f"Kismet returned unexpected status {resp.status}"
                     )
                 logger.info(
-                    "Connected to Kismet at %s:%d", KISMET_HOST, KISMET_PORT
+                    "Connected to Kismet at %s:%d (interface: %s)",
+                    KISMET_HOST, KISMET_PORT, WIFI_MONITOR_INTERFACE,
                 )
         except aiohttp.ClientConnectorError as exc:
             await self.close()
@@ -155,6 +173,58 @@ class KismetModule:
 
         logger.debug("Polled %d devices from Kismet", len(devices))
         return devices
+
+    # ------------------------------------------------------------------
+    # Interface status
+    # ------------------------------------------------------------------
+
+    def get_interface_status(self) -> dict:
+        """Check the WiFi monitor interface mode via ``iw dev``.
+
+        Returns a dict with keys:
+        ``interface`` (str), ``mode`` (str), ``phy`` (str), ``is_monitor`` (bool)
+
+        Returns safe defaults with ``is_monitor=False`` if the interface is
+        not found or ``iw`` is unavailable.
+        """
+        result = {
+            "interface":  WIFI_MONITOR_INTERFACE,
+            "mode":       "unknown",
+            "phy":        "unknown",
+            "is_monitor": False,
+        }
+
+        try:
+            proc = subprocess.run(
+                ["iw", "dev"],
+                capture_output=True, text=True, timeout=5
+            )
+            output = proc.stdout
+        except Exception as exc:
+            logger.debug("iw dev failed: %s", exc)
+            return result
+
+        # Parse iw dev output — sections delimited by "phy#N" headers
+        current_phy = "unknown"
+        current_iface = None
+        for line in output.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("phy#"):
+                current_phy = stripped
+                current_iface = None
+            elif stripped.startswith("Interface "):
+                current_iface = stripped.split()[1]
+            elif current_iface == WIFI_MONITOR_INTERFACE and stripped.startswith("type "):
+                mode = stripped.split(None, 1)[1]
+                result["mode"] = mode
+                result["phy"] = current_phy
+                result["is_monitor"] = (mode == "monitor")
+                break
+
+        if result["mode"] == "unknown":
+            logger.debug("Interface %s not found in iw dev output", WIFI_MONITOR_INTERFACE)
+
+        return result
 
     # ------------------------------------------------------------------
     # WiGLE export helper

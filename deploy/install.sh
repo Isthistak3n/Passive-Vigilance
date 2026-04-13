@@ -39,7 +39,47 @@ echo "$LOG Installing Python packages..."
 sudo -u "$PI_USER" pip3 install -r "$REPO_DIR/requirements.txt" \
   --break-system-packages -q
 
-# ── 3b. RTL-SDR kernel module blacklist ────────────────────────────────────
+# ── 3b. WiFi monitor mode setup ────────────────────────────────────────────
+echo "$LOG Configuring WiFi monitor mode..."
+# Detect USB WiFi interface (wlan1 if built-in WiFi is wlan0)
+WIFI_IFACE=$(ip link show | grep -E "^[0-9]+: wlan[1-9]" | \
+  head -1 | awk '{print $2}' | tr -d ':')
+if [ -z "$WIFI_IFACE" ]; then
+  WIFI_IFACE="wlan1"
+  echo "$LOG Warning: could not detect USB WiFi interface, defaulting to wlan1"
+fi
+echo "$LOG USB WiFi interface detected as: $WIFI_IFACE"
+
+# Tell NetworkManager to ignore it
+cat > /etc/NetworkManager/conf.d/99-unmanaged-wifi-monitor.conf << EOF
+[keyfile]
+unmanaged-devices=interface-name:${WIFI_IFACE}
+EOF
+
+# Install udev rule
+sed "s/wlan1/${WIFI_IFACE}/g" \
+  "$REPO_DIR/deploy/99-wlan1-monitor.rules" > \
+  /etc/udev/rules.d/99-wifi-monitor.rules
+
+# Install monitor mode script
+sed "s/wlan1/${WIFI_IFACE}/g" \
+  "$REPO_DIR/deploy/set-monitor-mode.sh" > \
+  /usr/local/bin/set-monitor-mode.sh
+chmod +x /usr/local/bin/set-monitor-mode.sh
+
+# Store interface name in .env
+if grep -q "WIFI_MONITOR_INTERFACE" "$REPO_DIR/.env" 2>/dev/null; then
+  sed -i "s/WIFI_MONITOR_INTERFACE=.*/WIFI_MONITOR_INTERFACE=${WIFI_IFACE}/" \
+    "$REPO_DIR/.env"
+else
+  echo "WIFI_MONITOR_INTERFACE=${WIFI_IFACE}" >> "$REPO_DIR/.env"
+fi
+
+# Reload udev and NetworkManager
+udevadm control --reload-rules
+systemctl restart NetworkManager
+
+# ── 3d. RTL-SDR kernel module blacklist ────────────────────────────────────
 # Prevent DVB-T drivers from claiming the dongle before rtlsdr can
 echo "$LOG Blacklisting conflicting RTL-SDR kernel modules..."
 echo "blacklist dvb_usb_rtl28xxu" | tee /etc/modprobe.d/rtlsdr.rules > /dev/null
