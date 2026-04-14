@@ -61,12 +61,12 @@ capturing automatically.
 | WiFi monitor mode | ✅ Complete | MT7610U/RTL8811AU udev + NM unmanaged — 15 tests |
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 22 tests |
 | Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 24 tests |
-| Alert engine | ⏳ Planned | Pluggable Ntfy/Telegram/Signal/Discord |
+| Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 22 tests |
 | Shapefile writer | ⏳ Planned | geopandas/fiona GIS output |
 | WiGLE uploader | ⏳ Planned | Session-end Kismet CSV upload |
 | Orchestrator | ⏳ Planned | asyncio event loop, all modules wired |
 
-**100 tests passing** across completed modules.
+**112 tests passing** across completed modules.
 
 ---
 
