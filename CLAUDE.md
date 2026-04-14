@@ -22,8 +22,9 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
   (QGIS, ArcGIS, etc.)
 - **WiGLE wardriving upload** — at session end, Kismet's native CSV export is uploaded to
   WiGLE.net via their API
-- **Pluggable alert backend** — abstract `AlertBackend` base class; `NtfyBackend` is the
-  first implementation; Signal and Telegram backends are planned but not yet decided
+- **Pluggable alert backend** — abstract `AlertBackend` base class; `NtfyBackend`,
+  `TelegramBackend`, `DiscordBackend`, and `ConsoleBackend` implementations; swap via
+  `ALERT_BACKEND` in `.env`; `AlertFactory.get_backend()` handles fallback
 
 ---
 
@@ -53,7 +54,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/dump1090.py` | `ADSBModule` | dump1090 JSON output; aircraft polling |
 | `modules/drone_rf.py` | `DroneRFModule` | pyrtlsdr; passive RF scan for drone signatures |
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
-| `modules/alerts.py` | `AlertBackend` / `NtfyBackend` | Abstract alert base + ntfy implementation |
+| `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; append events as point features |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net API |
 | `main.py` | — | asyncio orchestrator; loads .env; SIGINT/SIGTERM shutdown |
@@ -167,6 +168,17 @@ Re-run the monitor mode commands after any NM restart.
 - `DetectionEvent` fields: `mac`, `score`, `score_breakdown`, `first_seen`, `last_seen`,
   `locations`, `observation_count`, `manufacturer`, `device_type`, `alert_level`
 - `ProbeAnalyzer` flags: devices probing > 10 unique SSIDs, or probing surveillance-pattern SSIDs
+
+## Alert Engine
+
+- `modules/alerts.py` — `AlertBackend` ABC + `NtfyBackend` + `TelegramBackend` + `DiscordBackend` + `ConsoleBackend`
+- `AlertFactory.get_backend(name)` reads `ALERT_BACKEND` from `.env`; falls back to `ConsoleBackend` if unconfigured
+- `RateLimiter`: in-memory cooldown dict, resets on restart (intentional)
+- Default cooldowns: drone 600 s, persistence 300 s, aircraft 60 s (override in `.env`)
+- `ConsoleBackend` always configured — use it for testing without external services
+- Ntfy is the primary backend: single HTTP POST, no SDK, no account required
+- `TelegramBackend` and `DiscordBackend` are fully implemented stubs — fill credentials to activate
+- Priority mapping for ntfy: `low` → `low`, `default` → `default`, `high` → `high`, `urgent` → `max`
 
 ## Ignore Lists
 

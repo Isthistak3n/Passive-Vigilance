@@ -544,6 +544,111 @@ observation density — a mismatch degrades frequency scoring accuracy.
 
 ---
 
+## Alert Engine
+
+The alert engine delivers sensor detections to your phone or chat platform.
+It is pluggable — swap backends by changing `ALERT_BACKEND` in `.env`.
+
+### Choosing a backend
+
+| Backend | When to use |
+|---------|-------------|
+| `ntfy` | Recommended — free, no account required, phone app available |
+| `telegram` | If you already have a Telegram bot |
+| `discord` | If you monitor a Discord server |
+| `console` | Testing and development without external services |
+
+### Ntfy (recommended)
+
+Ntfy is a simple push notification service. No account required for the public
+server. Install the ntfy app on your phone (Android / iOS), choose a unique
+topic name, and you're done.
+
+1. Install the ntfy app on your phone from ntfy.sh
+2. Choose a unique topic name (treat it like a password — anyone who knows it
+   can read your alerts)
+3. Add to `.env`:
+   ```ini
+   ALERT_BACKEND=ntfy
+   NTFY_TOPIC=my-unique-topic-name
+   NTFY_SERVER=https://ntfy.sh
+   ```
+
+#### Self-hosting Ntfy for privacy
+
+If your detections are sensitive, self-host ntfy on a VPS or your LAN:
+
+```bash
+# Install on a Debian/Ubuntu server
+apt install ntfy
+systemctl enable --now ntfy
+```
+
+Then set `NTFY_SERVER=http://your-server:80` in `.env`.
+Self-hosted ntfy supports auth tokens for additional security.
+
+### Telegram
+
+1. Message `@BotFather` on Telegram: `/newbot` → follow prompts → copy token
+2. Message your new bot to create the chat, then get your chat ID:
+   ```bash
+   curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
+   # Look for "chat": {"id": <your-chat-id>}
+   ```
+3. Add to `.env`:
+   ```ini
+   ALERT_BACKEND=telegram
+   TELEGRAM_BOT_TOKEN=123456:ABCdef...
+   TELEGRAM_CHAT_ID=987654321
+   ```
+
+### Rate limiting
+
+In high-density RF environments (city centres, airports, events) the same
+devices or signals may trigger repeatedly within seconds. Rate limiting
+prevents notification spam while ensuring you are still alerted:
+
+| Event type | Default cooldown | Rationale |
+|------------|-----------------|-----------|
+| Drone RF | 600 s (10 min) | Drone presence is persistent — one alert per encounter is enough |
+| Persistent device | 300 s (5 min) | Score updates gradually — re-alert when behaviour continues |
+| Aircraft | 60 s (1 min) | Aircraft move through quickly — per-ICAO cooldown avoids floods |
+
+Adjust in `.env`:
+```ini
+DRONE_ALERT_COOLDOWN_SECONDS=600
+PERSISTENCE_ALERT_COOLDOWN_SECONDS=300
+AIRCRAFT_ALERT_COOLDOWN_SECONDS=60
+```
+
+Rate limiter state is in-memory and resets on restart (intentional — after a
+restart you want to know what is currently in range).
+
+### Testing alerts without hardware
+
+Use the console backend to verify the alert pipeline without any hardware or
+external services:
+
+```python
+python3 -c "
+from modules.alerts import AlertFactory
+backend = AlertFactory.get_backend('console')
+backend.send('Test', 'Alert engine working', 'high')
+"
+```
+
+Or test a specific event type:
+
+```python
+python3 -c "
+from modules.alerts import AlertFactory
+backend = AlertFactory.get_backend('console')
+backend.send_drone_alert({'freq_mhz': 915.0, 'power_db': -18.5, 'lat': 51.5, 'lon': -0.1})
+"
+```
+
+---
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
