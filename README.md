@@ -49,6 +49,66 @@ before being written to disk or triggering an alert. The platform runs
 entirely as background systemd services — plug in power and it starts
 capturing automatically.
 
+```mermaid
+flowchart TD
+    subgraph Hardware
+        RTL[RTL-SDR / HackRF]
+        WIFI[WiFi Dongle\nMonitor Mode]
+        BT[Bluetooth Dongle]
+        GPS[GPS Dongle]
+    end
+
+    subgraph Daemons
+        READSB[readsb\nADS-B decoder]
+        KISMET[Kismet daemon\nWiFi + BT capture]
+        GPSD[gpsd\nposition + UTC]
+    end
+
+    subgraph Python Orchestrator
+        ADSB[ADSBModule\n+ adsb.lol enrichment]
+        DRONE[DroneRFModule\n433/868/915 MHz]
+        KIS[KismetModule\nREST API poll]
+        GPSM[GPSModule\nfix quality]
+        IGNORE[IgnoreList\nMAC/OUI/SSID filter]
+        PERSIST[PersistenceEngine\ntime-window scoring]
+        PROBE[ProbeAnalyzer\nSSID patterns]
+    end
+
+    subgraph Outputs
+        ALERT[Alert Engine\nNtfy / Telegram]
+        SHP[Shapefile Writer\ngeopandas / fiona]
+        WIGLE[WiGLE Uploader\nsession CSV]
+        DB[(SQLite DB\nevent log)]
+    end
+
+    RTL --> READSB
+    RTL --> DRONE
+    WIFI --> KISMET
+    BT --> KISMET
+    GPS --> GPSD
+
+    READSB --> ADSB
+    KISMET --> KIS
+    GPSD --> GPSM
+
+    GPSM -->|GPS stamp| ADSB
+    GPSM -->|GPS stamp| KIS
+    GPSM -->|GPS stamp| DRONE
+
+    KIS --> IGNORE
+    IGNORE --> PERSIST
+    IGNORE --> PROBE
+    PERSIST --> ALERT
+    PROBE --> ALERT
+    ADSB --> ALERT
+    DRONE --> ALERT
+
+    PERSIST --> SHP
+    PERSIST --> DB
+    ADSB --> DB
+    KIS --> WIGLE
+```
+
 ---
 
 ## Project status
