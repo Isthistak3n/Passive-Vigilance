@@ -55,9 +55,9 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/drone_rf.py` | `DroneRFModule` | pyrtlsdr; passive RF scan for drone signatures |
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
-| `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; append events as point features |
-| `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net API |
-| `main.py` | — | asyncio orchestrator; loads .env; SIGINT/SIGTERM shutdown |
+| `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson |
+| `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
+| `main.py` | `PassiveVigilance` | asyncio orchestrator; SIGINT/SIGTERM → clean shutdown |
 
 ---
 
@@ -179,6 +179,18 @@ Re-run the monitor mode commands after any NM restart.
 - Ntfy is the primary backend: single HTTP POST, no SDK, no account required
 - `TelegramBackend` and `DiscordBackend` are fully implemented stubs — fill credentials to activate
 - Priority mapping for ntfy: `low` → `low`, `default` → `default`, `high` → `high`, `urgent` → `max`
+
+## Orchestrator
+
+- `main.py` — `PassiveVigilance` class; `asyncio.run(orchestrator.run())` entry point
+- Startup: all modules connect with graceful degradation — any module that fails logs a warning and is skipped
+- Poll intervals: GPS 1 s (blocking, via `run_in_executor`), readsb 5 s, Kismet 30 s, DroneRF continuous (background task)
+- Session output: `data/sessions/{session_id}/` — `summary.json`, `detections_wifi.shp`, `detections_aircraft.shp`, `detections_drone.shp`, `detections.geojson`
+- Shutdown sequence on SIGINT/SIGTERM: stop DroneRF → close Kismet/ADSB/GPS → write `summary.json` → write shapefiles → WiGLE upload
+- `TimeoutStopSec=30` in systemd unit allows clean shutdown to complete
+- `_SESSION_OUTPUT_DIR` is a module-level constant read at import time — patch `main._SESSION_OUTPUT_DIR` in tests, not env
+- `ShapefileWriter` (`modules/shapefile.py`) — geopandas/fiona; installed via `python3-geopandas` apt package
+- `WiGLEUploader` (`modules/wigle.py`) — multipart POST to `https://api.wigle.net/api/v2/file/upload`; HTTP Basic auth
 
 ## Ignore Lists
 

@@ -40,6 +40,12 @@ sudo -u "$PI_USER" pip3 install -r "$REPO_DIR/requirements.txt" \
   --break-system-packages -q
 # geopy: geodesic distance fallback for persistence engine location clustering
 sudo -u "$PI_USER" pip3 install geopy --break-system-packages -q
+# GIS output — shapefile and GeoJSON session export
+apt install -y python3-geopandas python3-fiona python3-shapely
+
+# Create session output directory
+mkdir -p "/home/$PI_USER/Passive-Vigilance/data/sessions"
+chown "$PI_USER:$PI_USER" "/home/$PI_USER/Passive-Vigilance/data/sessions"
 
 # ── 3b. WiFi monitor mode setup ────────────────────────────────────────────
 echo "$LOG Configuring WiFi monitor mode..."
