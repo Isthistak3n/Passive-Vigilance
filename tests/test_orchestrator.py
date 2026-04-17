@@ -67,6 +67,7 @@ def orch(tmp_path):
         patch("main.ShapefileWriter") as mock_shp_cls,
         patch("main.WiGLEUploader") as mock_wigle_cls,
         patch("main._SESSION_OUTPUT_DIR", str(tmp_path)),
+        patch("main._RATE_LIMIT_PERSIST", None),
         patch.dict(os.environ, env_patch),
     ):
         # GPS
@@ -265,6 +266,7 @@ async def test_poll_kismet_sends_alert_for_high_score_event(orch):
 @pytest.mark.asyncio
 async def test_shutdown_writes_session_summary(orch, tmp_path):
     orch.session_id = "20260101_120000"
+    orch._session_dir = Path(tmp_path) / "20260101_120000"
     await orch.startup()
     await orch.shutdown()
 
@@ -314,3 +316,67 @@ async def test_shutdown_completes_cleanly_with_no_events(orch):
 
     orch._mock_shp.write_session.assert_not_called()
     orch._mock_shp.write_geojson.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _poll_kismet() — persistence wiring and JSONL logging
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_calls_persistence_update(orch):
+    """_poll_kismet() must pass polled devices to PersistenceEngine.update()."""
+    device = {"macaddr": "aa:bb:cc:dd:ee:ff", "kismet.device.base.name": "testdev"}
+    orch.kismet.poll_devices = AsyncMock(return_value=[device])
+    orch._kismet_active = True
+
+    await orch._poll_kismet()
+
+    orch.persistence.update.assert_called_once_with([device], gps_fix=orch._current_fix)
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_calls_purge_old_observations(orch):
+    """_poll_kismet() must call purge_old_observations() on every cycle."""
+    orch.kismet.poll_devices = AsyncMock(return_value=[])
+    orch._kismet_active = True
+
+    await orch._poll_kismet()
+
+    orch.persistence.purge_old_observations.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_appends_events_to_jsonl(orch, tmp_path):
+    """Detection events above threshold must be appended to events.jsonl."""
+    event = _make_detection_event(alert_level="high", score=0.95)
+    orch.persistence.update.return_value = [event]
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
+    orch._kismet_active = True
+    orch.session_id = "20260101_120000"
+    orch._session_dir = Path(tmp_path) / "20260101_120000"
+
+    await orch._poll_kismet()
+
+    jsonl_path = orch._session_dir / "events.jsonl"
+    assert jsonl_path.exists(), "events.jsonl was not created"
+    line = json.loads(jsonl_path.read_text().strip())
+    assert line["mac"] == "aa:bb:cc:dd:ee:ff"
+    assert line["event_type"] == "wifi"
+
+
+@pytest.mark.asyncio
+async def test_poll_adsb_appends_to_jsonl(orch, tmp_path):
+    """Aircraft detections must be appended to aircraft.jsonl."""
+    aircraft = _make_aircraft(icao="TEST01")
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[aircraft])
+    orch._adsb_active = True
+    orch.session_id = "20260101_120000"
+    orch._session_dir = Path(tmp_path) / "20260101_120000"
+
+    await orch._poll_adsb()
+
+    jsonl_path = orch._session_dir / "aircraft.jsonl"
+    assert jsonl_path.exists(), "aircraft.jsonl was not created"
+    line = json.loads(jsonl_path.read_text().strip())
+    assert line["icao"] == "TEST01"
