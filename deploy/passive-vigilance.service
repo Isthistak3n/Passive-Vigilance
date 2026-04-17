@@ -8,9 +8,12 @@ User=survkis
 Group=survkis
 WorkingDirectory=/home/survkis/Passive-Vigilance
 EnvironmentFile=/home/survkis/Passive-Vigilance/.env
-ExecStart=/usr/bin/python3 main.py
+ExecStart=/usr/bin/python3 /home/survkis/Passive-Vigilance/main.py
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

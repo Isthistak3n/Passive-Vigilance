@@ -649,6 +649,118 @@ backend.send_drone_alert({'freq_mhz': 915.0, 'power_db': -18.5, 'lat': 51.5, 'lo
 
 ---
 
+## Orchestrator
+
+The asyncio orchestrator (`main.py`) wires all sensor modules into a unified
+always-on event loop. It is managed as a systemd service on the Pi.
+
+### Starting and stopping
+
+```bash
+# Enable at boot (do this once after .env is fully configured)
+sudo systemctl enable passive-vigilance
+
+# Start / stop
+sudo systemctl start passive-vigilance
+sudo systemctl stop passive-vigilance   # triggers clean shutdown (up to 30 s)
+
+# Restart after config change
+sudo systemctl restart passive-vigilance
+```
+
+### Watching live logs
+
+```bash
+journalctl -fu passive-vigilance
+```
+
+Startup banner confirms which modules connected and where session output will be written:
+
+```
+Passive Vigilance v0.1.0 — Session 20260101_120000
+Active modules : GPS, Kismet, ADS-B, DroneRF (active)
+Alert backend  : Ntfy
+Output         : data/sessions/20260101_120000/
+```
+
+### Manual run (testing without systemd)
+
+```bash
+cd /home/survkis/Passive-Vigilance
+python3 main.py
+```
+
+Ctrl+C triggers a clean shutdown — the same sequence as `systemctl stop`.
+
+### Poll intervals
+
+| Module | Interval | Notes |
+|--------|----------|-------|
+| GPS | 1 s | Blocking `gpsd.read()` runs in thread executor |
+| readsb (ADS-B) | 5 s | HTTP JSON poll to `localhost:8080` |
+| Kismet (WiFi/BT) | 30 s | REST API — devices scored by PersistenceEngine |
+| DroneRF | Continuous | Background asyncio task; detections drained every 5 s |
+
+### Session output
+
+Each session writes to its own directory:
+
+```
+data/sessions/YYYYMMDD_HHMMSS/
+├── summary.json            — session metadata and event counts
+├── detections_wifi.shp     — WiFi/BT persistence events (Point geometry)
+├── detections_aircraft.shp — ADS-B aircraft detections
+├── detections_drone.shp    — Drone RF hits
+└── detections.geojson      — All events in a single FeatureCollection
+```
+
+`summary.json` structure:
+
+```json
+{
+  "session_id": "20260101_120000",
+  "start_time": "2026-01-01T12:00:00+00:00",
+  "end_time":   "2026-01-01T13:00:00+00:00",
+  "duration_seconds": 3600,
+  "gps_fixes_received": 3597,
+  "unique_devices_tracked": 4,
+  "persistent_detections": 7,
+  "aircraft_detected": 23,
+  "drone_detections": 0,
+  "modules_active": { "gps": true, "kismet": true, "adsb": true, "drone_rf": false }
+}
+```
+
+### Graceful shutdown sequence
+
+On SIGINT/SIGTERM or Ctrl+C:
+
+1. DroneRF scan cancelled
+2. Kismet and readsb sessions closed
+3. GPS disconnected
+4. `summary.json` written
+5. Shapefile and GeoJSON written (if any events)
+6. WiGLE CSV uploaded (if configured and CSV found)
+
+Allow up to 30 seconds for step 5–6 — `TimeoutStopSec=30` is set in the
+service unit.
+
+### First-run checklist
+
+Before starting the sensor for the first time:
+
+- [ ] GPS dongle is connected and gpsd is running (`cgps -s` shows data)
+- [ ] Kismet is running and API key is set in `.env`
+- [ ] RTL-SDR dongle is connected (for ADS-B + drone RF)
+- [ ] Alert backend is configured and tested
+- [ ] Ignore list is populated with your own devices:
+  ```bash
+  python3 scripts/manage_ignore_list.py --import-kismet
+  ```
+- [ ] `.env` credentials are complete
+
+---
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
