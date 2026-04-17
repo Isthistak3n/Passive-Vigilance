@@ -57,13 +57,11 @@ flowchart TD
         BT[Bluetooth Dongle]
         GPS[GPS Dongle]
     end
-
     subgraph Daemons
         READSB[readsb\nADS-B decoder]
         KISMET[Kismet daemon\nWiFi + BT capture]
         GPSD[gpsd\nposition + UTC]
     end
-
     subgraph Python Orchestrator
         ADSB[ADSBModule\n+ adsb.lol enrichment]
         DRONE[DroneRFModule\n433/868/915 MHz]
@@ -73,28 +71,23 @@ flowchart TD
         PERSIST[PersistenceEngine\ntime-window scoring]
         PROBE[ProbeAnalyzer\nSSID patterns]
     end
-
     subgraph Outputs
         ALERT[Alert Engine\nNtfy / Telegram]
         SHP[Shapefile Writer\ngeopandas / fiona]
         WIGLE[WiGLE Uploader\nsession CSV]
         DB[(SQLite DB\nevent log)]
     end
-
     RTL --> READSB
     RTL --> DRONE
     WIFI --> KISMET
     BT --> KISMET
     GPS --> GPSD
-
     READSB --> ADSB
     KISMET --> KIS
     GPSD --> GPSM
-
     GPSM -->|GPS stamp| ADSB
     GPSM -->|GPS stamp| KIS
     GPSM -->|GPS stamp| DRONE
-
     KIS --> IGNORE
     IGNORE --> PERSIST
     IGNORE --> PROBE
@@ -102,7 +95,6 @@ flowchart TD
     PROBE --> ALERT
     ADSB --> ALERT
     DRONE --> ALERT
-
     PERSIST --> SHP
     PERSIST --> DB
     ADSB --> DB
@@ -182,6 +174,46 @@ configuration details including troubleshooting.
 ---
 
 ## Architecture
+
+```
+Passive-Vigilance/
+├── main.py                           # asyncio orchestrator; loads .env; SIGINT/SIGTERM shutdown
+├── requirements.txt                  # Python dependencies
+├── .env.example                      # Environment variable template (never commit .env)
+├── modules/
+│   ├── gps.py                        # GPSModule — gpsd streaming client; position/time backbone
+│   ├── kismet.py                     # KismetModule — Kismet REST API; async WiFi + BT polling
+│   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
+│   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures
+│   ├── ignore_list.py                # IgnoreList — MAC/OUI/SSID filter; atomic JSON persistence
+│   ├── alerts.py                     # AlertBackend ABC + Ntfy / Telegram / Discord / Console backends
+│   ├── persistence.py                # PersistenceEngine — time-window scoring; DetectionEvent dataclass
+│   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
+│   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
+│   └── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
+├── tests/
+│   ├── test_gps.py                   # 9 tests — GPSModule
+│   ├── test_kismet.py                # 10 tests — KismetModule
+│   ├── test_dump1090.py              # 20 tests — ADSBModule
+│   ├── test_monitor_mode.py          # 15 tests — WiFi monitor mode
+│   ├── test_ignore_list.py           # 22 tests — IgnoreList
+│   ├── test_persistence.py           # 24 tests — PersistenceEngine
+│   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
+│   └── test_alerts.py                # 22 tests — AlertEngine
+├── scripts/
+│   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
+├── deploy/
+│   ├── install.sh                    # One-command installer; auto-detects Debian/Raspberry Pi OS
+│   ├── kismet.service                # Kismet systemd unit
+│   ├── passive-vigilance.service     # Orchestrator systemd unit
+│   ├── gpsd.override.conf            # gpsd drop-in config to add -n flag
+│   ├── 99-wlan1-monitor.rules        # udev rule — set wlan1 to monitor mode at boot/plug-in
+│   └── 99-unmanaged-wlan1.conf       # NetworkManager: mark wlan1 as unmanaged
+├── docs/
+│   └── setup.md                      # Full installation, configuration, and troubleshooting guide
+└── data/
+    └── ignore_lists/                 # MAC/OUI/SSID ignore list JSON files (git-ignored)
+```
 
 ---
 
