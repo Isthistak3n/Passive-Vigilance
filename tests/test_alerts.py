@@ -2,6 +2,7 @@
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,6 +105,36 @@ def test_rate_limiter_reset_allows_immediate_realert():
     assert rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is False
     rl.reset("mac:aa:bb:cc:dd:ee:ff")
     assert rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is True
+
+
+def test_rate_limiter_persists_state_to_json(tmp_path):
+    """is_allowed() must write a JSON file when persist_path is set."""
+    persist_file = str(tmp_path / "rate_limits.json")
+    rl = RateLimiter(cooldown_seconds=300, persist_path=persist_file)
+    rl.is_allowed("drone:915mhz")
+
+    import json as _json
+    data = _json.loads(Path(persist_file).read_text())
+    assert "drone:915mhz" in data
+    # Value must be a parseable ISO datetime string
+    from datetime import datetime, timezone
+    dt = datetime.fromisoformat(data["drone:915mhz"])
+    assert dt.tzinfo is not None
+
+
+def test_rate_limiter_loads_state_from_json(tmp_path):
+    """A newly created RateLimiter with persist_path must honour state written by a previous instance."""
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+
+    persist_file = str(tmp_path / "rate_limits.json")
+    # Write a state that recorded an alert 10 seconds ago (still within 300 s cooldown)
+    recent_ts = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    Path(persist_file).write_text(_json.dumps({"drone:915mhz": recent_ts}))
+
+    rl = RateLimiter(cooldown_seconds=300, persist_path=persist_file)
+    # The key should still be blocked because only 10 s have elapsed
+    assert rl.is_allowed("drone:915mhz") is False
 
 
 # ---------------------------------------------------------------------------
