@@ -26,7 +26,6 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y \
             librtlsdr-dev \
-            librtlsdr0 \
             python3-gps \
             gpsd \
             gpsd-clients \
@@ -41,6 +40,17 @@ jobs:
           pip install requests aiohttp python-dotenv
           pip install geopandas fiona shapely
           pip install bleak scapy 2>/dev/null || true
+
+      - name: Fix python3-gps path for virtualenv
+        run: |
+          echo "$(python3 -c 'import sys; print([p for p in sys.path if "dist-packages" in p][0])')" \
+            >> .pth_fix.txt
+          python3 -c "
+          import sys
+          sys.path.insert(0, '/usr/lib/python3/dist-packages')
+          import gps
+          print('gps module accessible at:', gps.__file__)
+          " || echo "gps not accessible via system path — tests will mock it"
 
       - name: Run tests
         run: |
