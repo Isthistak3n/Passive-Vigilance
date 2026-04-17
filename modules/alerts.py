@@ -1,10 +1,12 @@
 """Alert backends — abstract base and concrete implementations."""
 
+import json
 import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -13,6 +15,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+def _derive_persist_path(base: Optional[str], kind: str) -> Optional[str]:
+    """Return a derived persist path for a per-type rate limiter.
+
+    e.g. ``"data/rate_limits.json"`` + ``"drone"``
+    → ``"data/rate_limits_drone.json"``
+    """
+    if not base:
+        return None
+    p = Path(base)
+    return str(p.with_name(p.stem + f"_{kind}" + p.suffix))
+
 
 _NTFY_PRIORITY = {
     "low": "low",
@@ -23,27 +37,93 @@ _NTFY_PRIORITY = {
 
 
 class RateLimiter:
-    """In-memory cooldown tracker. Resets on process restart (intentional)."""
+    """Cooldown tracker with optional JSON persistence across restarts.
 
-    def __init__(self, cooldown_seconds: int = 300) -> None:
+    Internal timing uses ``time.monotonic()`` for accuracy.  When
+    *persist_path* is set, cooldown state is saved as wall-clock ISO
+    timestamps so it survives process restarts.  Stale entries (past
+    the cooldown window) are ignored on load and trimmed on save.
+    """
+
+    def __init__(self, cooldown_seconds: int = 300, persist_path: Optional[str] = None) -> None:
         self._cooldown = cooldown_seconds
-        self._last_alert: dict[str, float] = {}
+        self._persist_path = persist_path
+        self._last_alert: dict[str, float] = {}  # key → time.monotonic() value
+        if persist_path:
+            self._load_state()
 
     def is_allowed(self, key: str) -> bool:
-        """Return True if key has not been alerted within the cooldown period.
+        """Return True if *key* has not been alerted within the cooldown period.
 
-        Records the current time for the key when returning True.
+        Records the current time for the key when returning True and
+        persists the updated state to disk if a persist_path is configured.
         """
         now = time.monotonic()
         last = self._last_alert.get(key)
         if last is None or (now - last) >= self._cooldown:
             self._last_alert[key] = now
+            if self._persist_path:
+                self._save_state()
             return True
+        if self._persist_path:
+            self._save_state()
         return False
 
     def reset(self, key: str) -> None:
         """Manually clear a key's cooldown so it can alert immediately."""
         self._last_alert.pop(key, None)
+        if self._persist_path:
+            self._save_state()
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_state(self) -> None:
+        """Load cooldown state from *persist_path*.
+
+        Reconstructs monotonic timestamps from stored wall-clock datetimes
+        by computing elapsed seconds since the stored timestamp.  Keys whose
+        cooldown has already expired are ignored.
+        """
+        try:
+            path = Path(self._persist_path)
+            if not path.exists():
+                return
+            data: dict = json.loads(path.read_text(encoding="utf-8"))
+            now_real = datetime.now(timezone.utc)
+            now_mono = time.monotonic()
+            loaded = 0
+            for key, ts_str in data.items():
+                try:
+                    ts = datetime.fromisoformat(ts_str)
+                    elapsed = (now_real - ts).total_seconds()
+                    if 0 <= elapsed < self._cooldown:
+                        # Reconstruct monotonic equivalent so remaining cooldown is correct
+                        self._last_alert[key] = now_mono - elapsed
+                        loaded += 1
+                except Exception:
+                    pass
+            logger.debug("RateLimiter: loaded %d active cooldowns from %s", loaded, self._persist_path)
+        except Exception as exc:
+            logger.warning("RateLimiter: could not load state from %s: %s", self._persist_path, exc)
+
+    def _save_state(self) -> None:
+        """Save active cooldown state to *persist_path* as wall-clock ISO timestamps."""
+        now_real = datetime.now(timezone.utc)
+        now_mono = time.monotonic()
+        data: dict[str, str] = {}
+        for key, mono_ts in self._last_alert.items():
+            elapsed = now_mono - mono_ts
+            if elapsed < self._cooldown:  # only save entries still within cooldown
+                wall_ts = now_real - timedelta(seconds=elapsed)
+                data[key] = wall_ts.isoformat()
+        try:
+            path = Path(self._persist_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("RateLimiter: could not save state to %s: %s", self._persist_path, exc)
 
 
 class AlertBackend(ABC):
@@ -79,15 +159,15 @@ class AlertBackend(ABC):
 class NtfyBackend(AlertBackend):
     """Alert backend that publishes to an ntfy topic via HTTP POST."""
 
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Optional[str] = None) -> None:
         self._topic = os.getenv("NTFY_TOPIC", "")
         self._server = os.getenv("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
         drone_cooldown = int(os.getenv("DRONE_ALERT_COOLDOWN_SECONDS", "600"))
         persistence_cooldown = int(os.getenv("PERSISTENCE_ALERT_COOLDOWN_SECONDS", "300"))
         aircraft_cooldown = int(os.getenv("AIRCRAFT_ALERT_COOLDOWN_SECONDS", "60"))
-        self._drone_limiter = RateLimiter(drone_cooldown)
-        self._persistence_limiter = RateLimiter(persistence_cooldown)
-        self._aircraft_limiter = RateLimiter(aircraft_cooldown)
+        self._drone_limiter = RateLimiter(drone_cooldown, persist_path=_derive_persist_path(persist_path, "drone"))
+        self._persistence_limiter = RateLimiter(persistence_cooldown, persist_path=_derive_persist_path(persist_path, "wifi"))
+        self._aircraft_limiter = RateLimiter(aircraft_cooldown, persist_path=_derive_persist_path(persist_path, "aircraft"))
 
     def is_configured(self) -> bool:
         return bool(self._topic)
@@ -174,15 +254,15 @@ class TelegramBackend(AlertBackend):
 
     _API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Optional[str] = None) -> None:
         self._token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self._chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
         drone_cooldown = int(os.getenv("DRONE_ALERT_COOLDOWN_SECONDS", "600"))
         persistence_cooldown = int(os.getenv("PERSISTENCE_ALERT_COOLDOWN_SECONDS", "300"))
         aircraft_cooldown = int(os.getenv("AIRCRAFT_ALERT_COOLDOWN_SECONDS", "60"))
-        self._drone_limiter = RateLimiter(drone_cooldown)
-        self._persistence_limiter = RateLimiter(persistence_cooldown)
-        self._aircraft_limiter = RateLimiter(aircraft_cooldown)
+        self._drone_limiter = RateLimiter(drone_cooldown, persist_path=_derive_persist_path(persist_path, "drone"))
+        self._persistence_limiter = RateLimiter(persistence_cooldown, persist_path=_derive_persist_path(persist_path, "wifi"))
+        self._aircraft_limiter = RateLimiter(aircraft_cooldown, persist_path=_derive_persist_path(persist_path, "aircraft"))
 
     def is_configured(self) -> bool:
         return bool(self._token and self._chat_id)
@@ -275,14 +355,14 @@ class DiscordBackend(AlertBackend):
         "urgent": 0xE74C3C,
     }
 
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Optional[str] = None) -> None:
         self._webhook_url = os.getenv("DISCORD_WEBHOOK_URL", "")
         drone_cooldown = int(os.getenv("DRONE_ALERT_COOLDOWN_SECONDS", "600"))
         persistence_cooldown = int(os.getenv("PERSISTENCE_ALERT_COOLDOWN_SECONDS", "300"))
         aircraft_cooldown = int(os.getenv("AIRCRAFT_ALERT_COOLDOWN_SECONDS", "60"))
-        self._drone_limiter = RateLimiter(drone_cooldown)
-        self._persistence_limiter = RateLimiter(persistence_cooldown)
-        self._aircraft_limiter = RateLimiter(aircraft_cooldown)
+        self._drone_limiter = RateLimiter(drone_cooldown, persist_path=_derive_persist_path(persist_path, "drone"))
+        self._persistence_limiter = RateLimiter(persistence_cooldown, persist_path=_derive_persist_path(persist_path, "wifi"))
+        self._aircraft_limiter = RateLimiter(aircraft_cooldown, persist_path=_derive_persist_path(persist_path, "aircraft"))
 
     def is_configured(self) -> bool:
         return bool(self._webhook_url)
@@ -442,12 +522,20 @@ class AlertFactory:
     """Creates and returns configured alert backend instances."""
 
     @staticmethod
-    def get_backend(backend_name: Optional[str] = None) -> AlertBackend:
+    def get_backend(
+        backend_name: Optional[str] = None,
+        persist_path: Optional[str] = None,
+    ) -> AlertBackend:
         """Return the appropriate backend instance.
 
         Reads ALERT_BACKEND from .env if backend_name is not provided.
         Falls back to ConsoleBackend if the requested backend is not configured.
         Logs a warning if requested backend is unknown or unconfigured.
+
+        Args:
+            backend_name: Override the backend name (ignores ALERT_BACKEND env var).
+            persist_path: Base path for rate-limiter persistence files.  Pass
+                ``None`` (default) for in-memory-only rate limiting.
         """
         if backend_name is None:
             backend_name = os.getenv("ALERT_BACKEND", "console").lower().strip()
@@ -459,7 +547,11 @@ class AlertFactory:
             )
             return ConsoleBackend()
 
-        backend = backend_class()
+        # ConsoleBackend has no rate limiters — don't pass persist_path
+        if backend_class is ConsoleBackend:
+            backend = ConsoleBackend()
+        else:
+            backend = backend_class(persist_path=persist_path)
         if not backend.is_configured():
             logger.warning(
                 "Alert backend %r is not configured — falling back to ConsoleBackend",

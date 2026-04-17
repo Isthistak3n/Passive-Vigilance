@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 _VERSION = "0.1.0"
 _SESSION_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
+_RATE_LIMIT_PERSIST = "data/rate_limits.json"
 
 
 class PassiveVigilance:
@@ -68,7 +69,10 @@ class PassiveVigilance:
         self._gps_fix_count: int = 0
         self._current_fix: Optional[dict] = None
 
-        # Modules — KismetModule receives ignore_list after IgnoreList is ready
+        # Per-session output directory (created on first write)
+        self._session_dir: Path = Path(_SESSION_OUTPUT_DIR) / self.session_id
+
+        # Modules
         self.gps = GPSModule()
         self.ignore_list = IgnoreList(data_dir="data/ignore_lists")
         self.kismet = KismetModule(gps_module=self.gps, ignore_list=self.ignore_list)
@@ -76,8 +80,8 @@ class PassiveVigilance:
         self.drone_rf = DroneRFModule(gps_module=self.gps)
         self.persistence = PersistenceEngine()
         self.probe_analyzer = ProbeAnalyzer()
-        self.alert_backend = AlertFactory.get_backend()
-        self.rate_limiter = RateLimiter()
+        self.alert_backend = AlertFactory.get_backend(persist_path=_RATE_LIMIT_PERSIST)
+        self.rate_limiter = RateLimiter(persist_path=_RATE_LIMIT_PERSIST)
         self.shapefile_writer = ShapefileWriter()
         self.wigle_uploader = WiGLEUploader()
 
@@ -104,7 +108,7 @@ class PassiveVigilance:
     # ------------------------------------------------------------------
 
     async def startup(self) -> None:
-        """Connect all modules. Failures are logged as warnings and skipped."""
+        """Connect all modules with graceful degradation, then validate config."""
         logger.info("Starting Passive Vigilance %s — session %s", _VERSION, self.session_id)
 
         # GPS
@@ -114,6 +118,26 @@ class PassiveVigilance:
             logger.info("GPS: connected to gpsd")
         except Exception as exc:
             logger.warning("GPS: unavailable (%s) — continuing without GPS", exc)
+
+        # Wait up to 30 s for a GPS fix before continuing
+        if self._gps_active:
+            logger.info("GPS: waiting up to 30 s for first fix...")
+            loop = asyncio.get_running_loop()
+            for _ in range(30):
+                try:
+                    fix = await loop.run_in_executor(None, self.gps.get_fix)
+                except Exception:
+                    fix = None
+                if fix:
+                    self._current_fix = fix
+                    self._gps_fix_count += 1
+                    logger.info("GPS: fix acquired (%.4f, %.4f)", fix["lat"], fix["lon"])
+                    break
+                await asyncio.sleep(1)
+            else:
+                logger.warning(
+                    "⚠  No GPS fix within 30 s — detections will not be location-stamped"
+                )
 
         # Kismet
         try:
@@ -138,7 +162,40 @@ class PassiveVigilance:
         except Exception as exc:
             logger.warning("DroneRF: scan not started (%s)", exc)
 
+        # Configuration validation — warn about anything that will silently degrade
+        self._validate_config()
         self._log_startup_banner()
+
+    def _validate_config(self) -> None:
+        """Warn prominently about missing configuration that reduces effectiveness."""
+        issues: list[str] = []
+
+        # Alert backend
+        if not (
+            os.getenv("NTFY_TOPIC")
+            or os.getenv("TELEGRAM_BOT_TOKEN")
+            or os.getenv("DISCORD_WEBHOOK_URL")
+        ):
+            issues.append(
+                "Alert backend not configured — alerts will go to console only. "
+                "Set NTFY_TOPIC, TELEGRAM_BOT_TOKEN, or DISCORD_WEBHOOK_URL in .env"
+            )
+
+        # Kismet API key
+        if not os.getenv("KISMET_API_KEY"):
+            issues.append(
+                "Kismet API key not set — WiFi/BT capture disabled. "
+                "Generate one at http://<pi-ip>:2501 → Settings → API Keys"
+            )
+
+        # GPS (already warned above if no fix; only warn here if GPS never connected)
+        if not self._gps_active:
+            issues.append(
+                "GPS not connected — detections will not be location-stamped"
+            )
+
+        for issue in issues:
+            logger.warning("⚠  CONFIG: %s", issue)
 
     # ------------------------------------------------------------------
     # Event loop
@@ -210,12 +267,16 @@ class PassiveVigilance:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             self.aircraft_detections.append(event)
+            self._append_jsonl(self._session_dir / "aircraft.jsonl", event)
 
             emergency = aircraft.get("emergency", False)
             if emergency:
                 # Emergency: bypass rate limiter and alert immediately
                 self.alert_backend.send_aircraft_alert(aircraft)
-                logger.warning("EMERGENCY aircraft: icao=%s callsign=%s", icao, aircraft.get("callsign", ""))
+                logger.warning(
+                    "EMERGENCY aircraft: icao=%s callsign=%s",
+                    icao, aircraft.get("callsign", ""),
+                )
             else:
                 if self.rate_limiter.is_allowed(f"aircraft:{icao}"):
                     self.alert_backend.send_aircraft_alert(aircraft)
@@ -237,12 +298,14 @@ class PassiveVigilance:
             logger.debug("Kismet poll error: %s", exc)
             return
 
-        # Probe pattern analysis
+        logger.debug("Kismet: polled %d device(s)", len(devices))
+
+        # Probe pattern analysis (runs every cycle regardless of persistence threshold)
         suspicious = self.probe_analyzer.analyze(devices)
         if suspicious:
             logger.info("ProbeAnalyzer: %d suspicious probe pattern(s) detected", len(suspicious))
 
-        # Persistence scoring
+        # Persistence scoring — returns DetectionEvents above alert_threshold
         try:
             detection_events = self.persistence.update(devices, gps_fix=self._current_fix)
         except Exception as exc:
@@ -253,20 +316,21 @@ class PassiveVigilance:
             lat = event.locations[0]["lat"] if event.locations else None
             lon = event.locations[0]["lon"] if event.locations else None
             event_dict = {
-                "event_type":       "wifi",
-                "mac":              event.mac,
-                "score":            event.score,
-                "alert_level":      event.alert_level,
-                "manufacturer":     event.manufacturer,
-                "device_type":      event.device_type,
-                "first_seen":       event.first_seen.isoformat(),
-                "last_seen":        event.last_seen.isoformat(),
+                "event_type":        "wifi",
+                "mac":               event.mac,
+                "score":             event.score,
+                "alert_level":       event.alert_level,
+                "manufacturer":      event.manufacturer,
+                "device_type":       event.device_type,
+                "first_seen":        event.first_seen.isoformat(),
+                "last_seen":         event.last_seen.isoformat(),
                 "observation_count": event.observation_count,
-                "lat":              lat,
-                "lon":              lon,
-                "timestamp":        datetime.now(timezone.utc).isoformat(),
+                "lat":               lat,
+                "lon":               lon,
+                "timestamp":         datetime.now(timezone.utc).isoformat(),
             }
             self.all_events.append(event_dict)
+            self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
 
             if self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self.alert_backend.send_persistence_alert(event)
@@ -274,6 +338,9 @@ class PassiveVigilance:
                     "Persistence alert: mac=%s score=%.2f level=%s",
                     event.mac, event.score, event.alert_level,
                 )
+
+        # Purge observations older than the maximum tracking window
+        self.persistence.purge_old_observations()
 
     # ------------------------------------------------------------------
     # Drone RF — drain detections every 5 seconds
@@ -301,6 +368,7 @@ class PassiveVigilance:
                 "timestamp":  detection.get("timestamp", datetime.now(timezone.utc).isoformat()),
             }
             self.drone_detections.append(event_dict)
+            self._append_jsonl(self._session_dir / "drone.jsonl", event_dict)
 
             alert_detection = {
                 "freq_mhz": freq,
@@ -343,15 +411,15 @@ class PassiveVigilance:
 
         # Write session summary
         summary = {
-            "session_id":            self.session_id,
-            "start_time":            self.session_start.isoformat(),
-            "end_time":              end_time.isoformat(),
-            "duration_seconds":      int((end_time - self.session_start).total_seconds()),
-            "gps_fixes_received":    self._gps_fix_count,
+            "session_id":             self.session_id,
+            "start_time":             self.session_start.isoformat(),
+            "end_time":               end_time.isoformat(),
+            "duration_seconds":       int((end_time - self.session_start).total_seconds()),
+            "gps_fixes_received":     self._gps_fix_count,
             "unique_devices_tracked": len({e["mac"] for e in self.all_events}),
-            "persistent_detections": len(self.all_events),
-            "aircraft_detected":     len(self.aircraft_detections),
-            "drone_detections":      len(self.drone_detections),
+            "persistent_detections":  len(self.all_events),
+            "aircraft_detected":      len(self.aircraft_detections),
+            "drone_detections":       len(self.drone_detections),
             "modules_active": {
                 "gps":      self._gps_active,
                 "kismet":   self._kismet_active,
@@ -360,9 +428,8 @@ class PassiveVigilance:
             },
         }
 
-        session_dir = Path(_SESSION_OUTPUT_DIR) / self.session_id
-        session_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = session_dir / "summary.json"
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = self._session_dir / "summary.json"
         with open(summary_path, "w", encoding="utf-8") as fh:
             json.dump(summary, fh, indent=2, default=str)
         logger.info("Session summary → %s", summary_path)
@@ -396,6 +463,20 @@ class PassiveVigilance:
     # Helpers
     # ------------------------------------------------------------------
 
+    def _append_jsonl(self, path: Path, data: dict) -> None:
+        """Append *data* as a single JSON line to *path* (JSON Lines format).
+
+        Creates the file and parent directories on first write.  Errors are
+        logged at DEBUG level and swallowed so a write failure never kills
+        the sensor loop.
+        """
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(data, default=str) + "\n")
+        except Exception as exc:
+            logger.debug("JSONL append error (%s): %s", path.name, exc)
+
     def _log_startup_banner(self) -> None:
         drone_status = "active" if self._drone_active else "hardware absent"
         active_parts = []
@@ -408,7 +489,7 @@ class PassiveVigilance:
         active_parts.append(f"DroneRF ({drone_status})")
 
         backend_name = type(self.alert_backend).__name__.replace("Backend", "")
-        output_dir = Path(_SESSION_OUTPUT_DIR) / self.session_id
+        output_dir = self._session_dir
 
         logger.info("=" * 60)
         logger.info("Passive Vigilance v%s — Session %s", _VERSION, self.session_id)
