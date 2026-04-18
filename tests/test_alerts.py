@@ -164,6 +164,7 @@ def test_ntfy_send_calls_correct_url():
     with patch.dict(os.environ, {"NTFY_TOPIC": "test-topic", "NTFY_SERVER": "https://ntfy.sh"}):
         backend = NtfyBackend()
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
             result = backend.send("Title", "Body", priority="high", tags=["tag1"])
@@ -181,6 +182,7 @@ def test_ntfy_send_returns_false_on_http_error():
         backend = NtfyBackend()
         import requests as req_lib
         mock_resp = MagicMock()
+        mock_resp.status_code = 403
         mock_resp.raise_for_status.side_effect = req_lib.HTTPError("403")
         with patch("modules.alerts.requests.post", return_value=mock_resp):
             result = backend.send("Title", "Body")
@@ -205,6 +207,7 @@ def test_ntfy_send_drone_alert_formats_message():
     with patch.dict(os.environ, {"NTFY_TOPIC": "test-topic"}):
         backend = NtfyBackend()
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
             backend.send_drone_alert(_make_drone())
@@ -228,6 +231,7 @@ def test_ntfy_send_persistence_alert_formats_message():
         backend = NtfyBackend()
         event = _make_event()
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
             backend.send_persistence_alert(event)
@@ -250,6 +254,7 @@ def test_ntfy_send_aircraft_alert_includes_emergency_flag():
         backend = NtfyBackend()
         aircraft = _make_aircraft(emergency=True)
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
             backend.send_aircraft_alert(aircraft)
@@ -265,6 +270,7 @@ def test_ntfy_send_aircraft_alert_non_emergency_is_default_priority():
         backend = NtfyBackend()
         aircraft = _make_aircraft(emergency=False)
         mock_resp = MagicMock()
+        mock_resp.status_code = 200
         mock_resp.raise_for_status.return_value = None
         with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
             backend.send_aircraft_alert(aircraft)
