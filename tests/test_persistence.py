@@ -189,6 +189,17 @@ class TestPurgeObservations(unittest.TestCase):
         pe.purge_old_observations(max_age_minutes=60)
         self.assertNotIn(MAC_A, pe._observations)
 
+    def test_purge_called_every_10_cycles(self):
+        """purge_old_observations() is called on every 10th update() cycle, not every cycle."""
+        from unittest.mock import patch
+        pe = PersistenceEngine()
+        with patch.object(pe, "purge_old_observations") as mock_purge:
+            for i in range(1, 10):
+                pe.update([], gps_fix=None)
+            mock_purge.assert_not_called()
+            pe.update([], gps_fix=None)  # 10th call
+            mock_purge.assert_called_once()
+
 
 class TestGetSuspiciousDevices(unittest.TestCase):
 
