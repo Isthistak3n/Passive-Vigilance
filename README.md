@@ -1,7 +1,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-188%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-207%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.2--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -125,9 +125,10 @@ flowchart TD
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
 | KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
+| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream — 15 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, session management — 17 tests |
 
-**188 tests passing** across all modules.
+**207 tests passing** across all modules.
 
 ---
 
@@ -202,6 +203,14 @@ Passive-Vigilance/
 │   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
 │   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
 │   └── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
+├── gui/
+│   ├── __init__.py                   # Empty package marker
+│   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*
+│   ├── templates/
+│   │   └── index.html                # Dark-theme SPA; 5 tabs; Leaflet map; SSE client
+│   └── static/
+│       ├── app.js                    # SSE client; Leaflet markers; table rendering; tab switching
+│       └── style.css                 # Dark theme; KML-matched alert colors; touch-friendly
 ├── tests/
 │   ├── test_gps.py                   # 9 tests — GPSModule
 │   ├── test_kismet.py                # 10 tests — KismetModule
@@ -212,6 +221,7 @@ Passive-Vigilance/
 │   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
 │   ├── test_kml_writer.py            # 14 tests — KMLWriter
+│   ├── test_gui.py                   # 11 tests — GUIServer
 │   └── test_alerts.py                # 24 tests — AlertEngine
 ├── scripts/
 │   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
@@ -254,6 +264,8 @@ Key variables:
 | `KISMET_PORT` | Kismet REST API port | `2501` |
 | `DUMP1090_HOST` | readsb/dump1090 host | `localhost` |
 | `LOG_LEVEL` | Python logging level | `INFO` |
+| `GUI_ENABLED` | Enable live web dashboard (requires `pip install flask`) | `false` |
+| `GUI_PORT` | Web dashboard port | `5000` |
 
 ---
 

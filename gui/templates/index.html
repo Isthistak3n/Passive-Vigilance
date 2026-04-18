@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Passive Vigilance</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+</head>
+<body>
+  <header>
+    <span class="logo">Passive Vigilance</span>
+    <div class="status-bar">
+      <span class="sensor" id="s-gps" title="GPS">GPS</span>
+      <span class="sensor" id="s-kismet" title="Kismet">WiFi</span>
+      <span class="sensor" id="s-adsb" title="ADS-B">ADS-B</span>
+      <span class="sensor" id="s-drone-rf" title="Drone RF">Drone</span>
+      <span class="session-id" id="session-id">—</span>
+    </div>
+  </header>
+
+  <nav>
+    <button class="tab-btn active" data-tab="map">Map</button>
+    <button class="tab-btn" data-tab="wifi">
+      WiFi/BT <span class="badge" id="badge-wifi">0</span>
+    </button>
+    <button class="tab-btn" data-tab="aircraft">
+      Aircraft <span class="badge" id="badge-aircraft">0</span>
+    </button>
+    <button class="tab-btn" data-tab="drone">
+      Drone RF <span class="badge" id="badge-drone">0</span>
+    </button>
+    <button class="tab-btn" data-tab="alerts">
+      Alerts <span class="badge alert-badge" id="badge-alerts">0</span>
+    </button>
+  </nav>
+
+  <main>
+    <!-- Map tab -->
+    <section id="tab-map" class="tab-panel active">
+      <div id="map"></div>
+      <div class="map-legend">
+        <span class="legend-item"><span class="dot wifi-high"></span>High</span>
+        <span class="legend-item"><span class="dot wifi-likely"></span>Likely</span>
+        <span class="legend-item"><span class="dot wifi-suspicious"></span>Suspicious</span>
+        <span class="legend-item"><span class="dot aircraft-dot"></span>Aircraft</span>
+        <span class="legend-item"><span class="dot drone-dot"></span>Drone RF</span>
+      </div>
+    </section>
+
+    <!-- WiFi/BT tab -->
+    <section id="tab-wifi" class="tab-panel">
+      <div class="toolbar">
+        <input type="text" id="wifi-search" placeholder="Filter by MAC, type, score…">
+        <button id="wifi-clear" class="btn-sm">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>MAC</th>
+              <th>Type</th>
+              <th>Score</th>
+              <th>Alert</th>
+              <th>Seen</th>
+              <th>Manufacturer</th>
+              <th>Last</th>
+            </tr>
+          </thead>
+          <tbody id="wifi-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Aircraft tab -->
+    <section id="tab-aircraft" class="tab-panel">
+      <div class="toolbar">
+        <input type="text" id="aircraft-search" placeholder="Filter by callsign, ICAO…">
+        <button id="aircraft-clear" class="btn-sm">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Callsign</th>
+              <th>ICAO</th>
+              <th>Reg</th>
+              <th>Alt (ft)</th>
+              <th>Speed</th>
+              <th>Emergency</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="aircraft-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Drone tab -->
+    <section id="tab-drone" class="tab-panel">
+      <div class="toolbar">
+        <input type="text" id="drone-search" placeholder="Filter by frequency…">
+        <button id="drone-clear" class="btn-sm">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Freq (MHz)</th>
+              <th>Power (dBm)</th>
+              <th>Lat</th>
+              <th>Lon</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="drone-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Alerts tab -->
+    <section id="tab-alerts" class="tab-panel">
+      <div class="toolbar">
+        <button id="alerts-clear" class="btn-sm">Clear</button>
+      </div>
+      <div id="alerts-feed"></div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
