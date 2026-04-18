@@ -1,7 +1,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-174%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-188%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.2--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -42,7 +42,8 @@ with any device or network.**
 - **Wardriving** — automatically upload session data to WiGLE.net to
   contribute to the global RF database
 - **GIS analysis** — all detections are GPS-stamped and exported as
-  shapefiles for post-session analysis in QGIS or ArcGIS
+  shapefiles, GeoJSON, and KML for post-session analysis in QGIS, ArcGIS,
+  Google Earth, or Google Maps
 - **Field security** — deploy as a standalone sensor at events, locations,
   or during travel for passive RF situational awareness
 
@@ -122,10 +123,11 @@ flowchart TD
 | Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 27 tests |
 | Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 24 tests |
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
+| KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, session management — 17 tests |
 
-**174 tests passing** across all modules.
+**188 tests passing** across all modules.
 
 ---
 
@@ -195,6 +197,7 @@ Passive-Vigilance/
 │   ├── ignore_list.py                # IgnoreList — MAC/OUI/SSID filter; atomic JSON persistence
 │   ├── mac_utils.py                  # MAC randomization detection, type classification, fingerprinting
 │   ├── alerts.py                     # AlertBackend ABC + Ntfy / Telegram / Discord / Console backends
+│   ├── kml_writer.py                 # KMLWriter — Google Earth KML with color-coded placemarks and track lines
 │   ├── persistence.py                # PersistenceEngine — time-window scoring; DetectionEvent dataclass
 │   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
 │   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
@@ -208,6 +211,7 @@ Passive-Vigilance/
 │   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
 │   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
+│   ├── test_kml_writer.py            # 14 tests — KMLWriter
 │   └── test_alerts.py                # 24 tests — AlertEngine
 ├── scripts/
 │   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
