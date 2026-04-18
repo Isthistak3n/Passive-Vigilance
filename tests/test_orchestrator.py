@@ -370,3 +370,122 @@ async def test_poll_adsb_appends_to_jsonl(orch, tmp_path):
     assert jsonl_path.exists(), "aircraft.jsonl was not created"
     line = json.loads(jsonl_path.read_text().strip())
     assert line["icao"] == "TEST01"
+
+
+# ---------------------------------------------------------------------------
+# _log_health_banner()
+# ---------------------------------------------------------------------------
+
+
+def test_health_banner_logs_at_info(orch, caplog):
+    """_log_health_banner() emits at least one INFO-level log line."""
+    import logging
+    with caplog.at_level(logging.INFO):
+        orch._log_health_banner()
+    assert any(r.levelno == logging.INFO for r in caplog.records)
+
+
+def test_health_banner_includes_session_id(orch, caplog):
+    """Health banner must contain the session ID."""
+    import logging
+    orch.session_id = "20260101_120000"
+    with caplog.at_level(logging.INFO):
+        orch._log_health_banner()
+    all_msgs = " ".join(r.message for r in caplog.records)
+    assert "20260101_120000" in all_msgs
+
+
+def test_health_banner_reflects_sensor_degradation(orch, caplog):
+    """Health banner must show Degraded when a sensor is unhealthy."""
+    import logging
+    orch._sensor_health["kismet"] = False
+    with caplog.at_level(logging.INFO):
+        orch._log_health_banner()
+    all_msgs = " ".join(r.message for r in caplog.records)
+    assert "Degraded" in all_msgs
+
+
+# ---------------------------------------------------------------------------
+# _reconnect()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconnect_returns_true_on_success(orch):
+    """_reconnect() returns True and sets sensor health when reconnect succeeds."""
+    orch._sensor_health["kismet"] = False
+    orch.kismet.close = AsyncMock()
+    orch.kismet.connect = AsyncMock()
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await orch._reconnect("kismet")
+    assert result is True
+    assert orch._sensor_health["kismet"] is True
+
+
+@pytest.mark.asyncio
+async def test_reconnect_returns_false_after_max_attempts(orch):
+    """_reconnect() returns False when all reconnect attempts fail."""
+    orch._max_reconnect_attempts = 3
+    orch.kismet.close = AsyncMock()
+    orch.kismet.connect = AsyncMock(side_effect=ConnectionError("still down"))
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await orch._reconnect("kismet")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_reconnect_logs_warning_on_each_attempt(orch, caplog):
+    """_reconnect() must log a WARNING for each attempt."""
+    import logging
+    orch._max_reconnect_attempts = 2
+    orch.kismet.close = AsyncMock()
+    orch.kismet.connect = AsyncMock(side_effect=ConnectionError("down"))
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        with caplog.at_level(logging.WARNING):
+            await orch._reconnect("kismet")
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) >= 2
+
+
+@pytest.mark.asyncio
+async def test_reconnect_logs_error_when_all_attempts_fail(orch, caplog):
+    """_reconnect() must log ERROR after exhausting all attempts."""
+    import logging
+    orch._max_reconnect_attempts = 1
+    orch.kismet.close = AsyncMock()
+    orch.kismet.connect = AsyncMock(side_effect=ConnectionError("down"))
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        with caplog.at_level(logging.ERROR):
+            await orch._reconnect("kismet")
+    assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Poll loop reconnect triggering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_triggers_reconnect_on_health_transition(orch):
+    """_poll_kismet() calls _reconnect() when sensor first degrades."""
+    orch._kismet_active = True
+    orch._sensor_health["kismet"] = True
+    orch.kismet.poll_devices = AsyncMock(side_effect=ConnectionError("down"))
+
+    with patch.object(orch, "_reconnect", new_callable=AsyncMock, return_value=True) as mock_rc:
+        await orch._poll_kismet()
+
+    mock_rc.assert_called_once_with("kismet")
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_does_not_reconnect_on_repeated_failure(orch):
+    """_poll_kismet() does NOT call _reconnect() when sensor is already degraded."""
+    orch._kismet_active = True
+    orch._sensor_health["kismet"] = False  # already degraded
+    orch.kismet.poll_devices = AsyncMock(side_effect=ConnectionError("still down"))
+
+    with patch.object(orch, "_reconnect", new_callable=AsyncMock) as mock_rc:
+        await orch._poll_kismet()
+
+    mock_rc.assert_not_called()

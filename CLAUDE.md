@@ -191,6 +191,10 @@ Re-run the monitor mode commands after any NM restart.
 - `_SESSION_OUTPUT_DIR` is a module-level constant read at import time — patch `main._SESSION_OUTPUT_DIR` in tests, not env
 - `ShapefileWriter` (`modules/shapefile.py`) — geopandas/fiona; installed via `python3-geopandas` apt package
 - `WiGLEUploader` (`modules/wigle.py`) — multipart POST to `https://api.wigle.net/api/v2/file/upload`; HTTP Basic auth
+- `_health_banner_loop()` — 5th background task; sleeps `HEALTH_BANNER_INTERVAL_SECONDS` (default 300) then calls `_log_health_banner()`; structured INFO log visible in journalctl
+- `_log_health_banner()` — emits session ID, uptime, per-sensor health (✓/✗), cumulative stats from `_stats` dict
+- `_stats` dict keys: `kismet_devices_seen`, `aircraft_seen`, `drone_detections`, `alerts_sent`, `alerts_rate_limited`, `persistent_detections` — incremented in poll loops
+- `_reconnect(module_name)` — async; close() then connect() with up to `MAX_RECONNECT_ATTEMPTS` (default 3) tries, `RECONNECT_INTERVAL_SECONDS` (default 5) sleep between; triggered only on `True→False` health transition (not repeated failures); sets `_sensor_health[name] = True` on success; logs ERROR and returns False on exhaustion; supports "gps", "kismet", "adsb" (GPS methods wrapped in `run_in_executor`)
 
 ## Ignore Lists
 

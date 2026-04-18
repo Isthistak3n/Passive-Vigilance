@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_VERSION = "0.2-alpha"
+_VERSION = "0.2.1-alpha"
 _SESSION_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
 _RATE_LIMIT_PERSIST = "data/rate_limits.json"
 
@@ -75,6 +75,21 @@ class PassiveVigilance:
             "adsb": True,
             "drone_rf": True,
         }
+
+        # Operational stats — populated by poll loops, displayed in health banner
+        self._stats: dict[str, int] = {
+            "kismet_devices_seen": 0,
+            "aircraft_seen": 0,
+            "drone_detections": 0,
+            "alerts_sent": 0,
+            "alerts_rate_limited": 0,
+            "persistent_detections": 0,
+        }
+
+        # Reconnect / health banner config (tunable via .env)
+        self._max_reconnect_attempts = int(os.getenv("MAX_RECONNECT_ATTEMPTS", "3"))
+        self._reconnect_interval = int(os.getenv("RECONNECT_INTERVAL_SECONDS", "5"))
+        self._health_banner_interval = int(os.getenv("HEALTH_BANNER_INTERVAL_SECONDS", "300"))
 
         # Session accumulators
         self.all_events: list[dict] = []           # WiFi persistence detections
@@ -224,6 +239,7 @@ class PassiveVigilance:
             asyncio.create_task(self._poll_adsb_loop(), name="poll-adsb"),
             asyncio.create_task(self._poll_kismet_loop(), name="poll-kismet"),
             asyncio.create_task(self._poll_drone_rf_loop(), name="poll-dronrf"),
+            asyncio.create_task(self._health_banner_loop(), name="health-banner"),
         ]
         await self._stop.wait()
         for task in tasks:
@@ -249,6 +265,9 @@ class PassiveVigilance:
                 logger.warning("Sensor gps degraded: %s", exc)
                 self._console_alert(f"Sensor gps degraded: {exc}")
                 self._sensor_health["gps"] = False
+                reconnected = await self._reconnect("gps")
+                if not reconnected:
+                    logger.error("GPS failed to reconnect — continuing with degraded state")
             else:
                 logger.debug("GPS poll error (repeated): %s", exc)
             return
@@ -284,6 +303,9 @@ class PassiveVigilance:
                 logger.warning("Sensor adsb degraded: %s", exc)
                 self._console_alert(f"Sensor adsb degraded: {exc}")
                 self._sensor_health["adsb"] = False
+                reconnected = await self._reconnect("adsb")
+                if not reconnected:
+                    logger.error("ADS-B failed to reconnect — continuing with degraded state")
             else:
                 logger.debug("ADS-B poll error (repeated): %s", exc)
             return
@@ -293,6 +315,7 @@ class PassiveVigilance:
 
         for aircraft in aircraft_list:
             icao = aircraft.get("icao", "unknown")
+            self._stats["aircraft_seen"] += 1
             event = {
                 **aircraft,
                 "event_type": "aircraft",
@@ -305,6 +328,7 @@ class PassiveVigilance:
             if emergency:
                 # Emergency: bypass rate limiter and alert immediately
                 self.alert_backend.send_aircraft_alert(aircraft)
+                self._stats["alerts_sent"] += 1
                 logger.warning(
                     "EMERGENCY aircraft: icao=%s callsign=%s",
                     icao, aircraft.get("callsign", ""),
@@ -312,6 +336,9 @@ class PassiveVigilance:
             else:
                 if self.rate_limiter.is_allowed(f"aircraft:{icao}"):
                     self.alert_backend.send_aircraft_alert(aircraft)
+                    self._stats["alerts_sent"] += 1
+                else:
+                    self._stats["alerts_rate_limited"] += 1
 
     # ------------------------------------------------------------------
     # Kismet / WiFi+BT polling — every 30 seconds
@@ -331,6 +358,9 @@ class PassiveVigilance:
                 logger.warning("Sensor kismet degraded: %s", exc)
                 self._console_alert(f"Sensor kismet degraded: {exc}")
                 self._sensor_health["kismet"] = False
+                reconnected = await self._reconnect("kismet")
+                if not reconnected:
+                    logger.error("Kismet failed to reconnect — continuing with degraded state")
             else:
                 logger.debug("Kismet poll error (repeated): %s", exc)
             return
@@ -338,6 +368,7 @@ class PassiveVigilance:
             logger.info("Sensor kismet recovered")
             self._sensor_health["kismet"] = True
 
+        self._stats["kismet_devices_seen"] += len(devices)
         logger.debug("Kismet: polled %d device(s)", len(devices))
 
         # Probe pattern analysis (runs every cycle regardless of persistence threshold)
@@ -353,6 +384,7 @@ class PassiveVigilance:
             return
 
         for event in detection_events:
+            self._stats["persistent_detections"] += 1
             lat = event.locations[0]["lat"] if event.locations else None
             lon = event.locations[0]["lon"] if event.locations else None
             event_dict = {
@@ -374,10 +406,13 @@ class PassiveVigilance:
 
             if self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self.alert_backend.send_persistence_alert(event)
+                self._stats["alerts_sent"] += 1
                 logger.info(
                     "Persistence alert: mac=%s score=%.2f level=%s",
                     event.mac, event.score, event.alert_level,
                 )
+            else:
+                self._stats["alerts_rate_limited"] += 1
 
     # ------------------------------------------------------------------
     # Drone RF — drain detections every 5 seconds
@@ -408,6 +443,7 @@ class PassiveVigilance:
 
         for detection in pending:
             freq = detection.get("freq_mhz", 0)
+            self._stats["drone_detections"] += 1
             event_dict = {
                 "event_type": "drone",
                 "freq_mhz":   freq,
@@ -427,7 +463,10 @@ class PassiveVigilance:
             }
             if self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
                 self.alert_backend.send_drone_alert(alert_detection)
+                self._stats["alerts_sent"] += 1
                 logger.info("Drone RF alert: %.1f MHz  %.1f dBm", freq, detection.get("power_db", 0))
+            else:
+                self._stats["alerts_rate_limited"] += 1
 
     # ------------------------------------------------------------------
     # Shutdown
@@ -507,6 +546,113 @@ class PassiveVigilance:
             len(self.aircraft_detections),
             len(self.drone_detections),
         )
+
+    # ------------------------------------------------------------------
+    # Health banner
+    # ------------------------------------------------------------------
+
+    async def _health_banner_loop(self) -> None:
+        while not self._stop.is_set():
+            await asyncio.sleep(self._health_banner_interval)
+            if not self._stop.is_set():
+                self._log_health_banner()
+
+    def _log_health_banner(self) -> None:
+        """Emit a structured health summary visible in journalctl."""
+        uptime = datetime.now(timezone.utc) - self.session_start
+        total_secs = int(uptime.total_seconds())
+        h = total_secs // 3600
+        m = (total_secs % 3600) // 60
+        s = total_secs % 60
+        uptime_str = f"{h}h {m:02d}m {s:02d}s"
+
+        if self._current_fix:
+            gps_status = "✓ Fixed"
+            gps_loc = f"Lat: {self._current_fix['lat']:.4f} Lon: {self._current_fix['lon']:.4f}"
+        else:
+            gps_status = "✗ No fix"
+            gps_loc = "Lat: N/A  Lon: N/A"
+
+        def _status(key: str) -> str:
+            return "✓ Active" if self._sensor_health.get(key, False) else "✗ Degraded"
+
+        backend_name = type(self.alert_backend).__name__.replace("Backend", "")
+        sep = "─" * 54
+
+        logger.info(sep)
+        logger.info("── Passive Vigilance Health ──────────────────────────")
+        logger.info("Session: %s | Uptime: %s", self.session_id, uptime_str)
+        logger.info("GPS:     %s | %s", gps_status, gps_loc)
+        logger.info("Kismet:  %s | Devices seen: %d", _status("kismet"), self._stats["kismet_devices_seen"])
+        logger.info("ADS-B:   %s | Aircraft: %d", _status("adsb"), self._stats["aircraft_seen"])
+        logger.info("DroneRF: %s | Detections: %d", _status("drone_rf"), self._stats["drone_detections"])
+        logger.info(
+            "Alerts:  %s | Sent: %d | Rate-limited: %d",
+            backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"],
+        )
+        logger.info(
+            "Events:  %d persistent | %d aircraft | %d drone",
+            self._stats["persistent_detections"],
+            self._stats["aircraft_seen"],
+            self._stats["drone_detections"],
+        )
+        logger.info(sep)
+
+    # ------------------------------------------------------------------
+    # Reconnection
+    # ------------------------------------------------------------------
+
+    async def _reconnect(self, module_name: str) -> bool:
+        """Close and reconnect a degraded sensor module.
+
+        Tries up to MAX_RECONNECT_ATTEMPTS times with RECONNECT_INTERVAL_SECONDS
+        between each attempt.  Returns True if reconnection succeeds, False if
+        all attempts are exhausted.
+        """
+        max_attempts = self._max_reconnect_attempts
+        for attempt in range(1, max_attempts + 1):
+            logger.warning(
+                "Attempting reconnect %s (%d/%d)...", module_name, attempt, max_attempts
+            )
+            try:
+                if module_name == "gps":
+                    loop = asyncio.get_running_loop()
+                    try:
+                        await loop.run_in_executor(None, self.gps.close)
+                    except Exception:
+                        pass
+                    await loop.run_in_executor(None, self.gps.connect)
+                elif module_name == "kismet":
+                    try:
+                        await self.kismet.close()
+                    except Exception:
+                        pass
+                    await self.kismet.connect()
+                elif module_name == "adsb":
+                    try:
+                        await self.adsb.close()
+                    except Exception:
+                        pass
+                    await self.adsb.connect()
+                else:
+                    logger.warning("_reconnect: unknown module %r — skipping", module_name)
+                    return False
+                logger.info("Sensor %s reconnected successfully", module_name)
+                self._sensor_health[module_name] = True
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "Reconnect attempt %d/%d failed for %s: %s",
+                    attempt, max_attempts, module_name, exc,
+                )
+                if attempt < max_attempts:
+                    await asyncio.sleep(self._reconnect_interval)
+
+        logger.error(
+            "Sensor %s failed to reconnect after %d attempts — giving up until next health check",
+            module_name, max_attempts,
+        )
+        return False
 
     # ------------------------------------------------------------------
     # Helpers
