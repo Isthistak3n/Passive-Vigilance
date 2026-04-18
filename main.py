@@ -28,6 +28,13 @@ from modules.probe_analyzer import ProbeAnalyzer
 from modules.shapefile import ShapefileWriter
 from modules.wigle import WiGLEUploader
 
+_GUI_ENABLED = os.getenv("GUI_ENABLED", "false").lower() == "true"
+_GUI_HOST    = os.getenv("GUI_HOST", "0.0.0.0")
+_GUI_PORT    = int(os.getenv("GUI_PORT", "5000"))
+
+if _GUI_ENABLED:
+    from gui.server import GUIServer
+
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -114,6 +121,11 @@ class PassiveVigilance:
         self.shapefile_writer = ShapefileWriter()
         self.wigle_uploader = WiGLEUploader()
 
+        # Optional web GUI
+        self.gui_server: Optional["GUIServer"] = None  # type: ignore[name-defined]
+        if _GUI_ENABLED:
+            self.gui_server = GUIServer(host=_GUI_HOST, port=_GUI_PORT, orchestrator=self)
+
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
@@ -192,6 +204,10 @@ class PassiveVigilance:
             )
         except Exception as exc:
             logger.warning("DroneRF: scan not started (%s)", exc)
+
+        # Optional web GUI
+        if self.gui_server is not None:
+            self.gui_server.start()
 
         # Configuration validation — warn about anything that will silently degrade
         self._validate_config()
@@ -323,6 +339,8 @@ class PassiveVigilance:
             }
             self.aircraft_detections.append(event)
             self._append_jsonl(self._session_dir / "aircraft.jsonl", event)
+            if self.gui_server is not None:
+                self.gui_server.push_event("aircraft", event)
 
             emergency = aircraft.get("emergency", False)
             if emergency:
@@ -405,6 +423,8 @@ class PassiveVigilance:
             }
             self.all_events.append(event_dict)
             self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
+            if self.gui_server is not None:
+                self.gui_server.push_event("wifi", event_dict)
 
             if self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self.alert_backend.send_persistence_alert(event)
@@ -456,6 +476,8 @@ class PassiveVigilance:
             }
             self.drone_detections.append(event_dict)
             self._append_jsonl(self._session_dir / "drone.jsonl", event_dict)
+            if self.gui_server is not None:
+                self.gui_server.push_event("drone", event_dict)
 
             alert_detection = {
                 "freq_mhz": freq,
@@ -546,6 +568,10 @@ class PassiveVigilance:
                     fh.truncate()
             except Exception as exc:
                 logger.debug("Could not update summary with kml_path: %s", exc)
+
+        # GUI server teardown
+        if self.gui_server is not None:
+            self.gui_server.stop()
 
         # WiGLE upload
         if self.wigle_uploader.is_configured():
