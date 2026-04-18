@@ -12,7 +12,7 @@ import modules.kismet  # noqa: F401 — ensure module loaded for @patch resoluti
 # ---------------------------------------------------------------------------
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _mock_response(status: int, json_data=None):
