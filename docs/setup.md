@@ -974,7 +974,7 @@ when `GUI_ENABLED=false`.
    ```ini
    GUI_ENABLED=true
    GUI_HOST=0.0.0.0   # bind to all interfaces (accessible from other devices on LAN)
-   GUI_PORT=5000
+   GUI_PORT=8080
    ```
 
 3. Start the orchestrator normally:
@@ -983,7 +983,7 @@ when `GUI_ENABLED=false`.
    # or: sudo systemctl start passive-vigilance
    ```
 
-4. Open `http://<pi-ip>:5000` in a browser.
+4. Open `http://<pi-ip>:8080` in a browser.
 
 ### Features
 
@@ -1019,8 +1019,8 @@ The GUI has no authentication. **Do not expose it to the public internet.**
 Bind to `127.0.0.1` or use a VPN / SSH tunnel if remote access is needed:
 
 ```bash
-ssh -L 5000:localhost:5000 survkis@<pi-ip>
-# then open http://localhost:5000 locally
+ssh -L 8080:localhost:8080 survkis@<pi-ip>
+# then open http://localhost:8080 locally
 ```
 
 ---

@@ -33,7 +33,7 @@ class GUIServer:
     def __init__(
         self,
         host: str = "0.0.0.0",
-        port: int = 5000,
+        port: int = 8080,
         orchestrator=None,
     ) -> None:
         self._host = host
