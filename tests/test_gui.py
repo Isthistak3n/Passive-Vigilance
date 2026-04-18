@@ -143,27 +143,30 @@ class TestGUIServerStartWithoutFlask(unittest.TestCase):
 class TestGUIServerAuth(unittest.TestCase):
     """GUI_TOKEN bearer-token auth enforcement."""
 
-    def _make_gui(self, token: str):
+    def _make_client(self, token: str):
+        """Create a GUIServer with the given token and return its Flask test client.
+
+        Skips the test if Flask is not installed (app property returns None).
+        """
         from gui.server import GUIServer
         with patch.dict("os.environ", {"GUI_TOKEN": token}):
             gui = GUIServer()
-        return gui
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping auth tests")
+        return gui.app.test_client()
 
     def test_auth_returns_401_when_token_required_and_none_provided(self):
-        gui = self._make_gui("secret123")
-        client = gui._app.test_client()
+        client = self._make_client("secret123")
         response = client.get("/api/status")
         self.assertEqual(response.status_code, 401)
 
     def test_auth_returns_200_when_correct_bearer_token_provided(self):
-        gui = self._make_gui("secret123")
-        client = gui._app.test_client()
+        client = self._make_client("secret123")
         response = client.get("/api/status", headers={"Authorization": "Bearer secret123"})
         self.assertEqual(response.status_code, 200)
 
     def test_auth_returns_200_when_no_token_configured(self):
-        gui = self._make_gui("")
-        client = gui._app.test_client()
+        client = self._make_client("")
         response = client.get("/api/status")
         self.assertEqual(response.status_code, 200)
 

@@ -170,6 +170,11 @@ class GUIServer:
     # Public API
     # ------------------------------------------------------------------
 
+    @property
+    def app(self):
+        """The underlying Flask application, or None if Flask is not installed."""
+        return self._app
+
     def start(self) -> bool:
         """Start Flask in a daemon thread. Returns False if Flask is not installed."""
         if self._app is None:
