@@ -255,3 +255,52 @@ so it works on both Bookworm (Pi OS) and Trixie (this dev Pi).
 - **readsb JSON port:** readsb serves aircraft JSON on port 8080 (HTTP), not 30003 (SBS-1 TCP). The `.env` `DUMP1090_PORT=30003` is the SBS-1 port; the `ADSBModule` connects to port 8080 directly.
 - **Single RTL-SDR conflict:** readsb and DroneRFModule can't share one dongle simultaneously. Use two dongles or stop readsb before drone scanning.
 - **NM resets wlan1 on restart:** `sudo systemctl restart NetworkManager` resets wlan1 to managed once before the unmanaged rule applies. Re-run monitor mode commands after any NM restart. The udev rule handles boot/plug-in automatically.
+
+---
+
+## Commit & Release Standards
+
+Every commit, PR, and release must be human-readable first,
+technical second. Follow these rules on every branch.
+
+### Commit message format
+
+First line: plain English summary of what improved (max 72 chars)
+- Use "Add", "Fix", "Improve", "Extend" not "feat(scope):"
+- Write for a contributor reading git log, not a ticket system
+- Bad:  "fix(review): version string, tunable poll intervals, GPS timeout 120s"
+- Good: "Tunable poll intervals, GPS resilience, sensor health alerts"
+
+Body: bullet list of user-facing improvements
+- Lead with what got better for the operator, not implementation details
+- Group related changes together
+- No "FIX 1... FIX 10" numbering
+- Technical details belong here, not in the subject line
+
+Example:
+  Tunable poll intervals, GPS resilience, sensor health alerts
+
+  What's better now:
+  - Poll intervals (GPS/Kismet/ADS-B/DroneRF) now tunable via .env
+  - GPS startup timeout extended to 120s for real-world dongles
+  - Sensor health dict emits WARNING on degradation, INFO on recovery
+  - Rate limiter writes are now atomic with file locking
+  - Alert backends retry with exponential backoff on network failure
+
+### PR titles
+- Plain English, outcome-focused
+- Bad:  "fix/operational-resilience"
+- Good: "Health banner, auto-reconnect, and sensor resilience"
+
+### Release notes
+Always use this structure:
+1. One-sentence summary of what this release means
+2. "What's better now" bullet list in plain English
+3. Test count
+4. Optional: "Under the hood" section for technical details
+
+### What NOT to do
+- Never number fixes "FIX 1, FIX 2..."
+- Never lead with scope tags as the human-readable summary
+- Never write release notes that read like a debug log
+- Never bury the user benefit inside implementation details
