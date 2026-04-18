@@ -12,3 +12,4 @@ shapely
 scapy
 bleak
 aiohttp
+flask>=3.0.0

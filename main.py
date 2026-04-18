@@ -30,7 +30,7 @@ from modules.wigle import WiGLEUploader
 
 _GUI_ENABLED = os.getenv("GUI_ENABLED", "false").lower() == "true"
 _GUI_HOST    = os.getenv("GUI_HOST", "0.0.0.0")
-_GUI_PORT    = int(os.getenv("GUI_PORT", "5000"))
+_GUI_PORT    = int(os.getenv("GUI_PORT", "8080"))
 
 if _GUI_ENABLED:
     from gui.server import GUIServer
