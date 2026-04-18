@@ -258,11 +258,13 @@ class NtfyBackend(AlertBackend):
             logger.debug("persistence alert suppressed (rate limit): %s", key)
             return False
         priority = "urgent" if event.alert_level == "high" else "high"
+        mac_type = getattr(event, "mac_type", "static")
         body = (
             f"MAC: {event.mac} | Score: {event.score:.2f} | "
             f"Seen: {event.observation_count} times | "
             f"Locations: {len(event.locations)} | "
-            f"Type: {event.device_type}"
+            f"Type: {event.device_type} | "
+            f"MAC type: {mac_type}"
         )
         title = f"Persistent Device — {event.alert_level.upper()}"
         return self.send(title, body, priority=priority, tags=["surveillance", "wifi", "alert"])
@@ -354,11 +356,13 @@ class TelegramBackend(AlertBackend):
         if not self._persistence_limiter.is_allowed(key):
             return False
         priority = "urgent" if event.alert_level == "high" else "high"
+        mac_type = getattr(event, "mac_type", "static")
         body = (
             f"MAC: {event.mac} | Score: {event.score:.2f} | "
             f"Seen: {event.observation_count} times | "
             f"Locations: {len(event.locations)} | "
-            f"Type: {event.device_type}"
+            f"Type: {event.device_type} | "
+            f"MAC type: {mac_type}"
         )
         title = f"Persistent Device — {event.alert_level.upper()}"
         return self.send(title, body, priority=priority, tags=["surveillance", "wifi", "alert"])
@@ -457,11 +461,13 @@ class DiscordBackend(AlertBackend):
         if not self._persistence_limiter.is_allowed(key):
             return False
         priority = "urgent" if event.alert_level == "high" else "high"
+        mac_type = getattr(event, "mac_type", "static")
         body = (
             f"MAC: {event.mac} | Score: {event.score:.2f} | "
             f"Seen: {event.observation_count} times | "
             f"Locations: {len(event.locations)} | "
-            f"Type: {event.device_type}"
+            f"Type: {event.device_type} | "
+            f"MAC type: {mac_type}"
         )
         title = f"Persistent Device — {event.alert_level.upper()}"
         return self.send(title, body, priority=priority, tags=["surveillance", "wifi", "alert"])
@@ -521,11 +527,13 @@ class ConsoleBackend(AlertBackend):
 
     def send_persistence_alert(self, event) -> bool:
         priority = "urgent" if event.alert_level == "high" else "high"
+        mac_type = getattr(event, "mac_type", "static")
         body = (
             f"MAC: {event.mac} | Score: {event.score:.2f} | "
             f"Seen: {event.observation_count} times | "
             f"Locations: {len(event.locations)} | "
-            f"Type: {event.device_type}"
+            f"Type: {event.device_type} | "
+            f"MAC type: {mac_type}"
         )
         title = f"Persistent Device — {event.alert_level.upper()}"
         return self.send(title, body, priority=priority, tags=["surveillance", "wifi", "alert"])

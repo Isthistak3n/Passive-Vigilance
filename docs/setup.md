@@ -827,6 +827,72 @@ A sensor that repeatedly fails reconnect within the first few cycles usually
 indicates a hardware problem (unplugged dongle, dead USB port) rather than a
 software fault.
 
+---
+
+## MAC Randomization
+
+Modern mobile devices — iOS 14+, Android 10+, Windows 10+ — randomize their
+MAC addresses to prevent passive tracking.  Passive Vigilance detects
+randomized MACs automatically and can optionally fingerprint likely-same devices
+across MAC changes.
+
+### How randomization is detected
+
+A MAC address has its **locally administered bit** (bit 1 of the first octet)
+set to `1` when it was not assigned by the hardware vendor.  This is the
+standard indicator used by all major platforms.
+
+Equivalently: the second hex digit of the first octet is `2`, `6`, `A`, or `E`.
+
+```
+02:ab:cd:ef:01:23  →  randomized  (second digit = 2)
+a4:c3:f0:11:22:33  →  static      (second digit = 4)
+```
+
+Each device record from Kismet is stamped with two extra fields:
+- `mac_type`: `"randomized"` or `"static"`
+- `is_randomized`: `True` / `False`
+
+Persistence engine `DetectionEvent` objects carry `mac_type` so alert bodies
+include the information.
+
+### Fingerprint grouping
+
+When `HANDLE_MAC_RANDOMIZATION=true` (the default), `PersistenceEngine` can
+group randomized MACs that are likely the same physical device.  Grouping is
+based on shared probe SSIDs seen across MAC changes.
+
+Call `persistence_engine.get_fingerprint_summary()` to get the current list of
+`MACFingerprint` clusters.  Each cluster contains:
+- `canonical_mac` — representative MAC for the group
+- `all_macs` — every MAC seen in the cluster
+- `probe_ssids` — union of probe SSIDs across all MACs
+- `avg_rssi` — mean signal strength
+- `device_count` — number of distinct MACs grouped
+
+### Dropping randomized MACs
+
+If randomized devices generate too much noise in your environment (e.g. a
+crowded public space), you can silently drop all of them:
+
+```ini
+# .env
+IGNORE_RANDOMIZED_MACS=true
+```
+
+With this set, `IgnoreList.is_ignored_randomized()` returns `True` for every
+MAC with the locally administered bit set, and the persistence engine never
+tracks them.  Static (OUI-assigned) MACs are unaffected.
+
+### Configuration reference
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HANDLE_MAC_RANDOMIZATION` | `true` | Detect and fingerprint randomized MACs |
+| `IGNORE_RANDOMIZED_MACS` | `false` | Drop all randomized MACs from tracking |
+
+---
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),

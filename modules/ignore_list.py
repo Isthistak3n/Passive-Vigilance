@@ -5,6 +5,7 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timezone
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,11 @@ class IgnoreList:
     into place so a crash during save never corrupts existing data.
     """
 
-    def __init__(self, data_dir: str) -> None:
+    def __init__(
+        self,
+        data_dir: str,
+        ignore_randomized_macs: Optional[bool] = None,
+    ) -> None:
         self._dir = data_dir
         self._mac_path = os.path.join(data_dir, _MAC_FILE)
         self._ssid_path = os.path.join(data_dir, _SSID_FILE)
@@ -48,6 +53,12 @@ class IgnoreList:
         self._macs: dict[str, dict] = {}   # normalized MAC → entry
         self._ouis: dict[str, dict] = {}   # 3-octet prefix → entry
         self._ssids: dict[str, dict] = {}  # lowercased SSID → entry
+
+        self._ignore_randomized: bool = (
+            ignore_randomized_macs
+            if ignore_randomized_macs is not None
+            else os.getenv("IGNORE_RANDOMIZED_MACS", "false").lower() == "true"
+        )
 
         os.makedirs(data_dir, exist_ok=True)
         self.load()
@@ -142,6 +153,18 @@ class IgnoreList:
         """Return True if *ssid* matches an ignore-list entry (case-insensitive)."""
         return ssid.lower() in self._ssids
 
+    @property
+    def ignore_randomized_macs(self) -> bool:
+        """True when all randomized (locally-administered) MACs are silently dropped."""
+        return self._ignore_randomized
+
+    def is_ignored_randomized(self, mac: str) -> bool:
+        """Return True if randomized MACs are being ignored and *mac* is randomized."""
+        if not self._ignore_randomized:
+            return False
+        from modules.mac_utils import is_randomized_mac
+        return is_randomized_mac(mac)
+
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
@@ -235,7 +258,8 @@ class IgnoreList:
     def stats(self) -> dict:
         """Return counts of entries in the ignore list."""
         return {
-            "mac_count":  len(self._macs),
-            "oui_count":  len(self._ouis),
-            "ssid_count": len(self._ssids),
+            "mac_count":             len(self._macs),
+            "oui_count":             len(self._ouis),
+            "ssid_count":            len(self._ssids),
+            "ignore_randomized_macs": self._ignore_randomized,
         }

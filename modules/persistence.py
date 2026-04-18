@@ -43,6 +43,7 @@ class DetectionEvent:
     manufacturer: str
     device_type: str
     alert_level: str            # "suspicious" (0.5-0.7) | "likely" (0.7-0.9) | "high" (0.9+)
+    mac_type: str = "static"    # "static" | "randomized"
 
 
 class PersistenceEngine:
@@ -65,6 +66,7 @@ class PersistenceEngine:
         alert_threshold: Optional[float] = None,
         min_locations: Optional[int] = None,
         poll_interval_seconds: Optional[int] = None,
+        handle_randomized: Optional[bool] = None,
     ) -> None:
         self._windows = window_minutes if window_minutes is not None else [5, 10, 15, 20]
         self._threshold = float(
@@ -81,6 +83,11 @@ class PersistenceEngine:
             poll_interval_seconds
             if poll_interval_seconds is not None
             else os.getenv("PERSISTENCE_POLL_INTERVAL_SECONDS", "30")
+        )
+        self._handle_randomized = bool(
+            handle_randomized
+            if handle_randomized is not None
+            else os.getenv("HANDLE_MAC_RANDOMIZATION", "true").lower() == "true"
         )
         # {mac: [{"timestamp", "gps_lat", "gps_lon", "signal", "manuf", "type", "name"}]}
         self._observations: dict = {}
@@ -245,6 +252,7 @@ class PersistenceEngine:
         components: dict,
         observations: list,
     ) -> DetectionEvent:
+        from modules.mac_utils import get_mac_type
         first_seen = min(o["timestamp"] for o in observations)
         last_seen  = max(o["timestamp"] for o in observations)
         obs_gps    = [o for o in observations if o.get("gps_lat") is not None]
@@ -262,6 +270,7 @@ class PersistenceEngine:
             manufacturer=manuf,
             device_type=dtype,
             alert_level=self._make_alert_level(score),
+            mac_type=get_mac_type(mac),
         )
 
     # ------------------------------------------------------------------
@@ -376,6 +385,33 @@ class PersistenceEngine:
             del self._observations[mac]
         if stale:
             logger.debug("Purged %d stale MAC(s) from observation history", len(stale))
+
+    def get_fingerprint_summary(self) -> list:
+        """Return fingerprint clusters for currently tracked randomized MACs.
+
+        Delegates to :func:`~modules.mac_utils.group_by_fingerprint` using
+        the most recent observation for each randomized MAC as the probe data.
+
+        Returns an empty list when :attr:`handle_randomized` is False or when
+        no randomized MACs are currently tracked.
+        """
+        from modules.mac_utils import group_by_fingerprint, is_randomized_mac
+
+        if not self._handle_randomized:
+            return []
+
+        devices = []
+        for mac, obs_list in self._observations.items():
+            if not is_randomized_mac(mac) or not obs_list:
+                continue
+            latest = obs_list[-1]
+            devices.append({
+                "macaddr":    mac,
+                "last_signal": latest.get("signal"),
+                "name":       latest.get("name", ""),
+            })
+
+        return group_by_fingerprint(devices) if devices else []
 
     def stats(self) -> dict:
         """Return summary statistics for the current observation window."""
