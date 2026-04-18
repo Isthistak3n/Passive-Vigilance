@@ -40,6 +40,8 @@ class GUIServer:
         self._port = port
         self._orchestrator = orchestrator  # weak back-reference for /api/status
 
+        self._gui_token: str = os.getenv("GUI_TOKEN", "").strip()
+
         self._clients: list[queue.Queue] = []
         self._clients_lock = threading.Lock()
 
@@ -74,6 +76,19 @@ class GUIServer:
         # Suppress Flask's default startup banner in our logger
         import logging as _logging
         _logging.getLogger("werkzeug").setLevel(_logging.WARNING)
+
+        gui_token = self._gui_token
+
+        @app.before_request
+        def check_auth():
+            if not gui_token:
+                return  # no auth configured — open access
+            from flask import request as _req
+            auth = _req.headers.get("Authorization", "")
+            token_param = _req.args.get("token", "")
+            if auth == f"Bearer {gui_token}" or token_param == gui_token:
+                return  # authorized
+            return jsonify({"error": "Unauthorized"}), 401
 
         @app.route("/")
         def index():
