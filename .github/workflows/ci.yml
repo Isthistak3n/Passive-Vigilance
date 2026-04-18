@@ -36,9 +36,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio
+          pip install "numpy>=1.24,<3"
           pip install pyrtlsdr==0.2.93
           pip install requests aiohttp python-dotenv
-          pip install geopandas fiona shapely
+          pip install shapely
+          pip install fiona
+          pip install geopandas
           pip install bleak scapy 2>/dev/null || true
 
       - name: Fix python3-gps path for virtualenv

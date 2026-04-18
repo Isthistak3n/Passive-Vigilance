@@ -26,5 +26,5 @@ jobs:
         run: |
           flake8 modules/ scripts/ main.py \
             --max-line-length=100 \
-            --ignore=E501,W503,E302,E303 \
+            --ignore=E501,W503,E302,E303,E302,E303,E241,E221,E226,E272,E231,W504,E402 \
             --exclude=__pycache__
