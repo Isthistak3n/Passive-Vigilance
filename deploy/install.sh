@@ -42,6 +42,11 @@ sudo -u "$PI_USER" pip3 install -r "$REPO_DIR/requirements.txt" \
 sudo -u "$PI_USER" pip3 install geopy --break-system-packages -q
 # GIS output — shapefile and GeoJSON session export
 apt install -y python3-geopandas python3-fiona python3-shapely
+# Optional web GUI — only installed if GUI_ENABLED=true in .env
+if grep -qE "^\s*GUI_ENABLED\s*=\s*true" "$REPO_DIR/.env" 2>/dev/null; then
+  sudo -u "$PI_USER" pip3 install flask --break-system-packages -q
+  echo "$LOG Flask installed for web GUI"
+fi
 
 # Create session output directory
 mkdir -p "/home/$PI_USER/Passive-Vigilance/data/sessions"

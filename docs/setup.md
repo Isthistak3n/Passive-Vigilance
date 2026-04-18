@@ -957,6 +957,74 @@ tracks them.  Static (OUI-assigned) MACs are unaffected.
 
 ---
 
+## Web GUI (optional)
+
+Passive Vigilance includes a live browser dashboard for monitoring detections
+in real time without `journalctl`. It is disabled by default — zero overhead
+when `GUI_ENABLED=false`.
+
+### Enable
+
+1. Install Flask:
+   ```bash
+   pip install flask --break-system-packages
+   ```
+
+2. Set in `.env`:
+   ```ini
+   GUI_ENABLED=true
+   GUI_HOST=0.0.0.0   # bind to all interfaces (accessible from other devices on LAN)
+   GUI_PORT=5000
+   ```
+
+3. Start the orchestrator normally:
+   ```bash
+   python3 main.py
+   # or: sudo systemctl start passive-vigilance
+   ```
+
+4. Open `http://<pi-ip>:5000` in a browser.
+
+### Features
+
+| Tab | Contents |
+|-----|----------|
+| Map | Live Leaflet map; WiFi, aircraft, and drone RF markers color-coded by alert level |
+| WiFi/BT | Table of all persistence detections with score, MAC type, manufacturer |
+| Aircraft | ADS-B aircraft table with callsign, altitude, speed; emergency rows highlighted |
+| Drone RF | Drone RF detection table with frequency and power |
+| Alerts | Live alert feed — WiFi, aircraft, drone, and system health events |
+
+Sensor health indicators (GPS / WiFi / ADS-B / Drone) turn green or red in the
+header bar based on `/api/status` polled every 5 seconds.
+
+New events appear instantly via Server-Sent Events (SSE) — no page refresh needed.
+
+### API endpoints
+
+The GUI exposes a REST API alongside the SSE stream:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/status` | Session ID, sensor health, cumulative stats, GPS fix |
+| `GET /api/wifi` | All WiFi/BT persistence events this session |
+| `GET /api/aircraft` | All ADS-B aircraft events this session |
+| `GET /api/drone` | All drone RF detections this session |
+| `GET /api/alerts` | All alert events this session |
+| `GET /stream` | SSE stream — real-time events as they occur |
+
+### Security note
+
+The GUI has no authentication. **Do not expose it to the public internet.**
+Bind to `127.0.0.1` or use a VPN / SSH tunnel if remote access is needed:
+
+```bash
+ssh -L 5000:localhost:5000 survkis@<pi-ip>
+# then open http://localhost:5000 locally
+```
+
+---
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),

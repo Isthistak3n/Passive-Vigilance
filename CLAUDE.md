@@ -25,6 +25,8 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 - **Pluggable alert backend** — abstract `AlertBackend` base class; `NtfyBackend`,
   `TelegramBackend`, `DiscordBackend`, and `ConsoleBackend` implementations; swap via
   `ALERT_BACKEND` in `.env`; `AlertFactory.get_backend()` handles fallback
+- **Optional web GUI** — Flask dashboard with live Leaflet map, 5 tabs, SSE stream;
+  zero overhead when `GUI_ENABLED=false` (default); `gui/server.py` + templates/static
 
 ---
 
@@ -59,6 +61,11 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/kml_writer.py` | `KMLWriter` | Pure Python XML; Google Earth KML with color-coded placemarks and track lines |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson + .kml |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
+| `gui/__init__.py` | — | Empty package marker |
+| `gui/server.py` | `GUIServer` | Flask in daemon thread; SSE `/stream`; REST `/api/*` |
+| `gui/templates/index.html` | — | Dark-theme SPA; 5 tabs; Leaflet map |
+| `gui/static/app.js` | — | SSE client; Leaflet markers; tab/filter logic |
+| `gui/static/style.css` | — | Dark theme; touch-friendly |
 | `main.py` | `PassiveVigilance` | asyncio orchestrator; SIGINT/SIGTERM → clean shutdown |
 
 ---
@@ -205,6 +212,27 @@ Re-run the monitor mode commands after any NM restart.
 - `IgnoreList.is_ignored_randomized(mac)` — returns True when `ignore_randomized_macs=True` and the MAC is randomized
 - `IgnoreList.stats()` now includes `ignore_randomized_macs` key
 - Alert bodies for persistence events include `MAC type: static/randomized` field
+
+## Web GUI
+
+- `gui/server.py` — `GUIServer` class; Flask app built in `_build_app()`; imported only when `GUI_ENABLED=true`
+- `GUI_ENABLED=false` by default — import of `gui.server` never happens unless opt-in; zero overhead
+- `GUIServer.__init__(host, port, orchestrator)` — stores back-reference to orchestrator for `/api/status`
+- `GUIServer.start()` — launches Flask in a `daemon=True` thread; returns `False` if Flask not installed
+- `GUIServer.push_event(event_type, data)` — thread-safe broadcast; updates `_recent_*` caches; drops dead clients
+- SSE pattern: one `threading.Queue(maxsize=500)` per client; `threading.Lock` protects client list
+- `/stream` sends a `{"type":"heartbeat"}` every 20 s of silence to keep connections alive
+- REST endpoints: `/api/status`, `/api/wifi`, `/api/aircraft`, `/api/drone`, `/api/alerts`
+- `_MAX_RECENT = 200` — max events per category kept in memory
+- `GUIServer.stop()` — sends `None` sentinel to all queues; clients disconnect cleanly on session end
+- `main.py` instantiates `GUIServer` in `__init__`, calls `start()` in `startup()`, `stop()` in `shutdown()`
+- `push_event("wifi", event_dict)` called after `all_events.append()` in `_poll_kismet`
+- `push_event("aircraft", event)` called after `aircraft_detections.append()` in `_poll_adsb`
+- `push_event("drone", event_dict)` called after `drone_detections.append()` in `_poll_drone_rf`
+- `gui/templates/index.html` — single SPA; Leaflet loaded from CDN unpkg; 5 tabs; dark theme
+- `gui/static/app.js` — WiFi deduplication by MAC; Leaflet dark tile layer with CSS invert filter
+- `gui/static/style.css` — KML-matched alert colors (red=high, orange=likely, yellow=suspicious)
+- `tests/test_gui.py` — 15 unit tests; no Flask server started during tests
 
 ## Alert Engine
 
