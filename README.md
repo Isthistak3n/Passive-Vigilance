@@ -168,6 +168,8 @@ After install, follow the on-screen prompts to:
 ```bash
    nano .env
 ```
+   To enable the optional web dashboard, set `GUI_ENABLED=true` in `.env`
+   then open `http://[pi-ip]:8080` in any browser.
 3. Add your own devices to the ignore list to reduce noise:
 ```bash
    python3 scripts/manage_ignore_list.py --import-kismet
