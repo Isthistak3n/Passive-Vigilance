@@ -379,7 +379,6 @@ class PassiveVigilance:
                     event.mac, event.score, event.alert_level,
                 )
 
-
     # ------------------------------------------------------------------
     # Drone RF — drain detections every 5 seconds
     # ------------------------------------------------------------------
