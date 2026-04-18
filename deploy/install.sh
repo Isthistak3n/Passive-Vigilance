@@ -46,6 +46,19 @@ apt install -y python3-geopandas python3-fiona python3-shapely
 if grep -qE "^\s*GUI_ENABLED\s*=\s*true" "$REPO_DIR/.env" 2>/dev/null; then
   sudo -u "$PI_USER" pip3 install flask --break-system-packages -q
   echo "$LOG Flask installed for web GUI"
+  # Download Leaflet.js for offline use (field deployments without internet)
+  LEAFLET_VERSION="1.9.4"
+  LEAFLET_DIR="$REPO_DIR/gui/static/leaflet"
+  mkdir -p "$LEAFLET_DIR"
+  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.js" \
+      -o "$LEAFLET_DIR/leaflet.js"
+  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css" \
+      -o "$LEAFLET_DIR/leaflet.css"
+  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/images/marker-icon.png" \
+      -o "$LEAFLET_DIR/marker-icon.png"
+  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/images/marker-shadow.png" \
+      -o "$LEAFLET_DIR/marker-shadow.png"
+  echo "$LOG Leaflet downloaded for offline use"
 fi
 
 # Create session output directory
@@ -127,10 +140,9 @@ cp "$REPO_DIR/deploy/kismet.service" /etc/systemd/system/kismet.service
 
 # ── 7. Passive Vigilance service ───────────────────────────────────────────
 echo "$LOG Installing Passive Vigilance service..."
-cp "$REPO_DIR/deploy/passive-vigilance.service" \
-  /etc/systemd/system/passive-vigilance.service
-sed -i "s|/home/survkis|/home/$PI_USER|g" \
-  /etc/systemd/system/passive-vigilance.service
+PI_USER="$PI_USER" envsubst '$PI_USER' \
+  < "$REPO_DIR/deploy/passive-vigilance.service" \
+  > /etc/systemd/system/passive-vigilance.service
 
 # ── 8. Enable services ─────────────────────────────────────────────────────
 echo "$LOG Enabling services..."

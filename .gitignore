@@ -218,3 +218,8 @@ logs/
 *.prj
 *.cpg
 output/
+
+# Leaflet offline assets — downloaded by install.sh, not committed
+gui/static/leaflet/leaflet.js
+gui/static/leaflet/leaflet.css
+gui/static/leaflet/*.png

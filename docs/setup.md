@@ -1013,10 +1013,34 @@ The GUI exposes a REST API alongside the SSE stream:
 | `GET /api/alerts` | All alert events this session |
 | `GET /stream` | SSE stream — real-time events as they occur |
 
+### Authentication (optional)
+
+Set `GUI_TOKEN` in `.env` to require a bearer token before anyone can view
+the dashboard or call any API endpoint:
+
+```ini
+GUI_TOKEN=your-secret-token-here
+```
+
+When set, every request must include one of:
+- `Authorization: Bearer <token>` header
+- `?token=<token>` query parameter
+
+Without a token the request receives `401 Unauthorized`.
+
+Leave `GUI_TOKEN` empty (the default) for open access — suitable for
+LAN-only deployments on a trusted network.
+
+The startup banner confirms which mode is active:
+```
+GUI            : http://0.0.0.0:8080
+GUI auth       : enabled (token required)
+```
+
 ### Security note
 
-The GUI has no authentication. **Do not expose it to the public internet.**
-Bind to `127.0.0.1` or use a VPN / SSH tunnel if remote access is needed:
+**Do not expose the GUI to the public internet** even with a token set.
+Use `GUI_HOST=127.0.0.1` or a VPN / SSH tunnel for remote access:
 
 ```bash
 ssh -L 8080:localhost:8080 survkis@<pi-ip>

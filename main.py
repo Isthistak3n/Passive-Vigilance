@@ -83,6 +83,11 @@ class PassiveVigilance:
             "drone_rf": True,
         }
 
+        # Consecutive-failure counters — emit a WARNING every 10 repeated failures
+        self._degraded_log_counter: dict[str, int] = {
+            "gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0,
+        }
+
         # Operational stats — populated by poll loops, displayed in health banner
         self._stats: dict[str, int] = {
             "kismet_devices_seen": 0,
@@ -285,11 +290,17 @@ class PassiveVigilance:
                 if not reconnected:
                     logger.error("GPS failed to reconnect — continuing with degraded state")
             else:
-                logger.debug("GPS poll error (repeated): %s", exc)
+                self._degraded_log_counter["gps"] += 1
+                if self._degraded_log_counter["gps"] % 10 == 0:
+                    logger.warning(
+                        "Sensor gps still degraded after %d consecutive failures",
+                        self._degraded_log_counter["gps"],
+                    )
             return
         if not self._sensor_health["gps"]:
             logger.info("Sensor gps recovered")
             self._sensor_health["gps"] = True
+            self._degraded_log_counter["gps"] = 0
 
         had_fix = self._current_fix is not None
         self._current_fix = fix
@@ -323,11 +334,17 @@ class PassiveVigilance:
                 if not reconnected:
                     logger.error("ADS-B failed to reconnect — continuing with degraded state")
             else:
-                logger.debug("ADS-B poll error (repeated): %s", exc)
+                self._degraded_log_counter["adsb"] += 1
+                if self._degraded_log_counter["adsb"] % 10 == 0:
+                    logger.warning(
+                        "Sensor adsb still degraded after %d consecutive failures",
+                        self._degraded_log_counter["adsb"],
+                    )
             return
         if not self._sensor_health["adsb"]:
             logger.info("Sensor adsb recovered")
             self._sensor_health["adsb"] = True
+            self._degraded_log_counter["adsb"] = 0
 
         for aircraft in aircraft_list:
             icao = aircraft.get("icao", "unknown")
@@ -358,6 +375,8 @@ class PassiveVigilance:
                 else:
                     self._stats["alerts_rate_limited"] += 1
 
+        self._write_session_summary()
+
     # ------------------------------------------------------------------
     # Kismet / WiFi+BT polling — every 30 seconds
     # ------------------------------------------------------------------
@@ -380,11 +399,17 @@ class PassiveVigilance:
                 if not reconnected:
                     logger.error("Kismet failed to reconnect — continuing with degraded state")
             else:
-                logger.debug("Kismet poll error (repeated): %s", exc)
+                self._degraded_log_counter["kismet"] += 1
+                if self._degraded_log_counter["kismet"] % 10 == 0:
+                    logger.warning(
+                        "Sensor kismet still degraded after %d consecutive failures",
+                        self._degraded_log_counter["kismet"],
+                    )
             return
         if not self._sensor_health["kismet"]:
             logger.info("Sensor kismet recovered")
             self._sensor_health["kismet"] = True
+            self._degraded_log_counter["kismet"] = 0
 
         self._stats["kismet_devices_seen"] += len(devices)
         logger.debug("Kismet: polled %d device(s)", len(devices))
@@ -436,6 +461,8 @@ class PassiveVigilance:
             else:
                 self._stats["alerts_rate_limited"] += 1
 
+        self._write_session_summary()
+
     # ------------------------------------------------------------------
     # Drone RF — drain detections every 5 seconds
     # ------------------------------------------------------------------
@@ -457,11 +484,17 @@ class PassiveVigilance:
                 self._console_alert(f"Sensor drone_rf degraded: {exc}")
                 self._sensor_health["drone_rf"] = False
             else:
-                logger.debug("Drone RF poll error (repeated): %s", exc)
+                self._degraded_log_counter["drone_rf"] += 1
+                if self._degraded_log_counter["drone_rf"] % 10 == 0:
+                    logger.warning(
+                        "Sensor drone_rf still degraded after %d consecutive failures",
+                        self._degraded_log_counter["drone_rf"],
+                    )
             return
         if not self._sensor_health["drone_rf"]:
             logger.info("Sensor drone_rf recovered")
             self._sensor_health["drone_rf"] = True
+            self._degraded_log_counter["drone_rf"] = 0
 
         for detection in pending:
             freq = detection.get("freq_mhz", 0)
@@ -495,6 +528,40 @@ class PassiveVigilance:
     # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
+
+    def _write_session_summary(self) -> None:
+        """Atomically update summary.json with current live stats.
+
+        Called after every Kismet and ADS-B poll cycle so that a power loss
+        mid-session leaves a valid summary rather than an empty file.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            summary = {
+                "session_id":             self.session_id,
+                "start_time":             self.session_start.isoformat(),
+                "end_time":               now.isoformat(),
+                "duration_seconds":       int((now - self.session_start).total_seconds()),
+                "gps_fixes_received":     self._gps_fix_count,
+                "unique_devices_tracked": len({e["mac"] for e in self.all_events}),
+                "persistent_detections":  len(self.all_events),
+                "aircraft_detected":      len(self.aircraft_detections),
+                "drone_detections":       len(self.drone_detections),
+                "modules_active": {
+                    "gps":      self._gps_active,
+                    "kismet":   self._kismet_active,
+                    "adsb":     self._adsb_active,
+                    "drone_rf": self._drone_active,
+                },
+            }
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            summary_path = self._session_dir / "summary.json"
+            tmp_path = self._session_dir / "summary.json.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, default=str)
+            os.replace(tmp_path, summary_path)
+        except Exception as exc:
+            logger.debug("Incremental summary write error: %s", exc)
 
     async def shutdown(self) -> None:
         """Disconnect modules, write session summary, output shapefiles, upload to WiGLE."""
@@ -740,6 +807,12 @@ class PassiveVigilance:
         logger.info("Active modules : %s", ", ".join(active_parts))
         logger.info("Alert backend  : %s", backend_name)
         logger.info("Output         : %s", output_dir)
+        if self.gui_server is not None:
+            logger.info("GUI            : http://%s:%d", _GUI_HOST, _GUI_PORT)
+            if self.gui_server._gui_token:
+                logger.info("GUI auth       : enabled (token required)")
+            else:
+                logger.info("GUI auth       : DISABLED — set GUI_TOKEN in .env to restrict access")
         logger.info("=" * 60)
 
 
