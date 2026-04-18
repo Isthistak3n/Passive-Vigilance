@@ -394,11 +394,13 @@ class PassiveVigilance:
                 "alert_level":       event.alert_level,
                 "manufacturer":      event.manufacturer,
                 "device_type":       event.device_type,
+                "mac_type":          event.mac_type,
                 "first_seen":        event.first_seen.isoformat(),
                 "last_seen":         event.last_seen.isoformat(),
                 "observation_count": event.observation_count,
                 "lat":               lat,
                 "lon":               lon,
+                "locations":         event.locations,
                 "timestamp":         datetime.now(timezone.utc).isoformat(),
             }
             self.all_events.append(event_dict)
@@ -522,14 +524,28 @@ class PassiveVigilance:
             json.dump(summary, fh, indent=2, default=str)
         logger.info("Session summary → %s", summary_path)
 
-        # Write shapefiles / GeoJSON
+        # Write shapefiles, KML, and GeoJSON
         all_session_events = self.all_events + self.aircraft_detections + self.drone_detections
+        kml_path: Optional[str] = None
         if all_session_events:
             try:
                 self.shapefile_writer.write_session(self.session_id, all_session_events)
                 self.shapefile_writer.write_geojson(self.session_id, all_session_events)
+                kml_path = str(self._session_dir / "detections.kml")
             except Exception as exc:
                 logger.error("GIS output error: %s", exc)
+
+        # Append kml_path to session summary
+        if kml_path:
+            try:
+                with open(summary_path, "r+", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                    data["kml_path"] = kml_path
+                    fh.seek(0)
+                    json.dump(data, fh, indent=2, default=str)
+                    fh.truncate()
+            except Exception as exc:
+                logger.debug("Could not update summary with kml_path: %s", exc)
 
         # WiGLE upload
         if self.wigle_uploader.is_configured():
@@ -539,6 +555,8 @@ class PassiveVigilance:
             else:
                 logger.info("WiGLE: no .wiglecsv found — skipping upload")
 
+        if kml_path:
+            logger.info("KML output → %s", kml_path)
         logger.info(
             "Session %s complete — WiFi:%d  Aircraft:%d  Drone:%d",
             self.session_id,

@@ -56,7 +56,8 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
 | `modules/mac_utils.py` | — | MAC randomization detection, type classification, device fingerprinting |
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
-| `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson |
+| `modules/kml_writer.py` | `KMLWriter` | Pure Python XML; Google Earth KML with color-coded placemarks and track lines |
+| `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson + .kml |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
 | `main.py` | `PassiveVigilance` | asyncio orchestrator; SIGINT/SIGTERM → clean shutdown |
 
@@ -169,6 +170,23 @@ Re-run the monitor mode commands after any NM restart.
 - `DetectionEvent` fields: `mac`, `score`, `score_breakdown`, `first_seen`, `last_seen`,
   `locations`, `observation_count`, `manufacturer`, `device_type`, `alert_level`
 - `ProbeAnalyzer` flags: devices probing > 10 unique SSIDs, or probing surveillance-pattern SSIDs
+
+## KML Output
+
+- `modules/kml_writer.py` — `KMLWriter` class; pure Python, no extra dependencies (stdlib `xml.sax.saxutils`)
+- Called automatically from `ShapefileWriter.write_session()` — one call writes shp + geojson + kml
+- `write_session(session_id, wifi_events, aircraft_events, drone_events)` → writes `{session_id}/detections.kml`
+- `write_session_summary_overlay(session_id, summary)` → inserts ScreenOverlay legend (top-left in Google Earth)
+- Three KML Folders: "WiFi/BT Detections", "Aircraft", "Drone RF"
+- WiFi placemarks color-coded by alert level: white=new, yellow=suspicious, orange=likely, red=high
+- Track LineStrings added for WiFi devices with `locations` list of 2+ GPS clusters; color matches alert level
+- Aircraft placed at actual altitude (feet → metres in KML Point coordinates)
+- Emergency aircraft use red pushpin style (`aircraft-emergency`)
+- KML descriptions use HTML tables in CDATA blocks — render as formatted tables in Google Earth
+- KML icon set: Google Maps pushpin/shape URLs (no hosted assets needed)
+- `main.py` event_dict includes `mac_type` and `locations` fields so KML can use them
+- Session `summary.json` includes `kml_path` key written at shutdown
+- KML path logged in shutdown banner
 
 ## MAC Randomization
 

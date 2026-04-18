@@ -829,6 +829,70 @@ software fault.
 
 ---
 
+## KML Output
+
+Every session automatically produces a `detections.kml` file alongside the
+shapefiles and GeoJSON.  KML (Keyhole Markup Language) is readable by Google
+Earth, Google Maps, and most GIS tools.
+
+### File location
+
+```
+data/sessions/{session_id}/detections.kml
+```
+
+The file is written at session end by `ShapefileWriter`, which calls
+`KMLWriter` internally — no extra configuration is needed.
+
+### Opening the file
+
+**Google Earth Desktop:**
+1. File → Open → select `detections.kml`
+2. Detections appear as pushpins in three folders: WiFi/BT, Aircraft, Drone RF
+
+**Google Maps (My Maps):**
+1. maps.google.com → Menu → Your places → Maps → Create Map
+2. Import → upload `detections.kml`
+
+**QGIS:**
+- Layer → Add Layer → Add Vector Layer → select `detections.kml`
+
+### Color coding
+
+| Color | Meaning |
+|-------|---------|
+| White pushpin | Device first seen (no score yet / default) |
+| Yellow pushpin | Suspicious (score 0.5–0.7) |
+| Orange pushpin | Likely surveillance (score 0.7–0.9) |
+| Red pushpin | High confidence surveillance (score 0.9+) |
+| Blue airplane | Normal aircraft |
+| Red pushpin | Emergency aircraft |
+| Orange radio tower | Drone RF detection |
+
+### Track lines
+
+For any WiFi/BT device seen at two or more distinct GPS locations, a dashed
+LineString is drawn connecting the cluster centroids.  Track line color
+matches the device's alert level (yellow/orange/red).  This makes movement
+patterns immediately visible in Google Earth.
+
+### Aircraft altitude
+
+Aircraft Placemarks are placed at their actual altitude (feet converted to
+metres) in the KML Point coordinates.  In Google Earth, enable
+**View → Show Terrain** to see aircraft at realistic height above ground.
+
+### Sharing a session
+
+Zip the session folder and share the archive — the `.kml` file is
+self-contained and opens without any additional software beyond Google Earth:
+
+```bash
+zip -r session_20240101.zip data/sessions/20240101_120000/
+```
+
+---
+
 ## MAC Randomization
 
 Modern mobile devices — iOS 14+, Android 10+, Windows 10+ — randomize their

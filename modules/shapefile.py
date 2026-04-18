@@ -8,6 +8,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from modules.kml_writer import KMLWriter
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ class ShapefileWriter:
 
     def __init__(self, output_dir: Optional[str] = None) -> None:
         self._output_dir = output_dir or _DEFAULT_OUTPUT_DIR
+        self._kml_writer = KMLWriter(output_dir=self._output_dir)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -130,6 +133,15 @@ class ShapefileWriter:
             gdf = self._make_gdf(records, geometries)
             gdf.to_file(drone_path)
             logger.info("Wrote %d drone detections → %s", len(drone_events), drone_path)
+
+        # KML output — written alongside shapefiles
+        try:
+            kml_path = self._kml_writer.write_session(
+                session_id, wifi_events, aircraft_events, drone_events
+            )
+            logger.info("Wrote KML → %s", kml_path)
+        except Exception as exc:
+            logger.error("KML write error: %s", exc)
 
         return shp_path
 
