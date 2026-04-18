@@ -761,6 +761,72 @@ Before starting the sensor for the first time:
 
 ---
 
+## Operational Resilience
+
+### Health banner
+
+Every 5 minutes (default) Passive Vigilance logs a structured health summary to
+`journalctl`. It shows sensor health, cumulative event counts, and alert stats
+for the current session — useful for confirming the platform is working without
+tailing every log line.
+
+**View live:**
+```bash
+journalctl -fu passive-vigilance
+```
+
+Example banner:
+```
+── Passive Vigilance Health ──────────────────────────
+Session: 20260101_120000 | Uptime: 0h 05m 00s
+GPS:     ✓ Fixed | Lat: 51.5074 Lon: -0.1278
+Kismet:  ✓ Active | Devices seen: 142
+ADS-B:   ✓ Active | Aircraft: 7
+DroneRF: ✓ Active | Detections: 0
+Alerts:  Ntfy | Sent: 3 | Rate-limited: 1
+Events:  2 persistent | 7 aircraft | 0 drone
+──────────────────────────────────────────────────────
+```
+
+**Tuning the interval** (default 300 s):
+```ini
+# .env
+HEALTH_BANNER_INTERVAL_SECONDS=300
+```
+
+Set to `60` for verbose monitoring; `600` to reduce log noise on long sessions.
+
+### Automatic sensor reconnection
+
+When a sensor poll fails for the first time after a successful run, Passive
+Vigilance immediately attempts to close and reopen the module connection before
+declaring it degraded. This handles transient failures (USB device reset, network
+hiccup, Kismet restart) without requiring a full service restart.
+
+**Behaviour:**
+- Only triggers on the first failure (health `True → False` transition)
+- Does **not** retry on every subsequent failure — the sensor stays in degraded
+  state until either the reconnect succeeds or the service is restarted manually
+- Up to 3 attempts with 5 s between each (configurable)
+- GPS, Kismet, and ADS-B (readsb) support reconnection
+- DroneRF does not (hardware scan — restart the service if it fails)
+
+**Configuring reconnect behaviour:**
+```ini
+# .env
+MAX_RECONNECT_ATTEMPTS=3
+RECONNECT_INTERVAL_SECONDS=5
+```
+
+**What to do if a sensor fails to reconnect:**
+1. Check the journal: `journalctl -u passive-vigilance -n 50 --no-pager`
+2. Verify hardware: `lsusb`, `ls /dev/ttyUSB*`, `systemctl status kismet`
+3. Restart the service: `sudo systemctl restart passive-vigilance`
+
+A sensor that repeatedly fails reconnect within the first few cycles usually
+indicates a hardware problem (unplugged dongle, dead USB port) rather than a
+software fault.
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
