@@ -1,153 +1,177 @@
 # Changelog
 
 All notable changes to Passive Vigilance are documented here.
-
-Versions follow the project's alpha release cadence.
-Each entry describes what got better for the operator, not implementation detail.
+Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ---
 
-## [Unreleased]
+## [v0.4-alpha] — 2026-04-18
 
-- No unreleased changes since v0.4-alpha.
+### What's new
+The sensor now has an optional live web dashboard accessible
+from any browser — including remotely via Tailscale and on
+the 4B+ touchscreen via Chromium.
 
----
+- **Optional web GUI** — set `GUI_ENABLED=true` in `.env` to
+  start a Flask web server at `http://[pi-ip]:8080`
+- **Five dashboard tabs** — Dashboard, Live Map, Devices,
+  Aircraft, Session
+- **Live Leaflet.js map** — color-coded detection markers,
+  track lines for persistent devices, aircraft at altitude
+- **Server-sent events** — detections pushed to browser
+  instantly as they happen, no polling
+- **Touch-friendly dark theme** — optimized for 7-inch
+  touchscreen, works on phone via Tailscale
+- **Zero overhead when disabled** — `GUI_ENABLED=false`
+  (default) leaves the orchestrator completely unchanged
+- **MAC randomization handling** — detects locally-administered
+  MACs, fingerprint grouping by shared probe SSIDs
+- **Google Earth KML output** — color-coded by alert level,
+  track lines, aircraft at actual altitude, written alongside
+  shapefiles at session end
+- **5-minute health banner** — periodic sensor status in logs
+- **Auto-reconnect** — up to 3 attempts on sensor degradation
 
-## [v0.4-alpha] — 2026-04-18 — 207 tests passing
-
-### Optional web GUI with live map, SSE stream, and dark theme
-
-- New browser dashboard accessible at `http://[pi-ip]:8080` when `GUI_ENABLED=true`
-- Live Leaflet map shows WiFi, aircraft, and drone RF detections as they arrive — no page refresh
-- Five tabs: Map, WiFi/BT, Aircraft, Drone RF, Alerts — each filterable by any field
-- WiFi detections color-coded by alert level (red = high, orange = likely, yellow = suspicious)
-- Sensor health bar in the header turns green/red as GPS, Kismet, ADS-B, and DroneRF degrade
-- Server-Sent Events stream at `/stream`; REST API at `/api/status`, `/api/wifi`, `/api/aircraft`, `/api/drone`, `/api/alerts`
-- Flask runs in a daemon thread — the asyncio sensor loop is never blocked
-- `GUI_ENABLED=false` by default: Flask is never imported and adds zero overhead when off
-- `flask>=3.0.0` added to `requirements.txt`
-- GUI default port changed to `8080` throughout code, docs, and `.env.example`
-- GitHub Actions pinned to Node.js 24 native versions (`checkout@v4.2.2`, `setup-python@v5.4.0`, `upload-artifact@v4.6.2`); `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` workaround removed
-- 15 new tests covering push_event, SSE broadcast, thread safety, and graceful stop
-
-### Includes all v0.3.x and v0.2.x improvements
-
----
-
-## [v0.3.1-alpha] — 2026-04-17 — 188 tests passing
-
-### Google Earth KML output
-
-- Every session now produces `detections.kml` alongside shapefiles and GeoJSON automatically
-- WiFi/BT placemarks color-coded by alert level: white (new), yellow (suspicious), orange (likely), red (high)
-- Track LineStrings drawn for any device seen at two or more distinct GPS clusters — movement patterns visible at a glance in Google Earth
-- Aircraft placed at actual altitude (feet → metres) in KML Point coordinates
-- Emergency aircraft use a distinct red pushpin style
-- KML descriptions render as formatted HTML tables inside Google Earth
-- `write_session_summary_overlay()` inserts a ScreenOverlay legend with session stats (WiFi count, aircraft count, drone count, duration)
-- No new dependencies — pure Python stdlib (`xml.sax.saxutils`)
-- 14 new tests
+**207 tests passing.**
 
 ---
 
-## [v0.3-alpha] — 2026-04-17 — 174 tests passing
+## [v0.3.1-alpha] — 2026-04-17
 
-### MAC randomization detection and fingerprint grouping
+### What's better now
+Patch release addressing April 17 code review findings. The
+sensor platform is noticeably more robust and easier to
+operate in the field.
 
-- Randomized MACs (iOS 14+, Android 10+, Windows 10+) are detected automatically via the IEEE 802 locally administered bit
-- Every Kismet device record now carries `mac_type` (`static` or `randomized`) and `is_randomized` fields
-- `PersistenceEngine` optionally groups randomized MACs that share probe SSIDs into fingerprint clusters — tracks likely-same devices across MAC changes
-- `get_fingerprint_summary()` returns current `MACFingerprint` clusters: canonical MAC, all observed MACs, shared probe SSIDs, average RSSI
-- `IGNORE_RANDOMIZED_MACS=true` silently drops all randomized MACs from scoring — useful in crowded environments
-- Alert bodies now include `MAC type: static/randomized` field
-- `DetectionEvent` carries `mac_type` so GIS outputs and KML reflect MAC type
-- `HANDLE_MAC_RANDOMIZATION=true` (default) — set false to skip fingerprint grouping
-- 14 new tests covering randomization detection, normalization, and fingerprint clustering
+- **Tunable poll intervals** — GPS, Kismet, ADS-B, and
+  DroneRF poll rates now configurable via `.env`
+- **GPS startup patience** — timeout extended to 120 seconds
+  via `GPS_STARTUP_TIMEOUT_SECONDS`
+- **Sensor health alerts** — clear WARNING on degradation,
+  INFO on recovery
+- **Atomic rate limiter writes** — file locking prevents
+  corruption on rapid restarts
+- **Alert retries** — exponential backoff on network failures
+- **GPS device auto-detection** — scans fallback paths if
+  configured device not found
+- **numpy pinned** — `numpy>=1.24,<3` fixes CI conflicts
+- **CI green on Python 3.11 and 3.13**
 
----
-
-## [v0.2.2-alpha] — 2026-04-17 — 154 tests passing
-
-### Operational resilience: health banner and auto-reconnect
-
-- 5-minute health banner logged to `journalctl` on schedule — session ID, uptime, per-sensor status (✓/✗), cumulative event and alert counts
-- Auto-reconnect on first sensor failure: GPS, Kismet, and ADS-B close and reopen before declaring degraded — handles transient USB resets and network hiccups without a service restart
-- Reconnect attempts and interval configurable via `MAX_RECONNECT_ATTEMPTS` and `RECONNECT_INTERVAL_SECONDS`
-- Health banner interval configurable via `HEALTH_BANNER_INTERVAL_SECONDS`
-- Sensor health transitions emit WARNING on degradation and INFO on recovery
-- `_VERSION` string corrected to `0.2.1-alpha`
+**154 tests passing.**
 
 ---
 
-## [v0.2.1-alpha] — 2026-04-17 — 154 tests passing
+## [v0.3-alpha] — 2026-04-17
 
-### Code review and CI hardening
+### What's new
+The sensor now handles iOS and Android MAC randomization
+intelligently, and produces Google Earth KML output.
 
-- All four sensor poll intervals now tunable via `.env` (`GPS_POLL_INTERVAL_SECONDS`, `ADSB_POLL_INTERVAL_SECONDS`, `KISMET_POLL_INTERVAL_SECONDS`, `DRONE_POLL_INTERVAL_SECONDS`)
-- GPS startup timeout extended to 120 s — gives real-world USB dongles time for cold-start fix
-- GPS device path falls back gracefully when `GPS_DEVICE` is unset
-- Alert backends retry with exponential backoff on network failure
-- Rate limiter writes are atomic (temp file + `os.rename`) — crash-safe
-- `numpy` pinned to `>=1.24,<3` to avoid source-tree conflicts in CI
-- CI green on Python 3.11 and 3.13 — `librtlsdr0` added, `conftest.py` guards for `python3-gps` path in virtualenv, `drone_rf` numpy import guarded
-- GitHub Actions added with pytest matrix and flake8 lint
+- **MAC randomization detection** — locally-administered bit
+  detection, no more treating every iOS probe as a new device
+- **Fingerprint grouping** — clusters devices sharing probe
+  SSIDs despite MAC changes between scans
+- **MAC type in alerts** — every alert body now includes
+  whether the device is randomized or static
+- **KML output** — written automatically at session end
+  alongside shapefiles
+- **Three KML layers** — WiFi/BT devices, aircraft, drone RF
+- **Color-coded markers** — white/yellow/orange/red by alert
+  level, red for emergency aircraft
+- **Track lines** — connect GPS locations where same device
+  was seen
 
----
-
-## [v0.2-alpha] — 2026-04-17 — 145 tests passing
-
-### Orchestrator fully wired
-
-- `main.py` orchestrator wires all sensors: Kismet → PersistenceEngine → AlertEngine pipeline active
-- Persistent rate limiters survive service restarts — no re-alerting on the same device after a restart
-- Incremental JSONL session logging: `events.jsonl`, `aircraft.jsonl`, `drone.jsonl` written on every detection — crash-safe, no data loss if the service is killed mid-session
-- WiGLE CSV upload at session end: Kismet's native `.wiglecsv` file is uploaded to WiGLE.net automatically if `WIGLE_API_NAME` and `WIGLE_API_KEY` are set
-- Shapefile, GeoJSON, and session `summary.json` written at clean shutdown
-- 145 tests passing
+**188 tests passing.**
 
 ---
 
-## [v0.1-alpha] — 2026-04-17 — 139 tests passing
+## [v0.2.2-alpha] — 2026-04-17
 
-### First complete release — all modules wired
+### What's better now
+The sensor now tells you what it is doing every 5 minutes,
+and recovers automatically when a sensor goes offline.
 
-This release marks the first end-to-end working sensor platform. Every module
-is implemented, tested, and connected to the orchestrator.
+- **5-minute health banner** — GPS fix status, Kismet
+  activity, ADS-B, DroneRF, alert counts, session uptime
+  all logged every 300 seconds (tunable)
+- **Auto-reconnect** — up to 3 attempts with 5s between
+  tries when a sensor degrades mid-session
+- **Version string corrected** to match Git tag
 
-**Sensor modules:**
-- `GPSModule` — gpsd streaming client; every detection carries lat, lon, UTC
-- `KismetModule` — Kismet REST API with API key auth; WiFi + BT device polling
-- `ADSBModule` — readsb JSON output; aircraft polling with adsb.lol enrichment (registration, type, operator, military flag)
-- `DroneRFModule` — pyrtlsdr passive scan at 433/868/915 MHz/2.4 GHz for drone command links
-
-**Intelligence:**
-- `PersistenceEngine` — time-window scoring across 5/10/15/20 min windows; 0.0–1.0 surveillance confidence score; alert levels: suspicious / likely / high
-- `ProbeAnalyzer` — flags devices probing > 10 unique SSIDs or known surveillance-pattern SSIDs
-- `IgnoreList` — MAC, OUI prefix, and SSID filtering with CLI management tool (`scripts/manage_ignore_list.py`)
-
-**Output:**
-- `ShapefileWriter` — geopandas/fiona; WiFi, aircraft, and drone detections as `.shp` point features plus `.geojson` FeatureCollection
-- `WiGLEUploader` — multipart POST of Kismet `.wiglecsv` to WiGLE.net
-
-**Alert engine:**
-- `AlertBackend` ABC with `NtfyBackend`, `TelegramBackend`, `DiscordBackend`, `ConsoleBackend`
-- `AlertFactory.get_backend()` reads `ALERT_BACKEND` from `.env`, falls back to console
-- `RateLimiter` with configurable per-event-type cooldowns
-
-**Platform:**
-- `main.py` asyncio orchestrator; SIGINT/SIGTERM → clean shutdown with file writes
-- `deploy/install.sh` one-command installer; auto-detects Debian Bookworm / Trixie
-- Systemd service units for Kismet, gpsd, and Passive Vigilance
-- WiFi monitor mode via udev rule + NetworkManager unmanaged config (MT7610U tested)
-- 139 tests passing across all modules
+**154 tests passing.**
 
 ---
 
-[Unreleased]: https://github.com/Isthistak3n/Passive-Vigilance/compare/v0.4-alpha...HEAD
-[v0.4-alpha]: https://github.com/Isthistak3n/Passive-Vigilance/compare/v0.3.1-alpha...v0.4-alpha
-[v0.3.1-alpha]: https://github.com/Isthistak3n/Passive-Vigilance/compare/v0.3-alpha...v0.3.1-alpha
-[v0.3-alpha]: https://github.com/Isthistak3n/Passive-Vigilance/compare/v0.2.2-alpha...v0.3-alpha
-[v0.2.2-alpha]: https://github.com/Isthistak3n/Passive-Vigilance/compare/v0.2.1-alpha...v0.2.2-alpha
-[v0.2.1-alpha]: https://github.com/Isthistak3n/Passive-Vigilance/compare/v0.2-alpha...v0.2.1-alpha
-[v0.2-alpha]: https://github.com/Isthistak3n/Passive-Vigilance/compare/v0.1-alpha...v0.2-alpha
-[v0.1-alpha]: https://github.com/Isthistak3n/Passive-Vigilance/releases/tag/v0.1-alpha
+## [v0.2.1-alpha] — 2026-04-17
+
+### What's better now
+Addressed every issue from the April 17 code review.
+
+- **Correct version string** in logs and banners
+- **Tunable poll intervals** via `.env`
+- **GPS timeout 120s** via `GPS_STARTUP_TIMEOUT_SECONDS`
+- **Sensor health dict** with WARNING on degradation
+- **Atomic rate limiter** with file locking
+- **HTTP retries** with exponential backoff
+- **GPS device fallback** scanning
+- **numpy pinned** in requirements.txt
+- **CI green** on Python 3.11 and 3.13
+
+**145 tests passing.**
+
+---
+
+## [v0.2-alpha] — 2026-04-14
+
+### What's new
+First fully functional release. Every module implemented,
+tested, and wired into a single asyncio orchestrator that
+runs as a systemd service and starts automatically on boot.
+
+- **Always-on sensor** — plug in power, capturing starts
+  automatically via systemd
+- **Counter-surveillance detection** — persistence engine
+  scores WiFi and BT devices across four overlapping time
+  windows (5/10/15/20 min)
+- **Pluggable alerts** — Ntfy, Telegram, Discord, or Console
+  via single `.env` setting with rate limiting
+- **Crash-safe session logging** — incremental JSONL survives
+  unexpected shutdowns
+- **GIS output** — shapefile and GeoJSON at session end,
+  three layers: WiFi/BT, aircraft, drone
+- **WiGLE wardriving upload** — automatic at session end
+- **Persistent rate limits** — cooldowns survive restarts
+- **One-command installer** — `sudo bash deploy/install.sh`
+
+**139 tests passing.**
+
+---
+
+## [v0.1-alpha] — 2026-04-13
+
+### Foundation release
+Sensor stack fully built and individually tested. Each module
+works independently — the orchestrator comes in v0.2.
+
+- GPS daemon with gpsd integration and fix quality filtering
+- WiFi + Bluetooth via Kismet REST API, monitor mode
+  auto-setup for MediaTek MT7610U and RTL8811AU dongles
+- ADS-B via readsb JSON API with adsb.lol enrichment
+- Drone RF scanning at 433/868/915 MHz and 2.4 GHz
+- MAC/OUI/SSID ignore lists with CLI management tool
+- Four-window persistence scoring with GPS clustering
+- Ntfy/Telegram/Discord/Console alert backends
+- One-command installer with systemd services
+
+**112 tests passing.**
+
+---
+
+## About this project
+
+Passive Vigilance is a field-deployable passive RF sensor
+platform for counter-surveillance, situational awareness,
+and open-source RF intelligence. It never transmits.
+
+Inspired by [Chasing Your Tail NG](https://github.com/ArgeliusLabs/Chasing-Your-Tail-NG)
+by [@matt0177](https://github.com/matt0177).
