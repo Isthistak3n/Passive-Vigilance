@@ -54,6 +54,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/dump1090.py` | `ADSBModule` | dump1090 JSON output; aircraft polling |
 | `modules/drone_rf.py` | `DroneRFModule` | pyrtlsdr; passive RF scan for drone signatures |
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
+| `modules/mac_utils.py` | — | MAC randomization detection, type classification, device fingerprinting |
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
@@ -168,6 +169,24 @@ Re-run the monitor mode commands after any NM restart.
 - `DetectionEvent` fields: `mac`, `score`, `score_breakdown`, `first_seen`, `last_seen`,
   `locations`, `observation_count`, `manufacturer`, `device_type`, `alert_level`
 - `ProbeAnalyzer` flags: devices probing > 10 unique SSIDs, or probing surveillance-pattern SSIDs
+
+## MAC Randomization
+
+- `modules/mac_utils.py` — pure utility module, no external dependencies
+- `is_randomized_mac(mac)` — returns True if locally administered bit is set (second hex digit of first octet is 2, 6, A, or E)
+- `get_mac_type(mac)` — returns `"randomized"` or `"static"`
+- `get_randomization_vendor_hint(mac)` — returns `""` for static MACs, `"Unknown"` for randomized (platform cannot be reliably identified from MAC alone)
+- `normalize_mac(mac)` — lowercase colon-separated; accepts colons, dashes, compact 12-hex form
+- `MACFingerprint` dataclass: `canonical_mac`, `all_macs`, `probe_ssids`, `avg_rssi`, `device_count`
+- `group_by_fingerprint(devices)` — clusters randomized MACs that share ≥1 probe SSID using union-find; MACs with no probe SSIDs are never merged
+- `KismetModule.poll_devices()` stamps every record with `mac_type` and `is_randomized` fields
+- `DetectionEvent` carries `mac_type: str = "static"` field; set via `get_mac_type()` in `_make_event()`
+- `PersistenceEngine.__init__()` accepts `handle_randomized: bool` (also `HANDLE_MAC_RANDOMIZATION` env var, default True)
+- `PersistenceEngine.get_fingerprint_summary()` — returns current `MACFingerprint` list for tracked randomized MACs
+- `IgnoreList.ignore_randomized_macs` — property; default False; configurable via constructor or `IGNORE_RANDOMIZED_MACS` env var
+- `IgnoreList.is_ignored_randomized(mac)` — returns True when `ignore_randomized_macs=True` and the MAC is randomized
+- `IgnoreList.stats()` now includes `ignore_randomized_macs` key
+- Alert bodies for persistence events include `MAC type: static/randomized` field
 
 ## Alert Engine
 

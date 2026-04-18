@@ -8,6 +8,8 @@ from typing import Optional
 import aiohttp
 from dotenv import load_dotenv
 
+from modules.mac_utils import get_mac_type, is_randomized_mac
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -170,17 +172,19 @@ class KismetModule:
                     continue
 
             record = {
-                "macaddr":     mac,
-                "type":        entry.get("kismet.device.base.type", ""),
-                "name":        ssid,
-                "manuf":       entry.get("kismet.device.base.manuf", ""),
-                "phyname":     entry.get("kismet.device.base.phyname", ""),
-                "first_time":  entry.get("kismet.device.base.first_time", 0),
-                "last_time":   entry.get("kismet.device.base.last_time", 0),
-                "last_signal": entry.get("kismet.device.base.signal/last_signal", None),
-                "gps_lat":     gps_fix["lat"]  if gps_fix else None,
-                "gps_lon":     gps_fix["lon"]  if gps_fix else None,
-                "gps_utc":     gps_fix["utc"]  if gps_fix else None,
+                "macaddr":      mac,
+                "type":         entry.get("kismet.device.base.type", ""),
+                "name":         ssid,
+                "manuf":        entry.get("kismet.device.base.manuf", ""),
+                "phyname":      entry.get("kismet.device.base.phyname", ""),
+                "first_time":   entry.get("kismet.device.base.first_time", 0),
+                "last_time":    entry.get("kismet.device.base.last_time", 0),
+                "last_signal":  entry.get("kismet.device.base.signal/last_signal", None),
+                "gps_lat":      gps_fix["lat"]  if gps_fix else None,
+                "gps_lon":      gps_fix["lon"]  if gps_fix else None,
+                "gps_utc":      gps_fix["utc"]  if gps_fix else None,
+                "mac_type":     get_mac_type(mac),
+                "is_randomized": is_randomized_mac(mac),
             }
             devices.append(record)
 

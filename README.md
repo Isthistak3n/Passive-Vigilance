@@ -1,7 +1,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-145%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-174%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.2--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -117,14 +117,15 @@ flowchart TD
 | Kismet integration | ✅ Complete | REST API, API key auth, WiGLE CSV — 10 tests |
 | ADS-B + drone RF | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
 | WiFi monitor mode | ✅ Complete | MT7610U/RTL8811AU udev + NM unmanaged — 15 tests |
-| Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 22 tests |
-| Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 24 tests |
+| Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
+| MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
+| Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 27 tests |
 | Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 24 tests |
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, session management — 17 tests |
 
-**145 tests passing** across all modules.
+**174 tests passing** across all modules.
 
 ---
 
@@ -192,6 +193,7 @@ Passive-Vigilance/
 │   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
 │   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures
 │   ├── ignore_list.py                # IgnoreList — MAC/OUI/SSID filter; atomic JSON persistence
+│   ├── mac_utils.py                  # MAC randomization detection, type classification, fingerprinting
 │   ├── alerts.py                     # AlertBackend ABC + Ntfy / Telegram / Discord / Console backends
 │   ├── persistence.py                # PersistenceEngine — time-window scoring; DetectionEvent dataclass
 │   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
@@ -202,10 +204,11 @@ Passive-Vigilance/
 │   ├── test_kismet.py                # 10 tests — KismetModule
 │   ├── test_dump1090.py              # 20 tests — ADSBModule
 │   ├── test_monitor_mode.py          # 15 tests — WiFi monitor mode
-│   ├── test_ignore_list.py           # 22 tests — IgnoreList
-│   ├── test_persistence.py           # 24 tests — PersistenceEngine
+│   ├── test_ignore_list.py           # 25 tests — IgnoreList
+│   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
+│   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
-│   └── test_alerts.py                # 22 tests — AlertEngine
+│   └── test_alerts.py                # 24 tests — AlertEngine
 ├── scripts/
 │   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
 ├── deploy/
