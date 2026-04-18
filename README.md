@@ -1,5 +1,11 @@
 # Passive Vigilance
 
+[![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-145%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Release](https://img.shields.io/badge/release-v0.2--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
+[![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
+
 > A passive RF/WiFi/BT/ADS-B sensor platform for counter-surveillance,
 > situational awareness, and open-source RF intelligence.
 

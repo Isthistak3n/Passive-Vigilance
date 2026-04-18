@@ -27,7 +27,6 @@ Usage examples
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 
@@ -65,7 +64,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _print_list(il) -> None:
-    from modules.ignore_list import _MAC_FILE, _SSID_FILE
     print(f"\n{'─'*60}")
     print(f"  MACs ({len(il._macs)} full / {len(il._ouis)} OUI prefixes)")
     print(f"{'─'*60}")

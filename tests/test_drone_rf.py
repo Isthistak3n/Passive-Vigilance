@@ -4,7 +4,15 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 import modules.drone_rf  # noqa: F401 — load before @patch resolves targets
+
+try:
+    import numpy
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
 
 
 def _run(coro):
@@ -133,6 +141,7 @@ class TestDroneRFStopScan(unittest.TestCase):
 # Detection dict structure
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy not available")
 class TestDroneRFDetectionStructure(unittest.TestCase):
 
     def test_detection_dict_has_required_fields(self):
