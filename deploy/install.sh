@@ -100,6 +100,11 @@ usermod -aG kismet "$PI_USER"
 usermod -aG dialout "$PI_USER"
 
 # ── 5. gpsd config ─────────────────────────────────────────────────────────
+# NOTE: For production, replace the hard-coded DEVICES path with a stable udev
+# symlink such as /dev/gps0.  Add a rule to /etc/udev/rules.d/ that matches on
+# SUBSYSTEM=="tty", ATTRS{idVendor}=="<vid>", ATTRS{idProduct}=="<pid>",
+# SYMLINK+="gps0" and set DEVICES="/dev/gps0" below.  The GPSModule in
+# modules/gps.py will auto-scan /dev/ttyUSB* and /dev/ttyACM* as fallback.
 echo "$LOG Configuring gpsd..."
 cat > /etc/default/gpsd << 'EOF'
 START_DAEMON="true"

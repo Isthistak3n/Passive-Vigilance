@@ -84,6 +84,7 @@ class PersistenceEngine:
         )
         # {mac: [{"timestamp", "gps_lat", "gps_lon", "signal", "manuf", "type", "name"}]}
         self._observations: dict = {}
+        self._purge_counter: int = 0
 
     # ------------------------------------------------------------------
     # Main update cycle
@@ -109,7 +110,9 @@ class PersistenceEngine:
             List of :class:`DetectionEvent` — may be empty.
         """
         now = datetime.now(timezone.utc)
-        self.purge_old_observations()
+        self._purge_counter += 1
+        if self._purge_counter % 10 == 0:
+            self.purge_old_observations()
 
         lat = gps_fix.get("lat") if gps_fix else None
         lon = gps_fix.get("lon") if gps_fix else None

@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_VERSION = "0.1.0"
+_VERSION = "0.2-alpha"
 _SESSION_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
 _RATE_LIMIT_PERSIST = "data/rate_limits.json"
 
@@ -53,6 +53,12 @@ class PassiveVigilance:
         self.session_id: str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.session_start: datetime = datetime.now(timezone.utc)
 
+        # Poll intervals (tunable via .env)
+        self.gps_poll_interval = int(os.getenv("GPS_POLL_INTERVAL_SECONDS", "1"))
+        self.adsb_poll_interval = int(os.getenv("ADSB_POLL_INTERVAL_SECONDS", "5"))
+        self.kismet_poll_interval = int(os.getenv("KISMET_POLL_INTERVAL_SECONDS", "30"))
+        self.drone_poll_interval = int(os.getenv("DRONE_POLL_INTERVAL_SECONDS", "5"))
+
         # Stop signal — set by SIGINT/SIGTERM handlers
         self._stop: asyncio.Event = asyncio.Event()
 
@@ -61,6 +67,14 @@ class PassiveVigilance:
         self._kismet_active: bool = False
         self._adsb_active: bool = False
         self._drone_active: bool = False
+
+        # Sensor health tracking — transitions trigger WARNING on degradation, INFO on recovery
+        self._sensor_health: dict[str, bool] = {
+            "gps": True,
+            "kismet": True,
+            "adsb": True,
+            "drone_rf": True,
+        }
 
         # Session accumulators
         self.all_events: list[dict] = []           # WiFi persistence detections
@@ -119,11 +133,12 @@ class PassiveVigilance:
         except Exception as exc:
             logger.warning("GPS: unavailable (%s) — continuing without GPS", exc)
 
-        # Wait up to 30 s for a GPS fix before continuing
+        # Wait up to GPS_STARTUP_TIMEOUT_SECONDS for a GPS fix before continuing
         if self._gps_active:
-            logger.info("GPS: waiting up to 30 s for first fix...")
+            gps_timeout = int(os.getenv("GPS_STARTUP_TIMEOUT_SECONDS", "120"))
+            logger.info("GPS: waiting up to %ds for first fix...", gps_timeout)
             loop = asyncio.get_running_loop()
-            for _ in range(30):
+            for _ in range(gps_timeout):
                 try:
                     fix = await loop.run_in_executor(None, self.gps.get_fix)
                 except Exception:
@@ -136,7 +151,8 @@ class PassiveVigilance:
                 await asyncio.sleep(1)
             else:
                 logger.warning(
-                    "⚠  No GPS fix within 30 s — detections will not be location-stamped"
+                    "⚠  No GPS fix within %ds — detections will not be location-stamped",
+                    gps_timeout,
                 )
 
         # Kismet
@@ -222,15 +238,23 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._gps_active:
                 await self._poll_gps()
-            await asyncio.sleep(1)
+            await asyncio.sleep(self.gps_poll_interval)
 
     async def _poll_gps(self) -> None:
         loop = asyncio.get_running_loop()
         try:
             fix = await loop.run_in_executor(None, self.gps.get_fix)
         except Exception as exc:
-            logger.debug("GPS poll error: %s", exc)
+            if self._sensor_health["gps"]:
+                logger.warning("Sensor gps degraded: %s", exc)
+                self._console_alert(f"Sensor gps degraded: {exc}")
+                self._sensor_health["gps"] = False
+            else:
+                logger.debug("GPS poll error (repeated): %s", exc)
             return
+        if not self._sensor_health["gps"]:
+            logger.info("Sensor gps recovered")
+            self._sensor_health["gps"] = True
 
         had_fix = self._current_fix is not None
         self._current_fix = fix
@@ -250,14 +274,22 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._adsb_active:
                 await self._poll_adsb()
-            await asyncio.sleep(5)
+            await asyncio.sleep(self.adsb_poll_interval)
 
     async def _poll_adsb(self) -> None:
         try:
             aircraft_list = await self.adsb.poll_aircraft()
         except Exception as exc:
-            logger.debug("ADS-B poll error: %s", exc)
+            if self._sensor_health["adsb"]:
+                logger.warning("Sensor adsb degraded: %s", exc)
+                self._console_alert(f"Sensor adsb degraded: {exc}")
+                self._sensor_health["adsb"] = False
+            else:
+                logger.debug("ADS-B poll error (repeated): %s", exc)
             return
+        if not self._sensor_health["adsb"]:
+            logger.info("Sensor adsb recovered")
+            self._sensor_health["adsb"] = True
 
         for aircraft in aircraft_list:
             icao = aircraft.get("icao", "unknown")
@@ -289,14 +321,22 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._kismet_active:
                 await self._poll_kismet()
-            await asyncio.sleep(30)
+            await asyncio.sleep(self.kismet_poll_interval)
 
     async def _poll_kismet(self) -> None:
         try:
             devices = await self.kismet.poll_devices()
         except Exception as exc:
-            logger.debug("Kismet poll error: %s", exc)
+            if self._sensor_health["kismet"]:
+                logger.warning("Sensor kismet degraded: %s", exc)
+                self._console_alert(f"Sensor kismet degraded: {exc}")
+                self._sensor_health["kismet"] = False
+            else:
+                logger.debug("Kismet poll error (repeated): %s", exc)
             return
+        if not self._sensor_health["kismet"]:
+            logger.info("Sensor kismet recovered")
+            self._sensor_health["kismet"] = True
 
         logger.debug("Kismet: polled %d device(s)", len(devices))
 
@@ -309,7 +349,7 @@ class PassiveVigilance:
         try:
             detection_events = self.persistence.update(devices, gps_fix=self._current_fix)
         except Exception as exc:
-            logger.debug("PersistenceEngine update error: %s", exc)
+            logger.warning("PersistenceEngine update error: %s", exc)
             return
 
         for event in detection_events:
@@ -339,9 +379,6 @@ class PassiveVigilance:
                     event.mac, event.score, event.alert_level,
                 )
 
-        # Purge observations older than the maximum tracking window
-        self.persistence.purge_old_observations()
-
     # ------------------------------------------------------------------
     # Drone RF — drain detections every 5 seconds
     # ------------------------------------------------------------------
@@ -350,12 +387,24 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._drone_active:
                 await self._poll_drone_rf()
-            await asyncio.sleep(5)
+            await asyncio.sleep(self.drone_poll_interval)
 
     async def _poll_drone_rf(self) -> None:
-        # Drain in one shot to minimise race with the scan thread
-        pending = self.drone_rf._detections[:]
-        self.drone_rf._detections.clear()
+        try:
+            # Drain in one shot to minimise race with the scan thread
+            pending = self.drone_rf._detections[:]
+            self.drone_rf._detections.clear()
+        except Exception as exc:
+            if self._sensor_health["drone_rf"]:
+                logger.warning("Sensor drone_rf degraded: %s", exc)
+                self._console_alert(f"Sensor drone_rf degraded: {exc}")
+                self._sensor_health["drone_rf"] = False
+            else:
+                logger.debug("Drone RF poll error (repeated): %s", exc)
+            return
+        if not self._sensor_health["drone_rf"]:
+            logger.info("Sensor drone_rf recovered")
+            self._sensor_health["drone_rf"] = True
 
         for detection in pending:
             freq = detection.get("freq_mhz", 0)
@@ -462,6 +511,11 @@ class PassiveVigilance:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _console_alert(self, message: str) -> None:
+        """Emit a sensor health alert via ConsoleBackend so it always appears in journalctl."""
+        from modules.alerts import ConsoleBackend
+        ConsoleBackend().send("Sensor Health", message, priority="high", tags=["sensor", "health"])
 
     def _append_jsonl(self, path: Path, data: dict) -> None:
         """Append *data* as a single JSON line to *path* (JSON Lines format).

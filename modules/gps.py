@@ -13,7 +13,38 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-GPS_DEVICE = os.getenv("GPS_DEVICE", "/dev/ttyUSB0")
+_GPS_CANDIDATES = [
+    "/dev/ttyUSB0",
+    "/dev/ttyUSB1",
+    "/dev/ttyACM0",
+    "/dev/ttyACM1",
+]
+
+
+def _resolve_gps_device() -> str:
+    """Return the GPS device path to use.
+
+    Tries GPS_DEVICE from .env first; if that path does not exist, scans
+    _GPS_CANDIDATES and returns the first one that exists.  Logs a warning
+    if nothing is found and returns the configured value anyway so gpsd can
+    emit its own error.
+    """
+    configured = os.getenv("GPS_DEVICE", "/dev/ttyUSB0")
+    if os.path.exists(configured):
+        return configured
+    for candidate in _GPS_CANDIDATES:
+        if os.path.exists(candidate):
+            logger.warning(
+                "GPS_DEVICE %s not found — using %s instead", configured, candidate
+            )
+            return candidate
+    logger.warning(
+        "GPS_DEVICE %s not found and no candidates detected — gpsd may fail", configured
+    )
+    return configured
+
+
+GPS_DEVICE = _resolve_gps_device()
 
 
 class GPSModule:

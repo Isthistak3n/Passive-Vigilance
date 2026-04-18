@@ -3,7 +3,7 @@
 # pinned to 0.2.93 — librtlsdr 2.0.2 (Osmocom fork on Trixie)
 # has different API than newer pyrtlsdr expects (missing rtlsdr_set_dithering)
 pyrtlsdr==0.2.93
-numpy
+numpy>=1.24,<3
 requests
 python-dotenv
 geopandas

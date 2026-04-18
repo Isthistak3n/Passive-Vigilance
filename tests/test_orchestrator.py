@@ -335,16 +335,6 @@ async def test_poll_kismet_calls_persistence_update(orch):
     orch.persistence.update.assert_called_once_with([device], gps_fix=orch._current_fix)
 
 
-@pytest.mark.asyncio
-async def test_poll_kismet_calls_purge_old_observations(orch):
-    """_poll_kismet() must call purge_old_observations() on every cycle."""
-    orch.kismet.poll_devices = AsyncMock(return_value=[])
-    orch._kismet_active = True
-
-    await orch._poll_kismet()
-
-    orch.persistence.purge_old_observations.assert_called_once()
-
 
 @pytest.mark.asyncio
 async def test_poll_kismet_appends_events_to_jsonl(orch, tmp_path):

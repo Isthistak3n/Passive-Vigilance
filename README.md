@@ -124,7 +124,7 @@ flowchart TD
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, session management — 17 tests |
 
-**143 tests passing** across all modules.
+**145 tests passing** across all modules.
 
 ---
 

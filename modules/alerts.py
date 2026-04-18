@@ -1,5 +1,6 @@
 """Alert backends — abstract base and concrete implementations."""
 
+import fcntl
 import json
 import logging
 import os
@@ -15,6 +16,41 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def _post_with_retry(
+    url: str,
+    max_retries: int = 3,
+    timeout: int = 10,
+    **kwargs,
+) -> requests.Response:
+    """POST to *url* with exponential backoff on connection errors and 5xx responses.
+
+    Raises ``requests.RequestException`` on final failure or non-retryable error.
+    """
+    delay = 1
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.post(url, timeout=timeout, **kwargs)
+            if resp.status_code < 500:
+                resp.raise_for_status()
+                return resp
+            # 5xx — retry
+            if attempt < max_retries:
+                logger.debug("HTTP %d from %s, retry %d/%d in %ds", resp.status_code, url, attempt, max_retries, delay)
+                time.sleep(delay)
+                delay *= 2
+            else:
+                resp.raise_for_status()
+        except requests.ConnectionError as exc:
+            if attempt < max_retries:
+                logger.debug("Connection error posting to %s, retry %d/%d in %ds: %s", url, attempt, max_retries, delay, exc)
+                time.sleep(delay)
+                delay *= 2
+            else:
+                raise
+    raise requests.RequestException(f"All {max_retries} retries exhausted for {url}")
+
 
 def _derive_persist_path(base: Optional[str], kind: str) -> Optional[str]:
     """Return a derived persist path for a per-type rate limiter.
@@ -121,7 +157,12 @@ class RateLimiter:
         try:
             path = Path(self._persist_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_path = path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                json.dump(data, f, indent=2)
+                fcntl.flock(f, fcntl.LOCK_UN)
+            os.replace(tmp_path, path)
         except Exception as exc:
             logger.warning("RateLimiter: could not save state to %s: %s", self._persist_path, exc)
 
@@ -189,12 +230,11 @@ class NtfyBackend(AlertBackend):
             "Tags": ",".join(tags) if tags else "",
         }
         try:
-            resp = requests.post(url, data=body.encode("utf-8"), headers=headers, timeout=10)
-            resp.raise_for_status()
+            _post_with_retry(url, data=body.encode("utf-8"), headers=headers)
             logger.debug("ntfy alert sent: %s", title)
             return True
         except requests.RequestException as exc:
-            logger.error("ntfy send failed: %s", exc)
+            logger.warning("ntfy send failed: %s", exc)
             return False
 
     def send_drone_alert(self, detection: dict) -> bool:
@@ -288,12 +328,11 @@ class TelegramBackend(AlertBackend):
             "parse_mode": "Markdown",
         }
         try:
-            resp = requests.post(url, json=payload, timeout=10)
-            resp.raise_for_status()
+            _post_with_retry(url, json=payload)
             logger.debug("telegram alert sent: %s", title)
             return True
         except requests.RequestException as exc:
-            logger.error("telegram send failed: %s", exc)
+            logger.warning("telegram send failed: %s", exc)
             return False
 
     def send_drone_alert(self, detection: dict) -> bool:
@@ -392,12 +431,11 @@ class DiscordBackend(AlertBackend):
             ]
         }
         try:
-            resp = requests.post(self._webhook_url, json=payload, timeout=10)
-            resp.raise_for_status()
+            _post_with_retry(self._webhook_url, json=payload)
             logger.debug("discord alert sent: %s", title)
             return True
         except requests.RequestException as exc:
-            logger.error("discord send failed: %s", exc)
+            logger.warning("discord send failed: %s", exc)
             return False
 
     def send_drone_alert(self, detection: dict) -> bool:
