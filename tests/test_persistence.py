@@ -262,5 +262,35 @@ class TestStats(unittest.TestCase):
         self.assertIsNotNone(s["newest_observation"])
 
 
+class TestMACRandomizationInPersistence(unittest.TestCase):
+
+    def test_detection_event_has_mac_type_field(self):
+        """DetectionEvent returned by update() carries a mac_type string."""
+        pe = PersistenceEngine(alert_threshold=0.3, poll_interval_seconds=240)
+        pe._observations[MAC_A] = [_obs(m) for m in [2, 7, 12, 17]]
+        devices = [{"macaddr": MAC_A, "manuf": "", "type": "", "name": "", "last_signal": None}]
+        events = pe.update(devices, gps_fix=None)
+        self.assertTrue(len(events) > 0)
+        self.assertIn(events[0].mac_type, ("static", "randomized"))
+
+    def test_randomized_mac_gets_mac_type_randomized(self):
+        """A locally-administered MAC address produces mac_type='randomized' in the event."""
+        rand_mac = "02:ab:cd:ef:01:23"  # second hex digit = 2 → locally administered
+        pe = PersistenceEngine(alert_threshold=0.3, poll_interval_seconds=240)
+        pe._observations[rand_mac] = [_obs(m) for m in [2, 7, 12, 17]]
+        devices = [{"macaddr": rand_mac, "manuf": "", "type": "", "name": "", "last_signal": None}]
+        events = pe.update(devices, gps_fix=None)
+        self.assertTrue(len(events) > 0)
+        self.assertEqual(events[0].mac_type, "randomized")
+
+    def test_get_fingerprint_summary_returns_list(self):
+        """get_fingerprint_summary() returns a list (empty when no randomized MACs tracked)."""
+        pe = PersistenceEngine()
+        # MAC_A is a static MAC — no fingerprint groups expected
+        pe._observations[MAC_A] = [_obs(1)]
+        result = pe.get_fingerprint_summary()
+        self.assertIsInstance(result, list)
+
+
 if __name__ == "__main__":
     unittest.main()

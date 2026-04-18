@@ -181,5 +181,29 @@ class TestIgnoreListStats(unittest.TestCase):
         self.assertEqual(s["ssid_count"], 0)
 
 
+class TestIgnoreListRandomizedMACs(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def test_ignore_randomized_false_by_default(self):
+        """ignore_randomized_macs property is False when not configured."""
+        il = IgnoreList(data_dir=self.tmp)
+        self.assertFalse(il.ignore_randomized_macs)
+
+    def test_is_ignored_randomized_returns_false_when_disabled(self):
+        """is_ignored_randomized() returns False when ignore_randomized_macs=False."""
+        il = IgnoreList(data_dir=self.tmp, ignore_randomized_macs=False)
+        # 02:... has locally administered bit set — randomized MAC
+        self.assertFalse(il.is_ignored_randomized("02:ab:cd:ef:01:23"))
+
+    def test_is_ignored_randomized_returns_true_when_enabled(self):
+        """is_ignored_randomized() returns True for randomized MACs when enabled."""
+        il = IgnoreList(data_dir=self.tmp, ignore_randomized_macs=True)
+        self.assertTrue(il.is_ignored_randomized("02:ab:cd:ef:01:23"))
+        # Static MAC should still return False
+        self.assertFalse(il.is_ignored_randomized("a4:c3:f0:11:22:33"))
+
+
 if __name__ == "__main__":
     unittest.main()
