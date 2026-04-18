@@ -4,7 +4,7 @@ import json
 import queue
 import threading
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class TestGUIServerImport(unittest.TestCase):
@@ -138,6 +138,120 @@ class TestGUIServerStartWithoutFlask(unittest.TestCase):
         gui._app = None  # simulate missing Flask
         result = gui.start()
         self.assertFalse(result)
+
+
+class TestGUIServerAuth(unittest.TestCase):
+    """GUI_TOKEN bearer-token auth enforcement."""
+
+    def _make_gui(self, token: str):
+        from gui.server import GUIServer
+        with patch.dict("os.environ", {"GUI_TOKEN": token}):
+            gui = GUIServer()
+        return gui
+
+    def test_auth_returns_401_when_token_required_and_none_provided(self):
+        gui = self._make_gui("secret123")
+        client = gui._app.test_client()
+        response = client.get("/api/status")
+        self.assertEqual(response.status_code, 401)
+
+    def test_auth_returns_200_when_correct_bearer_token_provided(self):
+        gui = self._make_gui("secret123")
+        client = gui._app.test_client()
+        response = client.get("/api/status", headers={"Authorization": "Bearer secret123"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_auth_returns_200_when_no_token_configured(self):
+        gui = self._make_gui("")
+        client = gui._app.test_client()
+        response = client.get("/api/status")
+        self.assertEqual(response.status_code, 200)
+
+
+def _make_orch_stub():
+    """Return a minimal PassiveVigilance instance stub for poll method tests."""
+    import sys
+    import types
+    if "gps" not in sys.modules:
+        fake_gps = types.ModuleType("gps")
+        fake_gps.gps = object
+        fake_gps.WATCH_ENABLE = 0
+        sys.modules["gps"] = fake_gps
+    import main as m
+    orch = object.__new__(m.PassiveVigilance)
+    orch._sensor_health = {"gps": True, "kismet": True, "adsb": True, "drone_rf": True}
+    orch._degraded_log_counter = {"gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0}
+    orch._stats = {"kismet_devices_seen": 0, "aircraft_seen": 0, "drone_detections": 0,
+                   "alerts_sent": 0, "alerts_rate_limited": 0, "persistent_detections": 0}
+    orch._current_fix = None
+    orch.all_events = []
+    orch.gui_server = None
+    orch._write_session_summary = MagicMock()
+    orch.kismet = MagicMock()
+    orch.kismet.poll_devices = AsyncMock(return_value=[])
+    orch.probe_analyzer = MagicMock()
+    orch.probe_analyzer.analyze = MagicMock(return_value=[])
+    orch.persistence = MagicMock()
+    orch.persistence.update = MagicMock(return_value=[])
+    orch._append_jsonl = MagicMock()
+    orch._console_alert = MagicMock()
+    from pathlib import Path
+    import tempfile
+    orch._session_dir = Path(tempfile.mkdtemp())
+    orch.rate_limiter = MagicMock()
+    orch.alert_backend = MagicMock()
+    return orch
+
+
+class TestOrchestratorIncrementalSummary(unittest.TestCase):
+    """_write_session_summary() is called after each kismet poll on success."""
+
+    def test_incremental_summary_called_after_kismet_poll(self):
+        import asyncio
+        import main as m  # noqa: F401 — ensure module imported
+        orch = _make_orch_stub()
+        orch.kismet.poll_devices = AsyncMock(return_value=[])
+
+        async def _run():
+            await orch._poll_kismet()
+
+        asyncio.run(_run())
+        orch._write_session_summary.assert_called_once()
+
+
+class TestOrchestratorDegradedCounter(unittest.TestCase):
+    """_degraded_log_counter emits WARNING every 10 consecutive failures."""
+
+    def test_warning_logged_at_every_10th_failure(self):
+        import asyncio
+        import logging
+        import main as m
+
+        orch = _make_orch_stub()
+        # Start already-degraded so the counter path (not reconnect) is exercised
+        orch._sensor_health["kismet"] = False
+        orch.kismet.poll_devices.side_effect = RuntimeError("connection refused")
+
+        warning_count = 0
+
+        class _Counter(logging.Handler):
+            def emit(self, record):
+                nonlocal warning_count
+                if record.levelno == logging.WARNING and "still degraded" in record.getMessage():
+                    warning_count += 1
+
+        handler = _Counter()
+        m.logger.addHandler(handler)
+        try:
+            async def _run_polls(n: int):
+                for _ in range(n):
+                    await orch._poll_kismet()
+
+            asyncio.run(_run_polls(20))
+        finally:
+            m.logger.removeHandler(handler)
+
+        self.assertEqual(warning_count, 2)
 
 
 if __name__ == "__main__":
