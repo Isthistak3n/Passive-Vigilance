@@ -44,17 +44,6 @@ jobs:
           pip install geopandas
           pip install bleak scapy 2>/dev/null || true
 
-      - name: Fix python3-gps path for virtualenv
-        run: |
-          echo "$(python3 -c 'import sys; print([p for p in sys.path if "dist-packages" in p][0])')" \
-            >> .pth_fix.txt
-          python3 -c "
-          import sys
-          sys.path.insert(0, '/usr/lib/python3/dist-packages')
-          import gps
-          print('gps module accessible at:', gps.__file__)
-          " || echo "gps not accessible via system path — tests will mock it"
-
       - name: Run tests
         run: |
           python -m pytest tests/ -v --tb=short
@@ -64,6 +53,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pytest-results-${{ matrix.python-version }}
-          path: |
-            .pytest_cache/
+          path: .pytest_cache/
+          if-no-files-found: ignore
           retention-days: 7
