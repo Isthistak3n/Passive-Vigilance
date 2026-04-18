@@ -17,6 +17,8 @@ except ImportError:
     for _path in _gps_candidates:
         _gps_init = os.path.join(_path, 'gps', '__init__.py')
         if os.path.exists(_gps_init):
-            # Only add this path if it won't shadow a better numpy
-            sys.path.insert(0, _path)
+            # Append rather than insert so pip packages (numpy, etc.)
+            # remain earlier on sys.path and are not shadowed by
+            # system dist-packages copies.
+            sys.path.append(_path)
             break
