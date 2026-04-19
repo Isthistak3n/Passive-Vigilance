@@ -134,16 +134,26 @@ usermod -aG kismet "$PI_USER"
 usermod -aG dialout "$PI_USER"
 
 # ── 5. gpsd config ─────────────────────────────────────────────────────────
-# NOTE: For production, replace the hard-coded DEVICES path with a stable udev
-# symlink such as /dev/gps0.  Add a rule to /etc/udev/rules.d/ that matches on
-# SUBSYSTEM=="tty", ATTRS{idVendor}=="<vid>", ATTRS{idProduct}=="<pid>",
-# SYMLINK+="gps0" and set DEVICES="/dev/gps0" below.  The GPSModule in
-# modules/gps.py will auto-scan /dev/ttyUSB* and /dev/ttyACM* as fallback.
+# GPS device path: set GPS_DEVICE in .env before running
+# installer. Defaults to /dev/ttyUSB0 (USB dongle).
+# For GPIO HATs use /dev/ttyAMA0.
+# NOTE: For production consider a stable udev symlink (/dev/gps0).
+# The GPSModule in modules/gps.py will auto-scan /dev/ttyUSB* and
+# /dev/ttyACM* as fallback if the configured device is not present.
 echo "$LOG Configuring gpsd..."
-cat > /etc/default/gpsd << 'EOF'
+
+# Read GPS_DEVICE from .env if it exists, otherwise default to
+# /dev/ttyUSB0 for USB dongles or /dev/ttyAMA0 for HATs
+if [ -f "$REPO_DIR/.env" ]; then
+    GPS_DEVICE_ENV=$(grep "^GPS_DEVICE=" "$REPO_DIR/.env" | cut -d= -f2 | tr -d ' "')
+fi
+DEVICES="${GPS_DEVICE_ENV:-/dev/ttyUSB0}"
+echo "$LOG GPS device set to $DEVICES"
+
+cat > /etc/default/gpsd << EOF
 START_DAEMON="true"
 USBAUTO="true"
-DEVICES="/dev/ttyUSB0"
+DEVICES="$DEVICES"
 GPSD_OPTIONS="-n"
 EOF
 mkdir -p /etc/systemd/system/gpsd.service.d
