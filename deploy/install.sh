@@ -30,28 +30,36 @@ ${DISTRO} main" | tee /etc/apt/sources.list.d/kismet.list
 
 apt update -qq
 DEBIAN_FRONTEND=noninteractive apt install -y \
-  gpsd gpsd-clients python3-gps python3-pip \
+  gpsd gpsd-clients python3-gps python3-pip python3-venv \
   kismet readsb \
   librtlsdr0 librtlsdr-dev
 
 # ── 3. Python dependencies ─────────────────────────────────────────────────
 # Install GDAL and GIS system dependencies first
-# (required for geopandas/fiona to install without building from source)
-DEBIAN_FRONTEND=noninteractive apt-get install -y gdal-bin libgdal-dev python3-gdal \
-    python3-geopandas python3-fiona python3-numpy
+# (required for geopandas/fiona to install without building from source on ARM)
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    gdal-bin libgdal-dev python3-gdal \
+    python3-geopandas python3-fiona python3-numpy python3-shapely
 
-echo "$LOG Installing Python packages..."
-sudo -u "$PI_USER" pip3 install -r "$REPO_DIR/requirements.txt" \
-  --break-system-packages -q
+# Create virtualenv with access to apt-installed system packages.
+# --system-site-packages exposes python3-gps, python3-geopandas, python3-fiona,
+# python3-numpy, and python3-gdal without copying them into the venv.
+# pip then only installs the remaining lightweight packages (aiohttp, pyrtlsdr, etc.)
+VENV_DIR="/opt/passive-vigilance/venv"
+echo "$LOG Creating Python virtualenv at $VENV_DIR..."
+mkdir -p "$(dirname "$VENV_DIR")"
+python3 -m venv --system-site-packages "$VENV_DIR"
+chown -R "$PI_USER:$PI_USER" /opt/passive-vigilance
+
+echo "$LOG Installing Python packages into virtualenv..."
+"$VENV_DIR/bin/pip" install --upgrade pip -q
+"$VENV_DIR/bin/pip" install -r "$REPO_DIR/requirements.txt" -q
 # geopy: geodesic distance fallback for persistence engine location clustering
-sudo -u "$PI_USER" pip3 install geopy --break-system-packages -q
-# GIS output — shapefile and GeoJSON session export
-apt install -y python3-geopandas python3-fiona python3-shapely
-# Optional web GUI — only installed if GUI_ENABLED=true in .env
+"$VENV_DIR/bin/pip" install geopy -q
+
+# Leaflet.js for offline use — only download if web GUI is enabled
 if grep -qE "^\s*GUI_ENABLED\s*=\s*true" "$REPO_DIR/.env" 2>/dev/null; then
-  sudo -u "$PI_USER" pip3 install flask --break-system-packages -q
-  echo "$LOG Flask installed for web GUI"
-  # Download Leaflet.js for offline use (field deployments without internet)
+  echo "$LOG Downloading Leaflet.js for offline use (field deployments)..."
   LEAFLET_VERSION="1.9.4"
   LEAFLET_DIR="$REPO_DIR/gui/static/leaflet"
   mkdir -p "$LEAFLET_DIR"
@@ -65,6 +73,9 @@ if grep -qE "^\s*GUI_ENABLED\s*=\s*true" "$REPO_DIR/.env" 2>/dev/null; then
       -o "$LEAFLET_DIR/marker-shadow.png"
   echo "$LOG Leaflet downloaded for offline use"
 fi
+
+ln -sf "$VENV_DIR/bin/python3" /usr/local/bin/pv-python
+echo "$LOG Virtualenv ready. To run manually: $VENV_DIR/bin/python3 main.py"
 
 # Create session output directory
 mkdir -p "/home/$PI_USER/Passive-Vigilance/data/sessions"
