@@ -1,9 +1,9 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-207%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-222%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.4--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
+[![Release](https://img.shields.io/badge/release-v0.4.2--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
 
 > A passive RF/WiFi/BT/ADS-B sensor platform for counter-surveillance,
@@ -114,9 +114,10 @@ flowchart TD
 
 | Module | Status | Description |
 |--------|--------|-------------|
-| GPS daemon | ✅ Complete | gpsd integration, fix quality — 9 tests |
+| GPS daemon | ✅ Complete | gpsd integration, fix quality, HDOP filter — 12 tests |
 | Kismet integration | ✅ Complete | REST API, API key auth, WiGLE CSV — 10 tests |
-| ADS-B + drone RF | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
+| ADS-B | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
+| Drone RF | ✅ Complete | pyrtlsdr, duty cycle, thermal throttle — 12 tests |
 | WiFi monitor mode | ✅ Complete | MT7610U/RTL8811AU udev + NM unmanaged — 15 tests |
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
 | MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
@@ -126,9 +127,9 @@ flowchart TD
 | KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
 | Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream — 15 tests |
-| Orchestrator | ✅ Complete | asyncio event loop, session management — 17 tests |
+| Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown — 28 tests |
 
-**207 tests passing** across all modules.
+**222 tests passing** across all modules.
 
 ---
 
@@ -214,16 +215,18 @@ Passive-Vigilance/
 │       ├── app.js                    # SSE client; Leaflet markers; table rendering; tab switching
 │       └── style.css                 # Dark theme; KML-matched alert colors; touch-friendly
 ├── tests/
-│   ├── test_gps.py                   # 9 tests — GPSModule
+│   ├── test_gps.py                   # 12 tests — GPSModule + quality filter
 │   ├── test_kismet.py                # 10 tests — KismetModule
 │   ├── test_dump1090.py              # 20 tests — ADSBModule
+│   ├── test_drone_rf.py              # 12 tests — DroneRFModule + duty cycle
 │   ├── test_monitor_mode.py          # 15 tests — WiFi monitor mode
 │   ├── test_ignore_list.py           # 25 tests — IgnoreList
 │   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
 │   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
 │   ├── test_kml_writer.py            # 14 tests — KMLWriter
-│   ├── test_gui.py                   # 11 tests — GUIServer
+│   ├── test_orchestrator.py          # 28 tests — PassiveVigilance orchestrator
+│   ├── test_gui.py                   # 15 tests — GUIServer
 │   └── test_alerts.py                # 24 tests — AlertEngine
 ├── scripts/
 │   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
@@ -266,7 +269,11 @@ Key variables:
 | `KISMET_PORT` | Kismet REST API port | `2501` |
 | `DUMP1090_HOST` | readsb/dump1090 host | `localhost` |
 | `LOG_LEVEL` | Python logging level | `INFO` |
-| `GUI_ENABLED` | Enable live web dashboard (requires `pip install flask`) | `false` |
+| `GPS_MIN_QUALITY` | GPS fix quality gate: `any`, `2d`, or `3d` | `2d` |
+| `GPS_MAX_HDOP` | Reject fixes with HDOP above this value | `5.0` |
+| `DRONE_RF_REST_SECONDS` | Seconds to rest between DroneRF sweep cycles | `20` |
+| `DRONE_RF_MAX_TEMP_C` | CPU temp threshold that doubles rest period | `75` |
+| `GUI_ENABLED` | Enable live web dashboard | `false` |
 | `GUI_PORT` | Web dashboard port | `5000` |
 
 ---
