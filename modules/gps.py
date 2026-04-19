@@ -57,6 +57,7 @@ class GPSModule:
 
     def __init__(self) -> None:
         self._session: Optional[GpsSession] = None
+        self._last_fix_rejected: bool = False
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -122,6 +123,40 @@ class GPSModule:
         if mode < MODE_2D:
             logger.debug("No GPS fix yet (mode=%d)", mode)
             return None
+
+        # Quality filter — read from env each call so changes to .env take effect on restart
+        min_quality = os.getenv("GPS_MIN_QUALITY", "2d").lower()
+        max_hdop = float(os.getenv("GPS_MAX_HDOP", "5.0"))
+
+        if min_quality != "any":
+            # Mode filter: 3d requires a 3-D fix
+            if min_quality == "3d" and mode < MODE_3D:
+                logger.debug("GPS fix rejected: mode=%d (3D required)", mode)
+                self._last_fix_rejected = True
+                return None
+
+            # HDOP filter: reject if HDOP is known and exceeds threshold.
+            # Convert to float safely — gpsd may return nan, None, or (in tests) a mock.
+            try:
+                hdop = float(getattr(fix, "hdop", float("nan")))
+            except (TypeError, ValueError):
+                hdop = float("nan")
+
+            if isfinite(hdop) and hdop > max_hdop:
+                logger.debug("GPS fix rejected: HDOP=%.1f (max=%.1f)", hdop, max_hdop)
+                self._last_fix_rejected = True
+                return None
+
+            if self._last_fix_rejected:
+                mode_str = "3D" if mode == MODE_3D else "2D"
+                logger.info(
+                    "GPS fix quality improved to %s HDOP=%.1f",
+                    mode_str,
+                    hdop if isfinite(hdop) else -1.0,
+                )
+                self._last_fix_rejected = False
+        elif self._last_fix_rejected:
+            self._last_fix_rejected = False
 
         alt = fix.altHAE if (mode == MODE_3D and isfinite(fix.altHAE)) else float("nan")
 
