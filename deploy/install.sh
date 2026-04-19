@@ -134,21 +134,28 @@ usermod -aG kismet "$PI_USER"
 usermod -aG dialout "$PI_USER"
 
 # ── 5. gpsd config ─────────────────────────────────────────────────────────
-# GPS device path: set GPS_DEVICE in .env before running
-# installer. Defaults to /dev/ttyUSB0 (USB dongle).
-# For GPIO HATs use /dev/ttyAMA0.
-# NOTE: For production consider a stable udev symlink (/dev/gps0).
-# The GPSModule in modules/gps.py will auto-scan /dev/ttyUSB* and
-# /dev/ttyACM* as fallback if the configured device is not present.
 echo "$LOG Configuring gpsd..."
 
-# Read GPS_DEVICE from .env if it exists, otherwise default to
-# /dev/ttyUSB0 for USB dongles or /dev/ttyAMA0 for HATs
+# Auto-detect GPS device
+# Priority: 1) GPS_DEVICE from .env, 2) UART HAT, 3) USB dongle
 if [ -f "$REPO_DIR/.env" ]; then
-    GPS_DEVICE_ENV=$(grep "^GPS_DEVICE=" "$REPO_DIR/.env" | cut -d= -f2 | tr -d ' "')
+    GPS_DEVICE_ENV=$(grep "^GPS_DEVICE=" "$REPO_DIR/.env" \
+        | cut -d= -f2 | tr -d ' "')
 fi
-DEVICES="${GPS_DEVICE_ENV:-/dev/ttyUSB0}"
-echo "$LOG GPS device set to $DEVICES"
+
+if [ -n "$GPS_DEVICE_ENV" ]; then
+    DEVICES="$GPS_DEVICE_ENV"
+    echo "$LOG GPS device from .env: $DEVICES"
+elif [ -e "/dev/ttyAMA0" ]; then
+    DEVICES="/dev/ttyAMA0"
+    echo "$LOG GPS HAT detected: using $DEVICES"
+elif ls /dev/ttyUSB* 2>/dev/null | head -1 | grep -q ttyUSB; then
+    DEVICES=$(ls /dev/ttyUSB* | head -1)
+    echo "$LOG USB GPS detected: using $DEVICES"
+else
+    DEVICES="/dev/ttyUSB0"
+    echo "$LOG WARNING: No GPS device found, defaulting to $DEVICES"
+fi
 
 cat > /etc/default/gpsd << EOF
 START_DAEMON="true"
@@ -157,8 +164,11 @@ DEVICES="$DEVICES"
 GPSD_OPTIONS="-n"
 EOF
 mkdir -p /etc/systemd/system/gpsd.service.d
-cp "$REPO_DIR/deploy/gpsd.override.conf" \
-  /etc/systemd/system/gpsd.service.d/override.conf
+cat > /etc/systemd/system/gpsd.service.d/override.conf << EOF
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/gpsd -n -N $DEVICES
+EOF
 
 # ── 6. Kismet service ──────────────────────────────────────────────────────
 echo "$LOG Installing Kismet systemd service..."
