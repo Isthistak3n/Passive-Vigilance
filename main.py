@@ -17,6 +17,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Configure logging BEFORE importing any sensor modules so that module-level
+# code (e.g. GPS device detection) is captured with proper formatting.
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 from modules.alerts import AlertFactory, RateLimiter
 from modules.dump1090 import ADSBModule
 from modules.drone_rf import DroneRFModule
@@ -34,13 +43,6 @@ _GUI_PORT    = int(os.getenv("GUI_PORT", "8080"))
 
 if _GUI_ENABLED:
     from gui.server import GUIServer
-
-logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
 
 _VERSION = "0.4-alpha"
 _SESSION_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
@@ -170,8 +172,11 @@ class PassiveVigilance:
         if self._gps_active:
             gps_timeout = int(os.getenv("GPS_STARTUP_TIMEOUT_SECONDS", "120"))
             logger.info("GPS: waiting up to %ds for first fix...", gps_timeout)
+            import time as _time
             loop = asyncio.get_running_loop()
-            for _ in range(gps_timeout):
+            _gps_deadline = _time.monotonic() + gps_timeout
+            _got_fix = False
+            while _time.monotonic() < _gps_deadline:
                 try:
                     fix = await loop.run_in_executor(None, self.gps.get_fix)
                 except Exception:
@@ -180,9 +185,10 @@ class PassiveVigilance:
                     self._current_fix = fix
                     self._gps_fix_count += 1
                     logger.info("GPS: fix acquired (%.4f, %.4f)", fix["lat"], fix["lon"])
+                    _got_fix = True
                     break
                 await asyncio.sleep(1)
-            else:
+            if not _got_fix:
                 logger.warning(
                     "⚠  No GPS fix within %ds — detections will not be location-stamped",
                     gps_timeout,

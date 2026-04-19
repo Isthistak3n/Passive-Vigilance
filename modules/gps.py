@@ -14,6 +14,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 _GPS_CANDIDATES = [
+    "/dev/ttyAMA0",   # Raspberry Pi UART HAT (Waveshare L76K etc.)
     "/dev/ttyUSB0",
     "/dev/ttyUSB1",
     "/dev/ttyACM0",
@@ -66,11 +67,19 @@ class GPSModule:
     def connect(self) -> None:
         """Open a streaming connection to gpsd.
 
+        Sets a 2-second socket timeout so that get_fix() never blocks
+        indefinitely (gpsd sends nothing when no GNSS data is available).
+
         Raises:
             ConnectionError: if gpsd is not reachable.
         """
         try:
             self._session = GpsSession(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
+            # Apply a read timeout so session.read() returns promptly when
+            # gpsd has no data.  Without this the blocking recv() hangs
+            # forever, freezing the startup GPS-wait loop.
+            if self._session.sock is not None:
+                self._session.sock.settimeout(0.5)
             logger.info("Connected to gpsd (device: %s)", GPS_DEVICE)
         except Exception as exc:
             self._session = None
