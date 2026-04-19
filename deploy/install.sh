@@ -166,8 +166,9 @@ EOF
 mkdir -p /etc/systemd/system/gpsd.service.d
 cat > /etc/systemd/system/gpsd.service.d/override.conf << EOF
 [Service]
+TimeoutSec=60
 ExecStart=
-ExecStart=/usr/sbin/gpsd -n -N $DEVICES
+ExecStart=/usr/sbin/gpsd -n $DEVICES
 EOF
 
 # ── 6. Kismet service ──────────────────────────────────────────────────────
