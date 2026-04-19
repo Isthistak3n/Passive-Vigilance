@@ -35,6 +35,11 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
   librtlsdr0 librtlsdr-dev
 
 # ── 3. Python dependencies ─────────────────────────────────────────────────
+# Install GDAL and GIS system dependencies first
+# (required for geopandas/fiona to install without building from source)
+DEBIAN_FRONTEND=noninteractive apt-get install -y gdal-bin libgdal-dev python3-gdal \
+    python3-geopandas python3-fiona python3-numpy
+
 echo "$LOG Installing Python packages..."
 sudo -u "$PI_USER" pip3 install -r "$REPO_DIR/requirements.txt" \
   --break-system-packages -q
