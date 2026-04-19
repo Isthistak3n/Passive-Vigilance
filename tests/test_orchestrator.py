@@ -489,3 +489,71 @@ async def test_poll_kismet_does_not_reconnect_on_repeated_failure(orch):
         await orch._poll_kismet()
 
     mock_rc.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# shutdown() — field hardening: guaranteed writes even on partial failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_shutdown_writes_summary_even_when_shapefile_fails(orch, tmp_path):
+    """summary.json must be written even if ShapefileWriter raises."""
+    orch.session_id = "20260101_120000"
+    orch._session_dir = Path(tmp_path) / "20260101_120000"
+    orch.all_events = [
+        {"event_type": "wifi", "mac": "aa:bb:cc:dd:ee:ff", "lat": 51.5, "lon": -0.1}
+    ]
+    orch._mock_shp.write_session.side_effect = RuntimeError("geopandas crash")
+    orch._mock_shp.write_geojson.side_effect = RuntimeError("geopandas crash")
+
+    await orch.startup()
+    await orch.shutdown()
+
+    summary_path = tmp_path / "20260101_120000" / "summary.json"
+    assert summary_path.exists(), "summary.json must survive a shapefile failure"
+    data = json.loads(summary_path.read_text())
+    assert data["session_id"] == "20260101_120000"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_writes_summary_even_when_wigle_fails(orch, tmp_path):
+    """summary.json must be written even if WiGLE upload raises."""
+    orch.session_id = "20260101_120000"
+    orch._session_dir = Path(tmp_path) / "20260101_120000"
+    orch._mock_wigle.is_configured.return_value = True
+    orch._mock_wigle.upload_session.side_effect = RuntimeError("WiGLE down")
+    orch._mock_wigle.find_latest_csv.return_value = "/tmp/fake.wiglecsv"
+    orch.kismet.get_wigle_csv_path.return_value = None
+
+    await orch.startup()
+    await orch.shutdown()
+
+    summary_path = tmp_path / "20260101_120000" / "summary.json"
+    assert summary_path.exists(), "summary.json must survive a WiGLE failure"
+    data = json.loads(summary_path.read_text())
+    assert data["session_id"] == "20260101_120000"
+
+
+@pytest.mark.asyncio
+async def test_emergency_flush_writes_jsonl_without_geopandas(orch, tmp_path):
+    """_emergency_flush() must write all in-memory events using only stdlib."""
+    orch.session_id = "20260101_120000"
+    orch._session_dir = Path(tmp_path) / "20260101_120000"
+    orch.all_events = [
+        {"event_type": "wifi", "mac": "aa:bb:cc:dd:ee:ff", "lat": 51.5, "lon": -0.1}
+    ]
+    orch.aircraft_detections = [
+        {"event_type": "aircraft", "icao": "ABC123", "lat": 51.5, "lon": -0.1}
+    ]
+    orch.drone_detections = []
+
+    with patch.dict("sys.modules", {"geopandas": None}):
+        orch._emergency_flush()
+
+    dump_path = tmp_path / "20260101_120000" / "emergency_dump.jsonl"
+    assert dump_path.exists(), "emergency_dump.jsonl must be created"
+    lines = [json.loads(line) for line in dump_path.read_text().strip().splitlines()]
+    assert len(lines) == 2
+    assert any(line["event_type"] == "wifi" for line in lines)
+    assert any(line["event_type"] == "aircraft" for line in lines)

@@ -146,6 +146,7 @@ class PassiveVigilance:
             await self.event_loop()
         except Exception as exc:
             logger.error("Unhandled exception in event loop: %s", exc, exc_info=True)
+            self._emergency_flush()
         finally:
             await self.shutdown()
 
@@ -265,7 +266,13 @@ class PassiveVigilance:
         await self._stop.wait()
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for task, result in zip(tasks, results):
+            if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                logger.error(
+                    "Task %s raised %s: %s",
+                    task.get_name(), type(result).__name__, result,
+                )
 
     # ------------------------------------------------------------------
     # GPS polling — every 1 second
@@ -588,7 +595,7 @@ class PassiveVigilance:
 
         end_time = datetime.now(timezone.utc)
 
-        # Write session summary
+        # Step 1: Write session summary FIRST — own try/except so nothing can skip it
         summary = {
             "session_id":             self.session_id,
             "start_time":             self.session_start.isoformat(),
@@ -606,23 +613,32 @@ class PassiveVigilance:
                 "drone_rf": self._drone_active,
             },
         }
-
         self._session_dir.mkdir(parents=True, exist_ok=True)
         summary_path = self._session_dir / "summary.json"
-        with open(summary_path, "w", encoding="utf-8") as fh:
-            json.dump(summary, fh, indent=2, default=str)
-        logger.info("Session summary → %s", summary_path)
+        try:
+            with open(summary_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, default=str)
+            logger.info("Session summary written → %s", summary_path)
+        except Exception as exc:
+            logger.error("Failed to write session summary: %s", exc)
 
-        # Write shapefiles, KML, and GeoJSON
+        # Step 2: Write shapefile — own try/except
         all_session_events = self.all_events + self.aircraft_detections + self.drone_detections
         kml_path: Optional[str] = None
         if all_session_events:
             try:
                 self.shapefile_writer.write_session(self.session_id, all_session_events)
+                logger.info("Shapefile written successfully")
+            except Exception as exc:
+                logger.error("Shapefile write failed: %s", exc)
+
+            # Step 2b: Write GeoJSON + KML — own try/except
+            try:
                 self.shapefile_writer.write_geojson(self.session_id, all_session_events)
                 kml_path = str(self._session_dir / "detections.kml")
+                logger.info("GeoJSON/KML written successfully")
             except Exception as exc:
-                logger.error("GIS output error: %s", exc)
+                logger.error("GeoJSON write failed: %s", exc)
 
         # Append kml_path to session summary
         if kml_path:
@@ -640,13 +656,17 @@ class PassiveVigilance:
         if self.gui_server is not None:
             self.gui_server.stop()
 
-        # WiGLE upload
-        if self.wigle_uploader.is_configured():
-            csv_path = self.kismet.get_wigle_csv_path() or self.wigle_uploader.find_latest_csv()
-            if csv_path:
-                self.wigle_uploader.upload_session(csv_path)
-            else:
-                logger.info("WiGLE: no .wiglecsv found — skipping upload")
+        # Step 3: WiGLE upload — own try/except, non-fatal
+        try:
+            if self.wigle_uploader.is_configured():
+                csv_path = self.kismet.get_wigle_csv_path() or self.wigle_uploader.find_latest_csv()
+                if csv_path:
+                    self.wigle_uploader.upload_session(csv_path)
+                    logger.info("WiGLE upload complete")
+                else:
+                    logger.info("WiGLE: no .wiglecsv found — skipping upload")
+        except Exception as exc:
+            logger.error("WiGLE upload failed (non-fatal): %s", exc)
 
         if kml_path:
             logger.info("KML output → %s", kml_path)
@@ -657,6 +677,35 @@ class PassiveVigilance:
             len(self.aircraft_detections),
             len(self.drone_detections),
         )
+
+    # ------------------------------------------------------------------
+    # Emergency flush
+    # ------------------------------------------------------------------
+
+    def _emergency_flush(self) -> None:
+        """Write in-memory events to disk immediately using only stdlib.
+
+        Called on unhandled exceptions before shutdown() runs.  Does not
+        attempt shapefile or WiGLE — those require geopandas/requests which
+        may themselves be broken mid-crash.
+        """
+        try:
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+            dump_path = self._session_dir / "emergency_dump.jsonl"
+            total = 0
+            with open(dump_path, "w", encoding="utf-8") as fh:
+                for event in self.all_events:
+                    fh.write(json.dumps(event, default=str) + "\n")
+                    total += 1
+                for event in self.aircraft_detections:
+                    fh.write(json.dumps(event, default=str) + "\n")
+                    total += 1
+                for event in self.drone_detections:
+                    fh.write(json.dumps(event, default=str) + "\n")
+                    total += 1
+            logger.error("Emergency flush: wrote %d events to %s", total, dump_path)
+        except Exception as exc:
+            logger.error("Emergency flush failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Health banner

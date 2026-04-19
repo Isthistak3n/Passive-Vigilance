@@ -195,6 +195,14 @@ Re-run the monitor mode commands after any NM restart.
 - Session `summary.json` includes `kml_path` key written at shutdown
 - KML path logged in shutdown banner
 
+## GPS Quality Filtering
+
+- `GPS_MIN_QUALITY` env var (default `2d`): `any` = skip all quality filtering; `2d` = require mode ≥ 2 and HDOP check; `3d` = require mode 3 and HDOP check
+- `GPS_MAX_HDOP` env var (default `5.0`): reject fixes with HDOP above this value; check is skipped when HDOP is NaN (unavailable from gpsd)
+- Both settings are read inside `get_fix()` on every call — no module-level constants — so `patch.dict(os.environ, ...)` in tests works without extra patching
+- `GPSModule._last_fix_rejected` instance flag: set True when fix is rejected; cleared and INFO logged ("GPS fix quality improved to {mode} HDOP={hdop}") when next fix passes
+- When `GPS_MIN_QUALITY=any`: HDOP filter is skipped entirely; `_last_fix_rejected` is reset silently
+
 ## MAC Randomization
 
 - `modules/mac_utils.py` — pure utility module, no external dependencies

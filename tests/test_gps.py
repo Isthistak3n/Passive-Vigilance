@@ -1,6 +1,7 @@
 """Unit tests for modules/gps.py — gpsd responses are fully mocked."""
 
 import math
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -145,6 +146,58 @@ class TestGPSModuleIsFixed(unittest.TestCase):
     def test_is_fixed_false_on_no_fix(self, MockGpsSession):
         gps = self._gps_with_mode(MockGpsSession, mode=0)
         self.assertFalse(gps.is_fixed())
+
+
+class TestGPSQualityFilter(unittest.TestCase):
+
+    @patch("modules.gps.GpsSession")
+    def test_get_fix_rejects_high_hdop(self, MockGpsSession):
+        """get_fix() returns None when HDOP exceeds GPS_MAX_HDOP."""
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=3)
+        session.fix.hdop = 10.0  # well above the 5.0 threshold
+        MockGpsSession.return_value = session
+
+        with patch.dict(os.environ, {"GPS_MAX_HDOP": "5.0", "GPS_MIN_QUALITY": "2d"}):
+            gps = GPSModule()
+            gps.connect()
+            fix = gps.get_fix()
+
+        self.assertIsNone(fix)
+
+    @patch("modules.gps.GpsSession")
+    def test_get_fix_accepts_low_hdop(self, MockGpsSession):
+        """get_fix() returns a fix when HDOP is within GPS_MAX_HDOP."""
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=3)
+        session.fix.hdop = 1.5  # well below the 5.0 threshold
+        MockGpsSession.return_value = session
+
+        with patch.dict(os.environ, {"GPS_MAX_HDOP": "5.0", "GPS_MIN_QUALITY": "2d"}):
+            gps = GPSModule()
+            gps.connect()
+            fix = gps.get_fix()
+
+        self.assertIsNotNone(fix)
+        self.assertEqual(fix["fix_quality"], 3)
+
+    @patch("modules.gps.GpsSession")
+    def test_get_fix_accepts_any_fix_when_quality_set_to_any(self, MockGpsSession):
+        """get_fix() accepts a fix with high HDOP when GPS_MIN_QUALITY=any."""
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=2)
+        session.fix.hdop = 10.0  # would be rejected under 2d/3d quality modes
+        MockGpsSession.return_value = session
+
+        with patch.dict(os.environ, {"GPS_MIN_QUALITY": "any", "GPS_MAX_HDOP": "5.0"}):
+            gps = GPSModule()
+            gps.connect()
+            fix = gps.get_fix()
+
+        self.assertIsNotNone(fix)
 
 
 if __name__ == "__main__":

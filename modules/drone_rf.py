@@ -93,6 +93,9 @@ class DroneRFModule:
     async def _scan_loop(self) -> None:
         """Continuously scan drone frequencies and record detections."""
         loop = asyncio.get_event_loop()
+        rest_seconds = int(os.getenv("DRONE_RF_REST_SECONDS", "20"))
+        max_temp_c = float(os.getenv("DRONE_RF_MAX_TEMP_C", "75"))
+
         while True:
             for freq_mhz in _DRONE_FREQUENCIES_MHZ:
                 if freq_mhz > _MAX_RTL_SDR_FREQ_MHZ:
@@ -114,7 +117,21 @@ class DroneRFModule:
                     raise
                 except Exception as exc:
                     logger.debug("Scan error at %.1f MHz: %s", freq_mhz, exc)
-            await asyncio.sleep(0.1)
+
+            if rest_seconds > 0:
+                actual_rest = rest_seconds
+                temp = self._check_cpu_temp()
+                if temp is not None and temp > max_temp_c:
+                    actual_rest = rest_seconds * 2
+                    logger.warning(
+                        "DroneRF throttling: CPU temp %.1f°C > %.1f°C — rest extended to %ds",
+                        temp, max_temp_c, actual_rest,
+                    )
+                logger.info("DroneRF resting %ds", actual_rest)
+                await asyncio.sleep(actual_rest)
+                logger.info("DroneRF resuming scan")
+            else:
+                await asyncio.sleep(0.1)
 
     def _sample_frequency(self, freq_mhz: float) -> Optional[dict]:
         """Tune to *freq_mhz*, sample, compute power; return detection or None.
@@ -164,6 +181,18 @@ class DroneRFModule:
             "gps_lat":   gps_fix["lat"] if gps_fix else None,
             "gps_lon":   gps_fix["lon"] if gps_fix else None,
         }
+
+    # ------------------------------------------------------------------
+    # CPU temperature
+    # ------------------------------------------------------------------
+
+    def _check_cpu_temp(self) -> Optional[float]:
+        """Return CPU temperature in Celsius, or None if unavailable."""
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp", "r") as fh:
+                return float(fh.read().strip()) / 1000.0
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Hardware detection
