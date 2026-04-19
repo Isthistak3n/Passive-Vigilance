@@ -1,8 +1,9 @@
 """Unit tests for modules/drone_rf.py — pyrtlsdr and subprocess mocked."""
 
 import asyncio
+import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 
@@ -179,6 +180,93 @@ class TestDroneRFDetectionStructure(unittest.TestCase):
                 self.assertIn(field, result, f"missing field: {field}")
             self.assertEqual(result["freq_mhz"], 433.0)
             self.assertIsInstance(result["power_db"], float)
+
+
+# ---------------------------------------------------------------------------
+# Duty cycle
+# ---------------------------------------------------------------------------
+
+class TestDroneRFDutyCycle(unittest.TestCase):
+
+    def test_scan_loop_pauses_between_sweeps_when_rest_nonzero(self):
+        """_scan_loop() sleeps for REST_SECONDS after each complete sweep."""
+        from modules.drone_rf import DroneRFModule
+
+        sleep_calls = []
+        call_count = [0]
+
+        async def mock_sleep(duration):
+            sleep_calls.append(duration)
+            call_count[0] += 1
+            if call_count[0] >= 1:
+                raise asyncio.CancelledError()
+
+        async def run():
+            with patch.dict(os.environ, {"DRONE_RF_REST_SECONDS": "15", "DRONE_RF_MAX_TEMP_C": "75"}):
+                m = DroneRFModule()
+                m._sample_frequency = MagicMock(return_value=None)
+                with patch("asyncio.sleep", side_effect=mock_sleep):
+                    with patch.object(m, "_check_cpu_temp", return_value=None):
+                        try:
+                            await m._scan_loop()
+                        except asyncio.CancelledError:
+                            pass
+
+        asyncio.get_event_loop().run_until_complete(run())
+        self.assertTrue(
+            any(d == 15 for d in sleep_calls),
+            f"Expected rest sleep of 15s, got {sleep_calls}",
+        )
+
+    def test_scan_loop_no_rest_when_rest_seconds_zero(self):
+        """_scan_loop() uses only 0.1s yields when DRONE_RF_REST_SECONDS=0."""
+        from modules.drone_rf import DroneRFModule
+
+        sleep_calls = []
+        call_count = [0]
+
+        async def mock_sleep(duration):
+            sleep_calls.append(duration)
+            call_count[0] += 1
+            if call_count[0] >= 1:
+                raise asyncio.CancelledError()
+
+        async def run():
+            with patch.dict(os.environ, {"DRONE_RF_REST_SECONDS": "0"}):
+                m = DroneRFModule()
+                m._sample_frequency = MagicMock(return_value=None)
+                with patch("asyncio.sleep", side_effect=mock_sleep):
+                    try:
+                        await m._scan_loop()
+                    except asyncio.CancelledError:
+                        pass
+
+        asyncio.get_event_loop().run_until_complete(run())
+        self.assertTrue(
+            all(d == 0.1 for d in sleep_calls),
+            f"Expected only 0.1s yield sleeps, got {sleep_calls}",
+        )
+
+    def test_check_cpu_temp_returns_float_from_thermal_zone(self):
+        """_check_cpu_temp() parses the thermal zone file and returns Celsius."""
+        from modules.drone_rf import DroneRFModule
+
+        m = DroneRFModule()
+        with patch("builtins.open", mock_open(read_data="65000\n")):
+            temp = m._check_cpu_temp()
+
+        self.assertIsNotNone(temp)
+        self.assertAlmostEqual(temp, 65.0)
+
+    def test_check_cpu_temp_returns_none_when_unavailable(self):
+        """_check_cpu_temp() returns None when the thermal zone file is missing."""
+        from modules.drone_rf import DroneRFModule
+
+        m = DroneRFModule()
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            temp = m._check_cpu_temp()
+
+        self.assertIsNone(temp)
 
 
 if __name__ == "__main__":

@@ -1049,6 +1049,117 @@ ssh -L 8080:localhost:8080 survkis@<pi-ip>
 
 ---
 
+## Field Hardening
+
+These settings make the platform survivable in real-world deployments where
+power can be cut at any moment and the Pi may run hot in an enclosure.
+
+---
+
+### GPS quality filtering
+
+Poor GPS fixes (multipath in urban canyons, cold-start noise) can corrupt
+your detection data with wildly wrong coordinates.  Two `.env` settings let
+you reject bad fixes before they propagate to the shapefile:
+
+```
+GPS_MIN_QUALITY=2d        # any | 2d | 3d
+GPS_MAX_HDOP=5.0          # reject fixes with HDOP above this value
+```
+
+| Setting | Meaning |
+|---|---|
+| `any` | Accept any fix that has mode ≥ 2 (no HDOP check) |
+| `2d` | Accept 2-D or 3-D fixes; reject if HDOP > max (default) |
+| `3d` | Accept 3-D fixes only; reject if HDOP > max |
+
+**HDOP guidance:**
+
+| HDOP range | Accuracy | Recommended action |
+|---|---|---|
+| < 1.0 | Excellent | Accept |
+| 1–2 | Good | Accept |
+| 2–5 | Moderate | Accept (default threshold) |
+| 5–10 | Fair | Reject |
+| > 10 | Poor | Reject |
+
+When a fix is rejected you will see `DEBUG GPS fix rejected: HDOP=X.X (max=Y.Y)` in
+the log.  When quality recovers you will see `INFO GPS fix quality improved to 3D HDOP=X.X`.
+
+Raise `GPS_MAX_HDOP` if you routinely see valid fixes being rejected in open terrain;
+lower it if you are seeing position drift in urban environments.
+
+---
+
+### DroneRF duty cycle
+
+The RTL-SDR dongle draws ~300 mA and generates heat.  In a sealed enclosure
+on a Pi 3B+ the CPU can hit thermal-throttle territory (~80 °C) within minutes
+of continuous scanning.  The duty cycle pauses the scan loop between sweeps:
+
+```
+DRONE_RF_SCAN_SECONDS=10   # not currently used to time the scan (sweep is hardware-limited)
+DRONE_RF_REST_SECONDS=20   # sleep this long after each complete frequency sweep
+DRONE_RF_MAX_TEMP_C=75     # double the rest period if CPU temp exceeds this
+```
+
+**Recommended values by hardware:**
+
+| Platform | `SCAN_SECONDS` | `REST_SECONDS` | Notes |
+|---|---|---|---|
+| Pi 3B+ | 10 | 20 | Thermal limit ~70 °C; aggressive rest needed |
+| Pi 4B+ | 10 | 10 | Better thermal design; shorter rest OK |
+| Pi 5 | 10 | 5 | Active cooling recommended; minimal rest |
+
+Set `DRONE_RF_REST_SECONDS=0` to disable the duty cycle entirely (continuous scan,
+original behaviour — safe with active cooling or short sessions only).
+
+The temperature check reads `/sys/class/thermal/thermal_zone0/temp` and doubles
+the rest period when the CPU exceeds `DRONE_RF_MAX_TEMP_C`.  You will see:
+
+```
+WARNING DroneRF throttling: CPU temp 77.3°C > 75.0°C — rest extended to 40s
+```
+
+---
+
+### What survives a power loss
+
+| Output | Survives power cut? | Notes |
+|---|---|---|
+| `events.jsonl` | **Yes** — appended on every detection | Last partial line may be corrupt |
+| `aircraft.jsonl` | **Yes** — appended on every poll | Same caveat |
+| `drone.jsonl` | **Yes** — appended on every detection drain | Same caveat |
+| `summary.json` | **Yes** — atomically rewritten every poll cycle | Reflects state at last poll, not at crash |
+| `emergency_dump.jsonl` | Only on unhandled exception | Written before shutdown begins |
+| Shapefiles (`.shp`, `.geojson`, `.kml`) | **No** — written only on clean shutdown | Require `shutdown()` to complete |
+| WiGLE upload | **No** — requires clean shutdown | Can be uploaded manually from `.wiglecsv` |
+
+---
+
+### Recommended field test before deployment
+
+Run both scenarios before taking the unit to the field:
+
+**Clean shutdown test** — verifies SIGTERM path:
+```bash
+sudo systemctl stop passive-vigilance
+# Expect: summary.json written, shapefiles present in data/sessions/<session_id>/
+```
+
+**Crash survival test** — verifies the unhandled-exception path:
+```bash
+# Start manually so you can inspect output
+python3 main.py &
+PID=$!
+sleep 5
+kill -9 $PID
+# Expect: events.jsonl and aircraft.jsonl intact; emergency_dump.jsonl may be present
+ls data/sessions/*/
+```
+
+---
+
 ## Additional sections
 
 > TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
