@@ -1,5 +1,6 @@
 """Alert backends — abstract base and concrete implementations."""
 
+import asyncio
 import fcntl
 import json
 import logging
@@ -85,15 +86,12 @@ class RateLimiter:
         self._cooldown = cooldown_seconds
         self._persist_path = persist_path
         self._last_alert: dict[str, float] = {}  # key → time.monotonic() value
+        self._lock = asyncio.Lock()
         if persist_path:
             self._load_state()
 
-    def is_allowed(self, key: str) -> bool:
-        """Return True if *key* has not been alerted within the cooldown period.
-
-        Records the current time for the key when returning True and
-        persists the updated state to disk if a persist_path is configured.
-        """
+    def _do_check(self, key: str) -> bool:
+        """Sync core of the rate-limit check — callers must hold ``self._lock``."""
         now = time.monotonic()
         last = self._last_alert.get(key)
         if last is None or (now - last) >= self._cooldown:
@@ -104,6 +102,16 @@ class RateLimiter:
         if self._persist_path:
             self._save_state()
         return False
+
+    async def is_allowed(self, key: str) -> bool:
+        """Return True if *key* has not been alerted within the cooldown period.
+
+        Records the current time for the key when returning True and
+        persists the updated state to disk if a persist_path is configured.
+        Thread-safe for concurrent asyncio tasks via ``self._lock``.
+        """
+        async with self._lock:
+            return self._do_check(key)
 
     def reset(self, key: str) -> None:
         """Manually clear a key's cooldown so it can alert immediately."""
@@ -240,7 +248,7 @@ class NtfyBackend(AlertBackend):
     def send_drone_alert(self, detection: dict) -> bool:
         freq = detection.get("freq_mhz", 0)
         key = f"drone:{freq:.0f}mhz"
-        if not self._drone_limiter.is_allowed(key):
+        if not self._drone_limiter._do_check(key):
             logger.debug("drone alert suppressed (rate limit): %s", key)
             return False
         power = detection.get("power_db", 0)
@@ -254,7 +262,7 @@ class NtfyBackend(AlertBackend):
 
     def send_persistence_alert(self, event) -> bool:
         key = f"mac:{event.mac}"
-        if not self._persistence_limiter.is_allowed(key):
+        if not self._persistence_limiter._do_check(key):
             logger.debug("persistence alert suppressed (rate limit): %s", key)
             return False
         priority = "urgent" if event.alert_level == "high" else "high"
@@ -272,7 +280,7 @@ class NtfyBackend(AlertBackend):
     def send_aircraft_alert(self, aircraft: dict) -> bool:
         icao = aircraft.get("icao", "unknown")
         key = f"icao:{icao}"
-        if not self._aircraft_limiter.is_allowed(key):
+        if not self._aircraft_limiter._do_check(key):
             logger.debug("aircraft alert suppressed (rate limit): %s", key)
             return False
         emergency = aircraft.get("emergency", False)
@@ -340,7 +348,7 @@ class TelegramBackend(AlertBackend):
     def send_drone_alert(self, detection: dict) -> bool:
         freq = detection.get("freq_mhz", 0)
         key = f"drone:{freq:.0f}mhz"
-        if not self._drone_limiter.is_allowed(key):
+        if not self._drone_limiter._do_check(key):
             return False
         power = detection.get("power_db", 0)
         lat = detection.get("lat", 0.0)
@@ -353,7 +361,7 @@ class TelegramBackend(AlertBackend):
 
     def send_persistence_alert(self, event) -> bool:
         key = f"mac:{event.mac}"
-        if not self._persistence_limiter.is_allowed(key):
+        if not self._persistence_limiter._do_check(key):
             return False
         priority = "urgent" if event.alert_level == "high" else "high"
         mac_type = getattr(event, "mac_type", "static")
@@ -370,7 +378,7 @@ class TelegramBackend(AlertBackend):
     def send_aircraft_alert(self, aircraft: dict) -> bool:
         icao = aircraft.get("icao", "unknown")
         key = f"icao:{icao}"
-        if not self._aircraft_limiter.is_allowed(key):
+        if not self._aircraft_limiter._do_check(key):
             return False
         emergency = aircraft.get("emergency", False)
         callsign = aircraft.get("callsign", icao)
@@ -445,7 +453,7 @@ class DiscordBackend(AlertBackend):
     def send_drone_alert(self, detection: dict) -> bool:
         freq = detection.get("freq_mhz", 0)
         key = f"drone:{freq:.0f}mhz"
-        if not self._drone_limiter.is_allowed(key):
+        if not self._drone_limiter._do_check(key):
             return False
         power = detection.get("power_db", 0)
         lat = detection.get("lat", 0.0)
@@ -458,7 +466,7 @@ class DiscordBackend(AlertBackend):
 
     def send_persistence_alert(self, event) -> bool:
         key = f"mac:{event.mac}"
-        if not self._persistence_limiter.is_allowed(key):
+        if not self._persistence_limiter._do_check(key):
             return False
         priority = "urgent" if event.alert_level == "high" else "high"
         mac_type = getattr(event, "mac_type", "static")
@@ -475,7 +483,7 @@ class DiscordBackend(AlertBackend):
     def send_aircraft_alert(self, aircraft: dict) -> bool:
         icao = aircraft.get("icao", "unknown")
         key = f"icao:{icao}"
-        if not self._aircraft_limiter.is_allowed(key):
+        if not self._aircraft_limiter._do_check(key):
             return False
         emergency = aircraft.get("emergency", False)
         callsign = aircraft.get("callsign", icao)

@@ -79,39 +79,44 @@ def _make_aircraft(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_rate_limiter_allows_first_call():
+@pytest.mark.asyncio
+async def test_rate_limiter_allows_first_call():
     rl = RateLimiter(cooldown_seconds=300)
-    assert rl.is_allowed("drone:915mhz") is True
+    assert await rl.is_allowed("drone:915mhz") is True
 
 
-def test_rate_limiter_blocks_within_cooldown():
+@pytest.mark.asyncio
+async def test_rate_limiter_blocks_within_cooldown():
     rl = RateLimiter(cooldown_seconds=300)
-    rl.is_allowed("drone:915mhz")  # first call records time
-    assert rl.is_allowed("drone:915mhz") is False
+    await rl.is_allowed("drone:915mhz")  # first call records time
+    assert await rl.is_allowed("drone:915mhz") is False
 
 
-def test_rate_limiter_allows_after_cooldown_expires():
+@pytest.mark.asyncio
+async def test_rate_limiter_allows_after_cooldown_expires():
     rl = RateLimiter(cooldown_seconds=300)
     with patch("modules.alerts.time.monotonic") as mock_time:
         mock_time.return_value = 0.0
-        rl.is_allowed("key")
+        await rl.is_allowed("key")
         mock_time.return_value = 301.0
-        assert rl.is_allowed("key") is True
+        assert await rl.is_allowed("key") is True
 
 
-def test_rate_limiter_reset_allows_immediate_realert():
+@pytest.mark.asyncio
+async def test_rate_limiter_reset_allows_immediate_realert():
     rl = RateLimiter(cooldown_seconds=300)
-    rl.is_allowed("mac:aa:bb:cc:dd:ee:ff")
-    assert rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is False
+    await rl.is_allowed("mac:aa:bb:cc:dd:ee:ff")
+    assert await rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is False
     rl.reset("mac:aa:bb:cc:dd:ee:ff")
-    assert rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is True
+    assert await rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is True
 
 
-def test_rate_limiter_persists_state_to_json(tmp_path):
+@pytest.mark.asyncio
+async def test_rate_limiter_persists_state_to_json(tmp_path):
     """is_allowed() must write a JSON file when persist_path is set."""
     persist_file = str(tmp_path / "rate_limits.json")
     rl = RateLimiter(cooldown_seconds=300, persist_path=persist_file)
-    rl.is_allowed("drone:915mhz")
+    await rl.is_allowed("drone:915mhz")
 
     import json as _json
     data = _json.loads(Path(persist_file).read_text())
@@ -122,7 +127,8 @@ def test_rate_limiter_persists_state_to_json(tmp_path):
     assert dt.tzinfo is not None
 
 
-def test_rate_limiter_loads_state_from_json(tmp_path):
+@pytest.mark.asyncio
+async def test_rate_limiter_loads_state_from_json(tmp_path):
     """A newly created RateLimiter with persist_path must honour state written by a previous instance."""
     import json as _json
     from datetime import datetime, timedelta, timezone
@@ -134,7 +140,7 @@ def test_rate_limiter_loads_state_from_json(tmp_path):
 
     rl = RateLimiter(cooldown_seconds=300, persist_path=persist_file)
     # The key should still be blocked because only 10 s have elapsed
-    assert rl.is_allowed("drone:915mhz") is False
+    assert await rl.is_allowed("drone:915mhz") is False
 
 
 # ---------------------------------------------------------------------------

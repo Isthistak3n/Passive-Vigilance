@@ -282,7 +282,12 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._gps_active:
                 await self._poll_gps()
-            await asyncio.sleep(self.gps_poll_interval)
+            try:
+                await asyncio.sleep(self.gps_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("GPS poll loop sleep error: %s", exc)
 
     async def _poll_gps(self) -> None:
         loop = asyncio.get_running_loop()
@@ -327,7 +332,12 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._adsb_active:
                 await self._poll_adsb()
-            await asyncio.sleep(self.adsb_poll_interval)
+            try:
+                await asyncio.sleep(self.adsb_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("ADS-B poll loop sleep error: %s", exc)
 
     async def _poll_adsb(self) -> None:
         try:
@@ -376,7 +386,7 @@ class PassiveVigilance:
                     icao, aircraft.get("callsign", ""),
                 )
             else:
-                if self.rate_limiter.is_allowed(f"aircraft:{icao}"):
+                if await self.rate_limiter.is_allowed(f"aircraft:{icao}"):
                     self.alert_backend.send_aircraft_alert(aircraft)
                     self._stats["alerts_sent"] += 1
                 else:
@@ -392,7 +402,12 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._kismet_active:
                 await self._poll_kismet()
-            await asyncio.sleep(self.kismet_poll_interval)
+            try:
+                await asyncio.sleep(self.kismet_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Kismet poll loop sleep error: %s", exc)
 
     async def _poll_kismet(self) -> None:
         try:
@@ -458,7 +473,7 @@ class PassiveVigilance:
             if self.gui_server is not None:
                 self.gui_server.push_event("wifi", event_dict)
 
-            if self.rate_limiter.is_allowed(f"persist:{event.mac}"):
+            if await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self.alert_backend.send_persistence_alert(event)
                 self._stats["alerts_sent"] += 1
                 logger.info(
@@ -478,7 +493,12 @@ class PassiveVigilance:
         while not self._stop.is_set():
             if self._drone_active:
                 await self._poll_drone_rf()
-            await asyncio.sleep(self.drone_poll_interval)
+            try:
+                await asyncio.sleep(self.drone_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Drone RF poll loop sleep error: %s", exc)
 
     async def _poll_drone_rf(self) -> None:
         try:
@@ -525,7 +545,7 @@ class PassiveVigilance:
                 "lat":      detection.get("gps_lat") or 0.0,
                 "lon":      detection.get("gps_lon") or 0.0,
             }
-            if self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
+            if await self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
                 self.alert_backend.send_drone_alert(alert_detection)
                 self._stats["alerts_sent"] += 1
                 logger.info("Drone RF alert: %.1f MHz  %.1f dBm", freq, detection.get("power_db", 0))
@@ -713,7 +733,12 @@ class PassiveVigilance:
 
     async def _health_banner_loop(self) -> None:
         while not self._stop.is_set():
-            await asyncio.sleep(self._health_banner_interval)
+            try:
+                await asyncio.sleep(self._health_banner_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Health banner loop sleep error: %s", exc)
             if not self._stop.is_set():
                 self._log_health_banner()
 

@@ -207,7 +207,7 @@ async def test_poll_adsb_emergency_bypasses_rate_limiter(orch):
     orch._adsb_active = True
 
     # Exhaust the rate limiter key first
-    orch.rate_limiter.is_allowed("aircraft:EMG001")  # consumes the slot
+    await orch.rate_limiter.is_allowed("aircraft:EMG001")  # consumes the slot
 
     await orch._poll_adsb()
     # Backend must still be called
