@@ -5,6 +5,44 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ---
 
+## [v0.4.2-alpha] — 2026-04-18
+
+### What's better now
+
+Field hardening and installer improvements for real-world deployments.
+The sensor now survives crashes without losing buffered data, filters out
+poor-quality GPS fixes before stamping detections, and the RTL-SDR scanner
+throttles itself when the Pi runs hot.
+
+- **Crash-safe emergency flush** — unhandled exceptions in the event loop
+  now trigger `_emergency_flush()` before exiting, dumping all buffered
+  events to `emergency_dump.jsonl` using stdlib only (no geopandas/requests)
+- **Isolated shutdown steps** — each shutdown step (summary.json, shapefile,
+  GeoJSON, WiGLE upload) is now wrapped in its own try/except; one failure
+  no longer prevents the others from running
+- **GPS fix quality filter** — `GPS_MIN_QUALITY` (`any`/`2d`/`3d`) and
+  `GPS_MAX_HDOP` (default `5.0`) env vars added to `modules/gps.py`;
+  low-quality fixes are rejected before stamping detection events
+- **DroneRF duty cycle** — configurable rest period after each frequency
+  sweep via `DRONE_RF_REST_SECONDS` (default `20`); CPU temperature
+  throttle doubles rest time when `DRONE_RF_MAX_TEMP_C` (default `75°C`)
+  is exceeded, preventing thermal shutdown on Pi 3B+ in enclosed cases
+- **Python virtualenv installer** — all Python dependencies now install
+  into `/opt/passive-vigilance/venv` with `--system-site-packages`;
+  replaces `--break-system-packages`; apt-installed GIS packages
+  (geopandas, fiona, GDAL) are shared without rebuilding on ARM
+- **GDAL via apt** — `gdal-bin libgdal-dev python3-gdal python3-geopandas
+  python3-fiona python3-numpy python3-shapely` installed via apt before
+  pip; prevents 30-minute ARM source builds on fresh installs
+- **GPS device from .env** — `install.sh` now reads `GPS_DEVICE` from
+  `.env` before configuring gpsd; defaults to `/dev/ttyUSB0` if unset
+- **`pv-python` convenience symlink** — `/usr/local/bin/pv-python` →
+  `/opt/passive-vigilance/venv/bin/python3` for easy manual runs
+
+**222 tests passing.**
+
+---
+
 ## [v0.4-alpha] — 2026-04-18
 
 ### What's new
