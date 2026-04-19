@@ -685,9 +685,14 @@ Output         : data/sessions/20260101_120000/
 
 ### Manual run (testing without systemd)
 
+The installer creates a virtualenv at `/opt/passive-vigilance/venv`. Use the
+venv interpreter so it sees the same packages as the systemd service:
+
 ```bash
 cd /home/survkis/Passive-Vigilance
-python3 main.py
+/opt/passive-vigilance/venv/bin/python3 main.py
+# convenience symlink (created by installer):
+pv-python main.py
 ```
 
 Ctrl+C triggers a clean shutdown — the same sequence as `systemctl stop`.
@@ -965,22 +970,20 @@ when `GUI_ENABLED=false`.
 
 ### Enable
 
-1. Install Flask:
-   ```bash
-   pip install flask --break-system-packages
-   ```
+Flask is included in `requirements.txt` and installed into the virtualenv
+by the installer — no separate `pip install` needed.
 
-2. Set in `.env`:
+1. Set in `.env`:
    ```ini
    GUI_ENABLED=true
    GUI_HOST=0.0.0.0   # bind to all interfaces (accessible from other devices on LAN)
    GUI_PORT=8080
    ```
 
-3. Start the orchestrator normally:
+2. Start the orchestrator normally:
    ```bash
-   python3 main.py
-   # or: sudo systemctl start passive-vigilance
+   sudo systemctl start passive-vigilance
+   # or manually: /opt/passive-vigilance/venv/bin/python3 main.py
    ```
 
 4. Open `http://<pi-ip>:8080` in a browser.
@@ -1150,7 +1153,7 @@ sudo systemctl stop passive-vigilance
 **Crash survival test** — verifies the unhandled-exception path:
 ```bash
 # Start manually so you can inspect output
-python3 main.py &
+/opt/passive-vigilance/venv/bin/python3 main.py &
 PID=$!
 sleep 5
 kill -9 $PID

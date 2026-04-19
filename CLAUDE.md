@@ -149,6 +149,8 @@ Re-run the monitor mode commands after any NM restart.
 - R820T/R820T2 dongles max ~1750 MHz; 2.4 GHz requires E4000 chip; 5.8 GHz = out of range
 - `DroneRFModule` and `readsb` both need an RTL-SDR — two dongles needed to run simultaneously
 - Kernel modules to blacklist: `dvb_usb_rtl28xxu`, `rtl2832`, `rtl2830`
+- `DRONE_RF_REST_SECONDS` (default `20`) — seconds to sleep after each full frequency sweep; set `0` to disable (falls back to `asyncio.sleep(0.1)`)
+- `DRONE_RF_MAX_TEMP_C` (default `75`) — CPU temperature threshold (°C) that doubles the rest period; read from `/sys/class/thermal/thermal_zone0/temp` (millidegrees → Celsius) via `_check_cpu_temp()`; returns `None` if file unavailable
 
 ## Kismet Integration
 
@@ -259,7 +261,8 @@ Re-run the monitor mode commands after any NM restart.
 - Startup: all modules connect with graceful degradation — any module that fails logs a warning and is skipped
 - Poll intervals: GPS 1 s (blocking, via `run_in_executor`), readsb 5 s, Kismet 30 s, DroneRF continuous (background task)
 - Session output: `data/sessions/{session_id}/` — `summary.json`, `detections_wifi.shp`, `detections_aircraft.shp`, `detections_drone.shp`, `detections.geojson`
-- Shutdown sequence on SIGINT/SIGTERM: stop DroneRF → close Kismet/ADSB/GPS → write `summary.json` → write shapefiles → WiGLE upload
+- Shutdown sequence on SIGINT/SIGTERM: stop DroneRF → close Kismet/ADSB/GPS → write `summary.json` → write shapefiles → write GeoJSON/KML → WiGLE upload; each step is wrapped in its own try/except so one failure does not prevent the rest
+- `_emergency_flush()` — stdlib-only JSONL dump of all in-memory events to `{session_dir}/emergency_dump.jsonl`; called from the `except` block in `run()` before `finally`; uses no geopandas/requests to survive mid-crash
 - `TimeoutStopSec=30` in systemd unit allows clean shutdown to complete
 - `_SESSION_OUTPUT_DIR` is a module-level constant read at import time — patch `main._SESSION_OUTPUT_DIR` in tests, not env
 - `ShapefileWriter` (`modules/shapefile.py`) — geopandas/fiona; installed via `python3-geopandas` apt package
@@ -295,6 +298,15 @@ Re-run the monitor mode commands after any NM restart.
 
 `install.sh` auto-detects the OS codename via `lsb_release -cs` for the Kismet repo URL,
 so it works on both Bookworm (Pi OS) and Trixie (this dev Pi).
+
+**Python environment:** All pip packages install into `/opt/passive-vigilance/venv` with
+`--system-site-packages`. This exposes apt-installed GIS packages (`python3-geopandas`,
+`python3-fiona`, `python3-gdal`, `python3-numpy`) without rebuilding them from source on ARM.
+Convenience symlink: `/usr/local/bin/pv-python` → `venv/bin/python3`.
+The systemd service `ExecStart` points to `/opt/passive-vigilance/venv/bin/python3`.
+
+**GPS device:** `install.sh` reads `GPS_DEVICE` from `.env` before writing `/etc/default/gpsd`.
+If `.env` does not exist or `GPS_DEVICE` is unset, it defaults to `/dev/ttyUSB0`.
 
 ---
 
