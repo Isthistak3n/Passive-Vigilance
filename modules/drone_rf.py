@@ -51,8 +51,37 @@ class DroneRFModule:
         self._gps = gps_module
         self._scan_task: Optional[asyncio.Task] = None
         self._detections: list = []
+        self._sdr = None  # Opened by _open_sdr() on scan start
         # Set False by SDRCoordinator in SHARED mode to pause between slices
         self.can_scan: bool = True
+
+    # ------------------------------------------------------------------
+    # SDR device lifecycle
+    # ------------------------------------------------------------------
+
+    def _open_sdr(self) -> bool:
+        """Open the RTL-SDR device and configure sample rate/gain. Returns True on success."""
+        try:
+            from rtlsdr import RtlSdr
+            self._sdr = RtlSdr()
+            self._sdr.sample_rate = _SAMPLE_RATE_HZ
+            self._sdr.gain = 40
+            logger.debug("SDR device opened")
+            return True
+        except Exception as exc:
+            logger.warning("SDR open failed: %s", exc)
+            self._sdr = None
+            return False
+
+    def _close_sdr(self) -> None:
+        """Close and release the RTL-SDR device."""
+        if self._sdr is not None:
+            try:
+                self._sdr.close()
+            except Exception:
+                pass
+            self._sdr = None
+            logger.debug("SDR device closed")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -74,6 +103,10 @@ class DroneRFModule:
             logger.debug("Drone RF scan already running")
             return
 
+        if not self._open_sdr():
+            logger.warning("Failed to open RTL-SDR device — drone RF scan disabled")
+            return
+
         self._scan_task = asyncio.create_task(self._scan_loop())
         logger.info("Drone RF scan started")
 
@@ -86,6 +119,7 @@ class DroneRFModule:
             except asyncio.CancelledError:
                 pass
         self._scan_task = None
+        self._close_sdr()
         logger.info("Drone RF scan stopped")
 
     # ------------------------------------------------------------------
@@ -102,7 +136,7 @@ class DroneRFModule:
             # In SHARED mode the SDRCoordinator clears can_scan between slices.
             # Pause here rather than starting a new sweep the hardware doesn't own.
             if not self.can_scan:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
                 continue
 
             for freq_mhz in _DRONE_FREQUENCIES_MHZ:
@@ -124,7 +158,15 @@ class DroneRFModule:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.debug("Scan error at %.1f MHz: %s", freq_mhz, exc)
+                    logger.warning(
+                        "SDR error at %.1f MHz: %s — attempting recovery", freq_mhz, exc
+                    )
+                    self._close_sdr()
+                    await asyncio.sleep(2)
+                    if not self._open_sdr():
+                        self.can_scan = False
+                        logger.error("SDR recovery failed — disabling drone RF scan")
+                    break
 
             if rest_seconds > 0:
                 actual_rest = rest_seconds
@@ -141,38 +183,50 @@ class DroneRFModule:
             else:
                 await asyncio.sleep(0.1)
 
+    # ------------------------------------------------------------------
+    # Sample processing helpers
+    # ------------------------------------------------------------------
+
+    def _process_fft_samples(self, samples) -> float:
+        """Compute received power in dBm from IQ samples."""
+        import numpy as np
+        return float(10 * np.log10(np.mean(np.abs(samples) ** 2) + 1e-12))
+
+    def _detect_drone_signature(self, power_db: float, freq_mhz: float) -> bool:
+        """Return True if power exceeds the configured detection threshold."""
+        return power_db >= DRONE_POWER_THRESHOLD_DB
+
+    def _enrich_and_alert(self, power_db: float, freq_mhz: float, gps_fix) -> dict:
+        """Build a detection record enriched with GPS and timestamp."""
+        return {
+            "freq_mhz":  freq_mhz,
+            "power_db":  power_db,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "gps_lat":   gps_fix["lat"] if gps_fix else None,
+            "gps_lon":   gps_fix["lon"] if gps_fix else None,
+        }
+
     def _sample_frequency(self, freq_mhz: float) -> Optional[dict]:
         """Tune to *freq_mhz*, sample, compute power; return detection or None.
 
         Runs in a thread pool executor (blocking pyrtlsdr call).
+        SDR hardware errors propagate to the scan loop for recovery.
         """
+        if self._sdr is None:
+            return None
+
         try:
-            import numpy as np
-            from rtlsdr import RtlSdr
+            import numpy as np  # noqa: F401 — checked before sampling
         except ImportError as exc:
-            logger.error("pyrtlsdr or numpy not available: %s", exc)
+            logger.error("numpy not available: %s", exc)
             return None
 
-        sdr = None
-        try:
-            sdr = RtlSdr()
-            sdr.sample_rate = _SAMPLE_RATE_HZ
-            sdr.center_freq = freq_mhz * 1e6
-            sdr.gain = 40
+        # Hardware errors here propagate to the scan loop for recovery
+        self._sdr.center_freq = freq_mhz * 1e6
+        samples = self._sdr.read_samples(_SAMPLE_COUNT)
 
-            samples = sdr.read_samples(_SAMPLE_COUNT)
-            power_db = float(10 * np.log10(np.mean(np.abs(samples) ** 2) + 1e-12))
-        except Exception as exc:
-            logger.debug("SDR sample error at %.1f MHz: %s", freq_mhz, exc)
-            return None
-        finally:
-            if sdr is not None:
-                try:
-                    sdr.close()
-                except Exception:
-                    pass
-
-        if power_db < DRONE_POWER_THRESHOLD_DB:
+        power_db = self._process_fft_samples(samples)
+        if not self._detect_drone_signature(power_db, freq_mhz):
             return None
 
         gps_fix = None
@@ -182,13 +236,7 @@ class DroneRFModule:
             except Exception:
                 pass
 
-        return {
-            "freq_mhz":  freq_mhz,
-            "power_db":  power_db,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "gps_lat":   gps_fix["lat"] if gps_fix else None,
-            "gps_lon":   gps_fix["lon"] if gps_fix else None,
-        }
+        return self._enrich_and_alert(power_db, freq_mhz, gps_fix)
 
     # ------------------------------------------------------------------
     # CPU temperature

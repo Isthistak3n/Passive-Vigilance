@@ -123,6 +123,7 @@ class PassiveVigilance:
         self.kismet = KismetModule(gps_module=self.gps, ignore_list=self.ignore_list)
         self.adsb = ADSBModule(gps_module=self.gps)
         self.drone_rf = DroneRFModule(gps_module=self.gps)
+        self.sdr_coordinator: SDRCoordinator = SDRCoordinator(self.drone_rf)
         self.persistence = PersistenceEngine()
         self.probe_analyzer = ProbeAnalyzer()
         self.alert_backend = AlertFactory.get_backend(persist_path=_RATE_LIMIT_PERSIST)
@@ -132,7 +133,6 @@ class PassiveVigilance:
 
         # SDR mode — resolved at startup after hardware detection
         self.sdr_mode: SDRMode = SDRMode.AUTO
-        self.sdr_coordinator: Optional[SDRCoordinator] = None
 
         # Optional web GUI
         self.gui_server: Optional["GUIServer"] = None  # type: ignore[name-defined]
@@ -209,6 +209,13 @@ class PassiveVigilance:
 
         # SDR hardware detection and mode resolution
         sdr_env = os.getenv("SDR_MODE", "auto")
+        _valid_sdr_modes = {"auto", "shared", "dedicated"}
+        if sdr_env.strip().lower() not in _valid_sdr_modes:
+            logger.warning(
+                "SDR_MODE=%r not recognised — valid values: auto / shared / dedicated;"
+                " defaulting to auto",
+                sdr_env,
+            )
         _loop = asyncio.get_running_loop()
         sdr_count = await _loop.run_in_executor(None, detect_sdr_count)
         self.sdr_mode = resolve_sdr_mode(sdr_env, sdr_count)
@@ -260,8 +267,8 @@ class PassiveVigilance:
                 # DroneRF starts with scanning gated off; coordinator enables it
                 self.drone_rf.can_scan = False
                 self._drone_active = True
-                self.sdr_coordinator = SDRCoordinator(self.drone_rf)
                 await self.sdr_coordinator.start()
+                logger.info("SDR coordinator started — time-sharing active")
 
         # Optional web GUI
         if self.gui_server is not None:
@@ -315,7 +322,7 @@ class PassiveVigilance:
             asyncio.create_task(self._poll_drone_rf_loop(), name="poll-dronrf"),
             asyncio.create_task(self._health_banner_loop(), name="health-banner"),
         ]
-        if self.sdr_coordinator is not None:
+        if self.sdr_mode == SDRMode.SHARED and self._drone_active:
             tasks.append(
                 asyncio.create_task(
                     self.sdr_coordinator._coordinator_loop(), name="sdr-coordinator"
@@ -653,7 +660,7 @@ class PassiveVigilance:
         logger.info("Shutdown initiated — saving session data...")
 
         # SDR coordinator — restore readsb and stop DroneRF cleanly
-        if self.sdr_coordinator is not None:
+        if self.sdr_mode == SDRMode.SHARED:
             try:
                 await self.sdr_coordinator.stop()
             except Exception as exc:

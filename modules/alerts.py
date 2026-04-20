@@ -113,11 +113,12 @@ class RateLimiter:
         async with self._lock:
             return self._do_check(key)
 
-    def reset(self, key: str) -> None:
+    async def reset(self, key: str) -> None:
         """Manually clear a key's cooldown so it can alert immediately."""
-        self._last_alert.pop(key, None)
-        if self._persist_path:
-            self._save_state()
+        async with self._lock:
+            self._last_alert.pop(key, None)
+            if self._persist_path:
+                self._save_state()
 
     # ------------------------------------------------------------------
     # Persistence helpers

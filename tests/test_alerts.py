@@ -107,7 +107,7 @@ async def test_rate_limiter_reset_allows_immediate_realert():
     rl = RateLimiter(cooldown_seconds=300)
     await rl.is_allowed("mac:aa:bb:cc:dd:ee:ff")
     assert await rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is False
-    rl.reset("mac:aa:bb:cc:dd:ee:ff")
+    await rl.reset("mac:aa:bb:cc:dd:ee:ff")
     assert await rl.is_allowed("mac:aa:bb:cc:dd:ee:ff") is True
 
 
