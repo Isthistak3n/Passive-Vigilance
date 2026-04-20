@@ -159,7 +159,8 @@ def test_orchestrator_initialises_without_error(orch):
 
 
 @pytest.mark.asyncio
-async def test_startup_all_modules_available(orch):
+@patch("main.detect_sdr_count", return_value=2)
+async def test_startup_all_modules_available(mock_sdr, orch):
     await orch.startup()
     assert orch._gps_active is True
     assert orch._kismet_active is True
@@ -167,7 +168,8 @@ async def test_startup_all_modules_available(orch):
 
 
 @pytest.mark.asyncio
-async def test_startup_graceful_when_gps_unavailable(orch):
+@patch("main.detect_sdr_count", return_value=2)
+async def test_startup_graceful_when_gps_unavailable(mock_sdr, orch):
     orch.gps.connect.side_effect = ConnectionError("gpsd not running")
     await orch.startup()
     assert orch._gps_active is False
@@ -177,7 +179,8 @@ async def test_startup_graceful_when_gps_unavailable(orch):
 
 
 @pytest.mark.asyncio
-async def test_startup_graceful_when_kismet_unavailable(orch):
+@patch("main.detect_sdr_count", return_value=2)
+async def test_startup_graceful_when_kismet_unavailable(mock_sdr, orch):
     orch.kismet.connect.side_effect = ConnectionError("Kismet not running")
     await orch.startup()
     assert orch._kismet_active is False
