@@ -102,10 +102,7 @@ class DroneRFModule:
             # In SHARED mode the SDRCoordinator clears can_scan between slices.
             # Pause here rather than starting a new sweep the hardware doesn't own.
             if not self.can_scan:
-                try:
-                    await asyncio.sleep(0.5)
-                except asyncio.CancelledError:
-                    raise
+                await asyncio.sleep(0.5)
                 continue
 
             for freq_mhz in _DRONE_FREQUENCIES_MHZ:
