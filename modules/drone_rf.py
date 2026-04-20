@@ -51,6 +51,8 @@ class DroneRFModule:
         self._gps = gps_module
         self._scan_task: Optional[asyncio.Task] = None
         self._detections: list = []
+        # Set False by SDRCoordinator in SHARED mode to pause between slices
+        self.can_scan: bool = True
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -97,6 +99,15 @@ class DroneRFModule:
         max_temp_c = float(os.getenv("DRONE_RF_MAX_TEMP_C", "75"))
 
         while True:
+            # In SHARED mode the SDRCoordinator clears can_scan between slices.
+            # Pause here rather than starting a new sweep the hardware doesn't own.
+            if not self.can_scan:
+                try:
+                    await asyncio.sleep(0.5)
+                except asyncio.CancelledError:
+                    raise
+                continue
+
             for freq_mhz in _DRONE_FREQUENCIES_MHZ:
                 if freq_mhz > _MAX_RTL_SDR_FREQ_MHZ:
                     logger.debug(
