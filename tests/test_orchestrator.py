@@ -53,7 +53,11 @@ def _make_aircraft(**overrides) -> dict:
 @pytest.fixture()
 def orch(tmp_path):
     """PassiveVigilance instance with all modules mocked and output in tmp_path."""
-    env_patch = {"SESSION_OUTPUT_DIR": str(tmp_path)}
+    env_patch = {
+        "SESSION_OUTPUT_DIR": str(tmp_path),
+        # Speed up GPS startup wait loop — no real device available in tests
+        "GPS_STARTUP_TIMEOUT_SECONDS": "0",
+    }
 
     with (
         patch("main.GPSModule") as mock_gps_cls,

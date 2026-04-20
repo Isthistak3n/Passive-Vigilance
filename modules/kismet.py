@@ -81,8 +81,10 @@ class KismetModule:
                 status["interface"], status["interface"], status["interface"],
             )
 
+        # Kismet 2025.09+ requires the API key as a KISMET cookie rather than
+        # the KISMET-API-Key header (header auth was removed in 2025.09).
         self._session = aiohttp.ClientSession(
-            headers={"KISMET-API-Key": KISMET_API_KEY}
+            cookies={"KISMET": KISMET_API_KEY}
         )
 
         try:

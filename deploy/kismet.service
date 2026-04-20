@@ -7,10 +7,9 @@ Wants=gpsd.service
 User=kismet
 Group=kismet
 Environment=KISMET_CAPTURE_INTERFACE=wlan1
-ExecStart=/usr/bin/kismet --no-ncurses-wrapper \
-  --override=httpd_port=2501 \
-  --override=server_name=passive-vigilance \
-  -c wlan1
+Environment=HOME=/var/lib/kismet
+WorkingDirectory=/var/lib/kismet
+ExecStart=/usr/bin/kismet --no-ncurses-wrapper -c wlan1
 Restart=on-failure
 RestartSec=5
 
