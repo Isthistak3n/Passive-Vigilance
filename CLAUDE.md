@@ -43,7 +43,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | Event storage | SQLite | Lightweight, no server, query-friendly |
 | GIS output | geopandas + fiona | Shapefile write from Python dicts |
 | WiGLE upload | Kismet CSV export | Kismet already produces WiGLE-format CSV |
-| Kismet auth | API key (`KISMET-API-Key` header) | More secure than basic auth; generated in web UI |
+| Kismet auth | Cookie auth: `Cookie: KISMET=<token>` | Kismet 2025.09 dropped API key header auth |
 
 ---
 
@@ -60,6 +60,8 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
 | `modules/kml_writer.py` | `KMLWriter` | Pure Python XML; Google Earth KML with color-coded placemarks and track lines |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson + .kml |
+| `modules/sdr_manager.py` | `SDRManager` | RTL-SDR inventory detection via rtl_test, SDRMode enum resolution |
+| `modules/sdr_coordinator.py` | `SDRCoordinator` | asyncio time-share scheduler for single-dongle setups — slices readsb and DroneRF |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
 | `gui/__init__.py` | — | Empty package marker |
 | `gui/server.py` | `GUIServer` | Flask in daemon thread; SSE `/stream`; REST `/api/*` |
@@ -87,12 +89,13 @@ feature/* → dev → main
 
 | Item | Value |
 |---|---|
-| Dev/test device | Raspberry Pi 3B+ (username: `survkis`) |
-| Production target | Raspberry Pi 4B+ (not yet configured) |
+| Dev/test device | Raspberry Pi 3B+ (username: `survkis`) at 192.168.1.8 |
+| Production target | Raspberry Pi 4B (username: `chase`) at 192.168.1.9 |
 | OS (dev Pi) | **Debian 13 Trixie** (not Bookworm, not Raspberry Pi OS) |
-| GPS dongle | `/dev/ttyUSB0` (default; override with `GPS_DEVICE` in `.env`) |
+| GPS device (Pi3) | `/dev/ttyUSB0` (default) |
+| GPS device (Pi4) | `/dev/ttyAMA0` — Waveshare SX126X LoRaWAN/GNSS HAT (L76K GNSS) |
 | Kismet port | `2501` |
-| dump1090 port | `30003` |
+| dump1090/readsb port | `30003` (SBS-1), `8080` (JSON) |
 
 ---
 
@@ -155,8 +158,8 @@ Re-run the monitor mode commands after any NM restart.
 ## Kismet Integration
 
 - Kismet runs as a **systemd service** (`deploy/kismet.service`) on boot
-- Auth method: **API key** — `KISMET-API-Key: <key>` header on every REST call
-- API key is generated once via the web UI: http://\<pi-ip\>:2501 → Settings → API Keys
+- Auth method: **Cookie** — `Cookie: KISMET=<token>` on every REST call. Kismet 2025.09 dropped header-based API key auth.
+- Token is generated once via the web UI: http://\<pi-ip\>:2501 → Settings → API Keys
 - Kismet logs WiGLE CSV files to the home directory (`~/Kismet-*.wiglecsv`)
 - `KismetModule` accepts a `GPSModule` instance and stamps every device record
 - `KismetModule` accepts an optional `IgnoreList` instance; ignored devices are silently
@@ -295,6 +298,7 @@ Re-run the monitor mode commands after any NM restart.
 | `deploy/kismet.service` | Kismet systemd unit |
 | `deploy/passive-vigilance.service` | Orchestrator systemd unit |
 | `deploy/gpsd.override.conf` | gpsd drop-in to add `-n` flag |
+| `deploy/setup.sh` | Interactive .env configurator — prompts for all credentials; --show masks secrets; --reset wipes config |
 
 `install.sh` auto-detects the OS codename via `lsb_release -cs` for the Kismet repo URL,
 so it works on both Bookworm (Pi OS) and Trixie (this dev Pi).
@@ -342,7 +346,7 @@ If `.env` does not exist or `GPS_DEVICE` is unset, it defaults to `/dev/ttyUSB0`
 - **python3-gps vs gpsd-py3:** System package is `import gps`; pip package is `import gpsd`. They are incompatible. Always use the apt package.
 - **pyrtlsdr 0.3.0+ breaks on Trixie:** `librtlsdr 2.0.2` (Osmocom fork) doesn't export `rtlsdr_set_dithering`. Pin stays at `0.2.93`.
 - **readsb JSON port:** readsb serves aircraft JSON on port 8080 (HTTP), not 30003 (SBS-1 TCP). The `.env` `DUMP1090_PORT=30003` is the SBS-1 port; the `ADSBModule` connects to port 8080 directly.
-- **Single RTL-SDR conflict:** readsb and DroneRFModule can't share one dongle simultaneously. Use two dongles or stop readsb before drone scanning.
+- **Single RTL-SDR time-sharing:** `SDRCoordinator` handles one-dongle setups automatically in `SHARED` mode — slices readsb (ADS-B) and DroneRF on a configurable schedule. Set `SDR_MODE=auto` in `.env` (default). `DEDICATED` mode activates automatically when 2+ dongles are detected.
 - **NM resets wlan1 on restart:** `sudo systemctl restart NetworkManager` resets wlan1 to managed once before the unmanaged rule applies. Re-run monitor mode commands after any NM restart. The udev rule handles boot/plug-in automatically.
 
 ---
