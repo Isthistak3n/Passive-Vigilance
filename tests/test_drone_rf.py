@@ -96,7 +96,8 @@ class TestDroneRFStartScan(unittest.TestCase):
         async def _noop_loop(self_inner):
             await asyncio.sleep(9999)
 
-        with patch.object(DroneRFModule, "_scan_loop", _noop_loop):
+        with patch.object(DroneRFModule, "_scan_loop", _noop_loop), \
+             patch.object(DroneRFModule, "_open_sdr", return_value=True):
             m = DroneRFModule()
             _run(m.start_scan())
             self.assertIsNotNone(m._scan_task)
@@ -130,7 +131,8 @@ class TestDroneRFStopScan(unittest.TestCase):
         async def _noop_loop(self_inner):
             await asyncio.sleep(9999)
 
-        with patch.object(DroneRFModule, "_scan_loop", _noop_loop):
+        with patch.object(DroneRFModule, "_scan_loop", _noop_loop), \
+             patch.object(DroneRFModule, "_open_sdr", return_value=True):
             m = DroneRFModule()
             _run(m.start_scan())
             self.assertIsNotNone(m._scan_task)
@@ -173,6 +175,7 @@ class TestDroneRFDetectionStructure(unittest.TestCase):
 
             with patch.dict("sys.modules", {"rtlsdr": mock_rtlsdr_module}):
                 m = DroneRFModule(gps_module=gps)
+                m._sdr = mock_sdr  # simulate an opened SDR device
                 result = m._sample_frequency(433.0)
 
         if result is not None:
