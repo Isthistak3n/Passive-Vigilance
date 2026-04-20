@@ -25,6 +25,8 @@ from modules.ignore_list import IgnoreList
 from modules.kismet import KismetModule
 from modules.persistence import PersistenceEngine
 from modules.probe_analyzer import ProbeAnalyzer
+from modules.sdr_coordinator import SDRCoordinator
+from modules.sdr_manager import SDRMode, detect_sdr_count, resolve_sdr_mode
 from modules.shapefile import ShapefileWriter
 from modules.wigle import WiGLEUploader
 
@@ -126,6 +128,10 @@ class PassiveVigilance:
         self.shapefile_writer = ShapefileWriter()
         self.wigle_uploader = WiGLEUploader()
 
+        # SDR mode — resolved at startup after hardware detection
+        self.sdr_mode: SDRMode = SDRMode.AUTO
+        self.sdr_coordinator: Optional[SDRCoordinator] = None
+
         # Optional web GUI
         self.gui_server: Optional["GUIServer"] = None  # type: ignore[name-defined]
         if _GUI_ENABLED:
@@ -195,21 +201,61 @@ class PassiveVigilance:
         except Exception as exc:
             logger.warning("Kismet: unavailable (%s) — WiFi/BT capture disabled", exc)
 
-        # readsb / ADS-B
-        try:
-            await self.adsb.connect()
-            self._adsb_active = True
-        except Exception as exc:
-            logger.warning("readsb: unavailable (%s) — ADS-B tracking disabled", exc)
+        # SDR hardware detection and mode resolution
+        sdr_env = os.getenv("SDR_MODE", "auto")
+        _loop = asyncio.get_running_loop()
+        sdr_count = await _loop.run_in_executor(None, detect_sdr_count)
+        self.sdr_mode = resolve_sdr_mode(sdr_env, sdr_count)
 
-        # Drone RF — start_scan() is self-guarding; logs a warning if no hardware
-        try:
-            await self.drone_rf.start_scan()
-            self._drone_active = bool(
-                self.drone_rf._scan_task and not self.drone_rf._scan_task.done()
+        if self.sdr_mode == SDRMode.DEDICATED:
+            logger.info(
+                "SDR mode: DEDICATED (%d dongle(s) detected)"
+                " — ADS-B and DroneRF run simultaneously",
+                sdr_count,
             )
-        except Exception as exc:
-            logger.warning("DroneRF: scan not started (%s)", exc)
+            # readsb / ADS-B
+            try:
+                await self.adsb.connect()
+                self._adsb_active = True
+            except Exception as exc:
+                logger.warning("readsb: unavailable (%s) — ADS-B tracking disabled", exc)
+            # DroneRF — start_scan() is self-guarding; logs a warning if no hardware
+            try:
+                await self.drone_rf.start_scan()
+                self._drone_active = bool(
+                    self.drone_rf._scan_task and not self.drone_rf._scan_task.done()
+                )
+            except Exception as exc:
+                logger.warning("DroneRF: scan not started (%s)", exc)
+
+        else:  # SHARED (explicit or AUTO+0/1 dongle)
+            if sdr_count == 0:
+                logger.warning(
+                    "SDR mode: SHARED — no dongle detected"
+                    " — ADS-B and DroneRF both disabled"
+                )
+                # Both _adsb_active and _drone_active stay False
+            else:
+                adsb_secs = int(os.getenv("ADSB_SLICE_SECONDS", "30"))
+                drone_secs = int(os.getenv("DRONE_RF_SLICE_SECONDS", "30"))
+                logger.info(
+                    "SDR mode: SHARED (1 dongle detected)"
+                    " — time-sharing ADS-B (%ds) / DroneRF (%ds)",
+                    adsb_secs, drone_secs,
+                )
+                # Connect readsb for health check; coordinator takes over start/stop
+                try:
+                    await self.adsb.connect()
+                    self._adsb_active = True
+                except Exception as exc:
+                    logger.warning(
+                        "readsb: unavailable (%s) — ADS-B disabled in SHARED mode", exc
+                    )
+                # DroneRF starts with scanning gated off; coordinator enables it
+                self.drone_rf.can_scan = False
+                self._drone_active = True
+                self.sdr_coordinator = SDRCoordinator(self.drone_rf)
+                await self.sdr_coordinator.start()
 
         # Optional web GUI
         if self.gui_server is not None:
@@ -263,6 +309,12 @@ class PassiveVigilance:
             asyncio.create_task(self._poll_drone_rf_loop(), name="poll-dronrf"),
             asyncio.create_task(self._health_banner_loop(), name="health-banner"),
         ]
+        if self.sdr_coordinator is not None:
+            tasks.append(
+                asyncio.create_task(
+                    self.sdr_coordinator._coordinator_loop(), name="sdr-coordinator"
+                )
+            )
         await self._stop.wait()
         for task in tasks:
             task.cancel()
@@ -594,11 +646,18 @@ class PassiveVigilance:
         """Disconnect modules, write session summary, output shapefiles, upload to WiGLE."""
         logger.info("Shutdown initiated — saving session data...")
 
-        # Stop drone RF scan
-        try:
-            await self.drone_rf.stop_scan()
-        except Exception as exc:
-            logger.debug("DroneRF stop error: %s", exc)
+        # SDR coordinator — restore readsb and stop DroneRF cleanly
+        if self.sdr_coordinator is not None:
+            try:
+                await self.sdr_coordinator.stop()
+            except Exception as exc:
+                logger.debug("SDR coordinator stop error: %s", exc)
+        else:
+            # DEDICATED mode: stop DroneRF directly
+            try:
+                await self.drone_rf.stop_scan()
+            except Exception as exc:
+                logger.debug("DroneRF stop error: %s", exc)
 
         # Disconnect async modules
         for label, coro in [("Kismet", self.kismet.close()), ("readsb", self.adsb.close())]:

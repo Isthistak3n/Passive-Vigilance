@@ -307,8 +307,37 @@ run_setup() {
     prompt_value "GPS device path" "GPS_DEVICE" "$detected_gps" > /dev/null
     success "Hardware configured"
 
-    # ── Section 5: Advanced / Tuning ─────────────────────────────────────────
-    header "5 of 5 — Advanced Settings"
+    # ── Section 5: SDR Sharing ────────────────────────────────────────────────
+    header "5 of 6 — RTL-SDR Sharing"
+
+    local sdr_count=0
+    if command -v rtl_test &>/dev/null; then
+        sdr_count=$(rtl_test -t 2>&1 | grep -oiP 'found\s+\K\d+(?=\s+device)' | head -1)
+        sdr_count="${sdr_count:-0}"
+    fi
+
+    echo "  Detected RTL-SDR dongle(s): ${sdr_count}"
+    echo
+    if [[ "$sdr_count" -ge 2 ]]; then
+        echo "  Two or more dongles found — DEDICATED mode runs ADS-B and drone"
+        echo "  scanning simultaneously with no time-sharing needed."
+        prompt_value "SDR mode (auto/shared/dedicated)" "SDR_MODE" "auto" > /dev/null
+    elif [[ "$sdr_count" -eq 1 ]]; then
+        echo "  One dongle found — SHARED mode alternates the dongle between"
+        echo "  ADS-B (readsb) and drone RF scanning in configurable time slices."
+        prompt_value "SDR mode (auto/shared/dedicated)" "SDR_MODE" "auto" > /dev/null
+        echo
+        prompt_value "ADS-B time slice (seconds)" "ADSB_SLICE_SECONDS" "30" > /dev/null
+        prompt_value "Drone RF time slice (seconds)" "DRONE_RF_SLICE_SECONDS" "30" > /dev/null
+    else
+        echo "  No RTL-SDR dongle detected. ADS-B and drone RF scanning will be"
+        echo "  disabled at startup. Plug in a dongle before starting the service."
+        set_env "SDR_MODE" "auto"
+    fi
+    success "SDR sharing configured"
+
+    # ── Section 6: Advanced / Tuning ─────────────────────────────────────────
+    header "6 of 6 — Advanced Settings"
     echo "  Press Enter to accept defaults (recommended for first run)."
     echo
 
