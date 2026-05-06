@@ -1,4 +1,9 @@
-"""Alert backends — abstract base and concrete implementations."""
+"""Alert delivery system — supports ntfy, Telegram, Discord, and console output.
+
+Provides a unified interface for sending different types of alerts
+(drone detections, persistent devices, aircraft) with rate limiting and
+multiple backend implementations.
+"""
 
 import asyncio
 import fcntl
