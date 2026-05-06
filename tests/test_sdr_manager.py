@@ -39,8 +39,7 @@ class TestDetectSdrCount(unittest.TestCase):
     @patch("modules.sdr_manager.subprocess.run")
     def test_zero_devices_no_supported(self, mock_run):
         mock_run.return_value = self._mock_run(
-            stderr="No supported devices found.\n"
-        )
+            stderr="No supported devices found.\n")
         assert detect_sdr_count() == 0
 
     @patch("modules.sdr_manager.subprocess.run")
@@ -128,7 +127,8 @@ async def test_coordinator_handoff_to_adsb_sets_owner():
 
     assert coordinator.current_owner == "adsb"
     assert drone_rf.can_scan is False
-    mock_start.assert_awaited_once()
+    # Handshake now retries up to 5 times (P1 hardening) — test only cares that it was called
+    mock_start.assert_awaited()
 
 
 @pytest.mark.asyncio
