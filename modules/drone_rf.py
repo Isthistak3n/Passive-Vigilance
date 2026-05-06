@@ -1,6 +1,8 @@
-'''Drone RF detection module — scans known drone frequencies via RTL-SDR (P1 hardened).
+'''Drone RF scanner — listens for known drone control frequencies.
 
-Hardened recovery with exponential backoff and health signal for coordinator.
+Scans common drone bands (433/868/915 MHz and higher) using RTL-SDR.
+Includes P1 improvements: exponential backoff recovery and health
+signaling so the SDR coordinator knows when this module is struggling.
 '''
 
 import asyncio
