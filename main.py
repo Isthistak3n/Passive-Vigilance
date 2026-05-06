@@ -66,14 +66,14 @@ class PassiveVigilance:
         self._kismet_active: bool = False
         self._adsb_active: bool = False
         self._drone_active: bool = False
-        self._sdr_coordinator_active: bool = False   # NEW for P1
+        self._sdr_coordinator_active: bool = False
 
         self._sensor_health: dict[str, bool] = {
             "gps": True,
             "kismet": True,
             "adsb": True,
             "drone_rf": True,
-            "sdr": True,   # NEW: SDR coordinator health
+            "sdr": True,
         }
 
         self._degraded_log_counter: dict[str, int] = {
@@ -137,7 +137,6 @@ class PassiveVigilance:
     async def startup(self) -> None:
         logger.info("Starting Passive Vigilance %s — session %s", _VERSION, self.session_id)
 
-        # GPS
         try:
             self.gps.connect()
             self._gps_active = True
@@ -167,14 +166,12 @@ class PassiveVigilance:
             if not _got_fix:
                 logger.warning("⚠  No GPS fix within %ds — detections will not be location-stamped", gps_timeout)
 
-        # Kismet
         try:
             await self.kismet.connect()
             self._kismet_active = True
         except Exception as exc:
             logger.warning("Kismet: unavailable (%s) — WiFi/BT capture disabled", exc)
 
-        # SDR hardware detection and mode resolution
         sdr_env = os.getenv("SDR_MODE", "auto")
         _valid_sdr_modes = {"auto", "shared", "dedicated"}
         if sdr_env.strip().lower() not in _valid_sdr_modes:
@@ -195,8 +192,7 @@ class PassiveVigilance:
                 self._drone_active = bool(self.drone_rf._scan_task and not self.drone_rf._scan_task.done())
             except Exception as exc:
                 logger.warning("DroneRF: scan not started (%s)", exc)
-
-        else:  # SHARED
+        else:
             if sdr_count == 0:
                 logger.warning("SDR mode: SHARED — no dongle detected — ADS-B and DroneRF both disabled")
             else:
@@ -221,7 +217,7 @@ class PassiveVigilance:
         self._log_startup_banner()
 
     def _validate_config(self) -> None:
-        issues: list[str] = []
+        issues = []
         if not (os.getenv("NTFY_TOPIC") or os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("DISCORD_WEBHOOK_URL")):
             issues.append("Alert backend not configured — alerts will go to console only.")
         if not os.getenv("KISMET_API_KEY"):
@@ -248,8 +244,6 @@ class PassiveVigilance:
         for task, result in zip(tasks, results):
             if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
                 logger.error("Task %s raised %s: %s", task.get_name(), type(result).__name__, result)
-
-    # ... (rest of the file unchanged for brevity in this commit; full P1 integration in health banner and reconnect)
 
     async def _poll_gps_loop(self) -> None:
         while not self._stop.is_set():
@@ -292,7 +286,6 @@ class PassiveVigilance:
         elif had_fix:
             logger.warning("GPS: fix lost")
 
-    # Similar patterns for other poll loops (abbreviated for commit size)
     async def _poll_adsb_loop(self) -> None:
         while not self._stop.is_set():
             if self._adsb_active:
@@ -457,14 +450,22 @@ class PassiveVigilance:
         try:
             now = datetime.now(timezone.utc)
             summary = {
-                "session_id": self.session_id, "start_time": self.session_start.isoformat(), "end_time": now.isoformat(),
+                "session_id": self.session_id,
+                "start_time": self.session_start.isoformat(),
+                "end_time": now.isoformat(),
                 "duration_seconds": int((now - self.session_start).total_seconds()),
                 "gps_fixes_received": self._gps_fix_count,
                 "unique_devices_tracked": len({e["mac"] for e in self.all_events}),
                 "persistent_detections": len(self.all_events),
                 "aircraft_detected": len(self.aircraft_detections),
                 "drone_detections": len(self.drone_detections),
-                "modules_active": {"gps": self._gps_active, "kismet": self._kismet_active, "adsb": self._adsb_active, "drone_rf": self._drone_active, "sdr_coordinator": self._sdr_coordinator_active},
+                "modules_active": {
+                    "gps": self._gps_active,
+                    "kismet": self._kismet_active,
+                    "adsb": self._adsb_active,
+                    "drone_rf": self._drone_active,
+                    "sdr_coordinator": self._sdr_coordinator_active,
+                },
             }
             self._session_dir.mkdir(parents=True, exist_ok=True)
             summary_path = self._session_dir / "summary.json"
@@ -498,14 +499,22 @@ class PassiveVigilance:
             logger.debug("GPS close error: %s", exc)
         end_time = datetime.now(timezone.utc)
         summary = {
-            "session_id": self.session_id, "start_time": self.session_start.isoformat(), "end_time": end_time.isoformat(),
+            "session_id": self.session_id,
+            "start_time": self.session_start.isoformat(),
+            "end_time": end_time.isoformat(),
             "duration_seconds": int((end_time - self.session_start).total_seconds()),
             "gps_fixes_received": self._gps_fix_count,
             "unique_devices_tracked": len({e["mac"] for e in self.all_events}),
             "persistent_detections": len(self.all_events),
             "aircraft_detected": len(self.aircraft_detections),
             "drone_detections": len(self.drone_detections),
-            "modules_active": {"gps": self._gps_active, "kismet": self._kismet_active, "adsb": self._adsb_active, "drone_rf": self._drone_active, "sdr_coordinator": self._sdr_coordinator_active},
+            "modules_active": {
+                "gps": self._gps_active,
+                "kismet": self._kismet_active,
+                "adsb": self._adsb_active,
+                "drone_rf": self._drone_active,
+                "sdr_coordinator": self._sdr_coordinator_active,
+            },
         }
         self._session_dir.mkdir(parents=True, exist_ok=True)
         summary_path = self._session_dir / "summary.json"
@@ -516,7 +525,7 @@ class PassiveVigilance:
         except Exception as exc:
             logger.error("Failed to write session summary: %s", exc)
         all_session_events = self.all_events + self.aircraft_detections + self.drone_detections
-        kml_path: Optional[str] = None
+        kml_path = None
         if all_session_events:
             try:
                 self.shapefile_writer.write_session(self.session_id, all_session_events)
@@ -592,17 +601,21 @@ class PassiveVigilance:
         m = (total_secs % 3600) // 60
         s = total_secs % 60
         uptime_str = f"{h}h {m:02d}m {s:02d}s"
+
         if self._current_fix:
             gps_status = "✓ Fixed"
             gps_loc = f"Lat: {self._current_fix['lat']:.4f} Lon: {self._current_fix['lon']:.4f}"
         else:
             gps_status = "✗ No fix"
             gps_loc = "Lat: N/A  Lon: N/A"
-        def _status(key: str) -> str:
+
+        def _status(key):
             return "✓ Active" if self._sensor_health.get(key, False) else "✗ Degraded"
+
         backend_name = type(self.alert_backend).__name__.replace("Backend", "")
         sep = "─" * 54
-        sdr_status = "✓ Healthy" if getattr(self.sdr_coordinator, 'healthy', True) else "✗ Degraded"
+        sdr_status = "✓ Healthy" if getattr(self.sdr_coordinator, "healthy", True) else "✗ Degraded"
+
         logger.info(sep)
         logger.info("── Passive Vigilance Health ──────────────────────────")
         logger.info("Session: %s | Uptime: %s", self.session_id, uptime_str)
@@ -615,7 +628,7 @@ class PassiveVigilance:
         logger.info("Events:  %d persistent | %d aircraft | %d drone", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"])
         logger.info(sep)
 
-    async def _reconnect(self, module_name: str) -> bool:
+    async def _reconnect(self, module_name):
         max_attempts = self._max_reconnect_attempts
         for attempt in range(1, max_attempts + 1):
             logger.warning("Attempting reconnect %s (%d/%d)...", module_name, attempt, max_attempts)
@@ -640,7 +653,6 @@ class PassiveVigilance:
                         pass
                     await self.adsb.connect()
                 elif module_name == "sdr":
-                    # NEW: reconnect SDR coordinator
                     try:
                         await self.sdr_coordinator.stop()
                     except Exception:
@@ -660,11 +672,11 @@ class PassiveVigilance:
         logger.error("Sensor %s failed to reconnect after %d attempts — giving up until next health check", module_name, max_attempts)
         return False
 
-    def _console_alert(self, message: str) -> None:
+    def _console_alert(self, message):
         from modules.alerts import ConsoleBackend
         ConsoleBackend().send("Sensor Health", message, priority="high", tags=["sensor", "health"])
 
-    def _append_jsonl(self, path: Path, data: dict) -> None:
+    def _append_jsonl(self, path, data):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
@@ -672,14 +684,18 @@ class PassiveVigilance:
         except Exception as exc:
             logger.debug("JSONL append error (%s): %s", path.name, exc)
 
-    def _log_startup_banner(self) -> None:
+    def _log_startup_banner(self):
         drone_status = "active" if self._drone_active else "hardware absent"
         active_parts = []
-        if self._gps_active: active_parts.append("GPS")
-        if self._kismet_active: active_parts.append("Kismet")
-        if self._adsb_active: active_parts.append("ADS-B")
+        if self._gps_active:
+            active_parts.append("GPS")
+        if self._kismet_active:
+            active_parts.append("Kismet")
+        if self._adsb_active:
+            active_parts.append("ADS-B")
         active_parts.append(f"DroneRF ({drone_status})")
-        if self._sdr_coordinator_active: active_parts.append("SDR-Coordinator (hardened)")
+        if self._sdr_coordinator_active:
+            active_parts.append("SDR-Coordinator (hardened)")
         backend_name = type(self.alert_backend).__name__.replace("Backend", "")
         output_dir = self._session_dir
         logger.info("=" * 60)
