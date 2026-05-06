@@ -172,37 +172,53 @@ class TestGUIServerAuth(unittest.TestCase):
 
 
 def _make_orch_stub():
-    """Return a minimal PassiveVigilance instance stub for poll method tests."""
+    """Return a minimal SensorOrchestrator stub for poll method tests."""
     import sys
     import types
+    import tempfile
+    from pathlib import Path
+    from modules.orchestrator import SensorOrchestrator
+
     if "gps" not in sys.modules:
         fake_gps = types.ModuleType("gps")
         fake_gps.gps = object
         fake_gps.WATCH_ENABLE = 0
         sys.modules["gps"] = fake_gps
-    import main as m
-    orch = object.__new__(m.PassiveVigilance)
-    orch._sensor_health = {"gps": True, "kismet": True, "adsb": True, "drone_rf": True}
-    orch._degraded_log_counter = {"gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0}
-    orch._stats = {"kismet_devices_seen": 0, "aircraft_seen": 0, "drone_detections": 0,
-                   "alerts_sent": 0, "alerts_rate_limited": 0, "persistent_detections": 0}
-    orch._current_fix = None
-    orch.all_events = []
-    orch.gui_server = None
-    orch._write_session_summary = MagicMock()
-    orch.kismet = MagicMock()
+
+    from datetime import datetime, timezone
+    from asyncio import Event
+
+    stop_event = Event()
+    modules_active = {"gps": False, "kismet": False, "adsb": False, "drone_rf": False, "sdr_coordinator": False}
+    sdr_coordinator_mock = MagicMock()
+    sdr_coordinator_mock.healthy = True
+    sdr_coordinator_mock.current_owner = "none"
+    sdr_coordinator_mock.healthy = True
+
+    from modules.sdr_manager import SDRMode
+
+    orch = SensorOrchestrator(
+        gps=MagicMock(), kismet=MagicMock(), adsb=MagicMock(),
+        drone_rf=MagicMock(), sdr_coordinator=sdr_coordinator_mock,
+        alert_backend=MagicMock(), rate_limiter=MagicMock(),
+        persistence=MagicMock(), probe_analyzer=MagicMock(),
+        gui_server=None,
+        session_id="20260101_120000",
+        session_start=datetime.now(timezone.utc),
+        session_dir=Path(tempfile.mkdtemp()),
+        sdr_mode=SDRMode.AUTO,
+        stop_event=stop_event,
+        gps_poll_interval=1, adsb_poll_interval=5,
+        kismet_poll_interval=30, drone_poll_interval=5,
+        health_banner_interval=300, max_reconnect_attempts=3,
+        reconnect_interval=5, modules_active=modules_active,
+    )
     orch.kismet.poll_devices = AsyncMock(return_value=[])
-    orch.probe_analyzer = MagicMock()
     orch.probe_analyzer.analyze = MagicMock(return_value=[])
-    orch.persistence = MagicMock()
     orch.persistence.update = MagicMock(return_value=[])
     orch._append_jsonl = MagicMock()
     orch._console_alert = MagicMock()
-    from pathlib import Path
-    import tempfile
-    orch._session_dir = Path(tempfile.mkdtemp())
-    orch.rate_limiter = MagicMock()
-    orch.alert_backend = MagicMock()
+    orch._write_session_summary = MagicMock()
     return orch
 
 
@@ -211,15 +227,14 @@ class TestOrchestratorIncrementalSummary(unittest.TestCase):
 
     def test_incremental_summary_called_after_kismet_poll(self):
         import asyncio
-        import main as m  # noqa: F401 — ensure module imported
-        orch = _make_orch_stub()
-        orch.kismet.poll_devices = AsyncMock(return_value=[])
+        so = _make_orch_stub()
+        so.kismet.poll_devices = AsyncMock(return_value=[])
 
         async def _run():
-            await orch._poll_kismet()
+            await so._poll_kismet()
 
         asyncio.run(_run())
-        orch._write_session_summary.assert_called_once()
+        so._write_session_summary.assert_called_once()
 
 
 class TestOrchestratorDegradedCounter(unittest.TestCase):
@@ -228,12 +243,12 @@ class TestOrchestratorDegradedCounter(unittest.TestCase):
     def test_warning_logged_at_every_10th_failure(self):
         import asyncio
         import logging
-        import main as m
+        import modules.orchestrator as mo
 
-        orch = _make_orch_stub()
+        so = _make_orch_stub()
         # Start already-degraded so the counter path (not reconnect) is exercised
-        orch._sensor_health["kismet"] = False
-        orch.kismet.poll_devices.side_effect = RuntimeError("connection refused")
+        so._sensor_health["kismet"] = False
+        so.kismet.poll_devices.side_effect = RuntimeError("connection refused")
 
         warning_count = 0
 
@@ -244,15 +259,15 @@ class TestOrchestratorDegradedCounter(unittest.TestCase):
                     warning_count += 1
 
         handler = _Counter()
-        m.logger.addHandler(handler)
+        mo.logger.addHandler(handler)
         try:
             async def _run_polls(n: int):
                 for _ in range(n):
-                    await orch._poll_kismet()
+                    await so._poll_kismet()
 
             asyncio.run(_run_polls(20))
         finally:
-            m.logger.removeHandler(handler)
+            mo.logger.removeHandler(handler)
 
         self.assertEqual(warning_count, 2)
 

@@ -152,9 +152,9 @@ def orch(tmp_path):
 def test_orchestrator_initialises_without_error(orch):
     assert orch.session_id is not None
     assert len(orch.session_id) == 15  # YYYYMMDD_HHMMSS
-    assert orch.all_events == []
-    assert orch.aircraft_detections == []
-    assert orch.drone_detections == []
+    assert orch.sensor_orchestrator.all_events == []
+    assert orch.sensor_orchestrator.aircraft_detections == []
+    assert orch.sensor_orchestrator.drone_detections == []
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ async def test_poll_adsb_emergency_bypasses_rate_limiter(orch):
     # Exhaust the rate limiter key first
     await orch.rate_limiter.is_allowed("aircraft:EMG001")  # consumes the slot
 
-    await orch._poll_adsb()
+    await orch.sensor_orchestrator._poll_adsb()
     # Backend must still be called
     orch._mock_backend.send_aircraft_alert.assert_called_once()
 
@@ -228,8 +228,8 @@ async def test_poll_adsb_rate_limiter_suppresses_repeat_normal_alert(orch):
     orch.adsb.poll_aircraft = AsyncMock(return_value=[normal_ac])
     orch._adsb_active = True
 
-    await orch._poll_adsb()   # first poll — alert fires
-    await orch._poll_adsb()   # second poll — rate-limited, no second alert
+    await orch.sensor_orchestrator._poll_adsb()   # first poll — alert fires
+    await orch.sensor_orchestrator._poll_adsb()   # second poll — rate-limited, no second alert
 
     orch._mock_backend.send_aircraft_alert.assert_called_once()
 
@@ -245,7 +245,7 @@ async def test_poll_kismet_passes_devices_through_ignore_list(orch):
     orch._kismet_active = True
     orch.kismet.poll_devices = AsyncMock(return_value=[])
 
-    await orch._poll_kismet()
+    await orch.sensor_orchestrator._poll_kismet()
 
     orch.kismet.poll_devices.assert_called_once()
 
@@ -258,11 +258,11 @@ async def test_poll_kismet_sends_alert_for_high_score_event(orch):
     orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
     orch._kismet_active = True
 
-    await orch._poll_kismet()
+    await orch.sensor_orchestrator._poll_kismet()
 
     orch._mock_backend.send_persistence_alert.assert_called_once_with(event)
-    assert len(orch.all_events) == 1
-    assert orch.all_events[0]["mac"] == "aa:bb:cc:dd:ee:ff"
+    assert len(orch.sensor_orchestrator.all_events) == 1
+    assert orch.sensor_orchestrator.all_events[0]["mac"] == "aa:bb:cc:dd:ee:ff"
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +273,7 @@ async def test_poll_kismet_sends_alert_for_high_score_event(orch):
 @pytest.mark.asyncio
 async def test_shutdown_writes_session_summary(orch, tmp_path):
     orch.session_id = "20260101_120000"
+    orch.sensor_orchestrator._session_dir = Path(tmp_path) / "20260101_120000"
     orch._session_dir = Path(tmp_path) / "20260101_120000"
     await orch.startup()
     await orch.shutdown()
@@ -290,7 +291,7 @@ async def test_shutdown_writes_session_summary(orch, tmp_path):
 @pytest.mark.asyncio
 async def test_shutdown_calls_shapefile_writer_when_events_present(orch):
     orch._kismet_active = True
-    orch.all_events = [
+    orch.sensor_orchestrator.all_events = [
         {"event_type": "wifi", "mac": "aa:bb:cc:dd:ee:ff", "lat": 51.5, "lon": -0.1}
     ]
     await orch.startup()
@@ -337,9 +338,9 @@ async def test_poll_kismet_calls_persistence_update(orch):
     orch.kismet.poll_devices = AsyncMock(return_value=[device])
     orch._kismet_active = True
 
-    await orch._poll_kismet()
+    await orch.sensor_orchestrator._poll_kismet()
 
-    orch.persistence.update.assert_called_once_with([device], gps_fix=orch._current_fix)
+    orch.persistence.update.assert_called_once_with([device], gps_fix=orch.sensor_orchestrator._current_fix)
 
 
 
@@ -350,12 +351,11 @@ async def test_poll_kismet_appends_events_to_jsonl(orch, tmp_path):
     orch.persistence.update.return_value = [event]
     orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
     orch._kismet_active = True
-    orch.session_id = "20260101_120000"
-    orch._session_dir = Path(tmp_path) / "20260101_120000"
+    orch.sensor_orchestrator._session_dir = Path(tmp_path) / "20260101_120000"
 
-    await orch._poll_kismet()
+    await orch.sensor_orchestrator._poll_kismet()
 
-    jsonl_path = orch._session_dir / "events.jsonl"
+    jsonl_path = orch.sensor_orchestrator._session_dir / "events.jsonl"
     assert jsonl_path.exists(), "events.jsonl was not created"
     line = json.loads(jsonl_path.read_text().strip())
     assert line["mac"] == "aa:bb:cc:dd:ee:ff"
@@ -368,12 +368,11 @@ async def test_poll_adsb_appends_to_jsonl(orch, tmp_path):
     aircraft = _make_aircraft(icao="TEST01")
     orch.adsb.poll_aircraft = AsyncMock(return_value=[aircraft])
     orch._adsb_active = True
-    orch.session_id = "20260101_120000"
-    orch._session_dir = Path(tmp_path) / "20260101_120000"
+    orch.sensor_orchestrator._session_dir = Path(tmp_path) / "20260101_120000"
 
-    await orch._poll_adsb()
+    await orch.sensor_orchestrator._poll_adsb()
 
-    jsonl_path = orch._session_dir / "aircraft.jsonl"
+    jsonl_path = orch.sensor_orchestrator._session_dir / "aircraft.jsonl"
     assert jsonl_path.exists(), "aircraft.jsonl was not created"
     line = json.loads(jsonl_path.read_text().strip())
     assert line["icao"] == "TEST01"
@@ -388,16 +387,16 @@ def test_health_banner_logs_at_info(orch, caplog):
     """_log_health_banner() emits at least one INFO-level log line."""
     import logging
     with caplog.at_level(logging.INFO):
-        orch._log_health_banner()
+        orch.sensor_orchestrator._log_health_banner()
     assert any(r.levelno == logging.INFO for r in caplog.records)
 
 
 def test_health_banner_includes_session_id(orch, caplog):
     """Health banner must contain the session ID."""
     import logging
-    orch.session_id = "20260101_120000"
+    orch.sensor_orchestrator.session_id = "20260101_120000"
     with caplog.at_level(logging.INFO):
-        orch._log_health_banner()
+        orch.sensor_orchestrator._log_health_banner()
     all_msgs = " ".join(r.message for r in caplog.records)
     assert "20260101_120000" in all_msgs
 
@@ -405,9 +404,9 @@ def test_health_banner_includes_session_id(orch, caplog):
 def test_health_banner_reflects_sensor_degradation(orch, caplog):
     """Health banner must show Degraded when a sensor is unhealthy."""
     import logging
-    orch._sensor_health["kismet"] = False
+    orch.sensor_orchestrator._sensor_health["kismet"] = False
     with caplog.at_level(logging.INFO):
-        orch._log_health_banner()
+        orch.sensor_orchestrator._log_health_banner()
     all_msgs = " ".join(r.message for r in caplog.records)
     assert "Degraded" in all_msgs
 
@@ -420,23 +419,23 @@ def test_health_banner_reflects_sensor_degradation(orch, caplog):
 @pytest.mark.asyncio
 async def test_reconnect_returns_true_on_success(orch):
     """_reconnect() returns True and sets sensor health when reconnect succeeds."""
-    orch._sensor_health["kismet"] = False
+    orch.sensor_orchestrator._sensor_health["kismet"] = False
     orch.kismet.close = AsyncMock()
     orch.kismet.connect = AsyncMock()
     with patch("asyncio.sleep", new_callable=AsyncMock):
-        result = await orch._reconnect("kismet")
+        result = await orch.sensor_orchestrator._reconnect("kismet")
     assert result is True
-    assert orch._sensor_health["kismet"] is True
+    assert orch.sensor_orchestrator._sensor_health["kismet"] is True
 
 
 @pytest.mark.asyncio
 async def test_reconnect_returns_false_after_max_attempts(orch):
     """_reconnect() returns False when all reconnect attempts fail."""
-    orch._max_reconnect_attempts = 3
+    orch.sensor_orchestrator._max_reconnect_attempts = 3
     orch.kismet.close = AsyncMock()
     orch.kismet.connect = AsyncMock(side_effect=ConnectionError("still down"))
     with patch("asyncio.sleep", new_callable=AsyncMock):
-        result = await orch._reconnect("kismet")
+        result = await orch.sensor_orchestrator._reconnect("kismet")
     assert result is False
 
 
@@ -444,12 +443,12 @@ async def test_reconnect_returns_false_after_max_attempts(orch):
 async def test_reconnect_logs_warning_on_each_attempt(orch, caplog):
     """_reconnect() must log a WARNING for each attempt."""
     import logging
-    orch._max_reconnect_attempts = 2
+    orch.sensor_orchestrator._max_reconnect_attempts = 2
     orch.kismet.close = AsyncMock()
     orch.kismet.connect = AsyncMock(side_effect=ConnectionError("down"))
     with patch("asyncio.sleep", new_callable=AsyncMock):
         with caplog.at_level(logging.WARNING):
-            await orch._reconnect("kismet")
+            await orch.sensor_orchestrator._reconnect("kismet")
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) >= 2
 
@@ -458,12 +457,12 @@ async def test_reconnect_logs_warning_on_each_attempt(orch, caplog):
 async def test_reconnect_logs_error_when_all_attempts_fail(orch, caplog):
     """_reconnect() must log ERROR after exhausting all attempts."""
     import logging
-    orch._max_reconnect_attempts = 1
+    orch.sensor_orchestrator._max_reconnect_attempts = 1
     orch.kismet.close = AsyncMock()
     orch.kismet.connect = AsyncMock(side_effect=ConnectionError("down"))
     with patch("asyncio.sleep", new_callable=AsyncMock):
         with caplog.at_level(logging.ERROR):
-            await orch._reconnect("kismet")
+            await orch.sensor_orchestrator._reconnect("kismet")
     assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 
@@ -476,11 +475,11 @@ async def test_reconnect_logs_error_when_all_attempts_fail(orch, caplog):
 async def test_poll_kismet_triggers_reconnect_on_health_transition(orch):
     """_poll_kismet() calls _reconnect() when sensor first degrades."""
     orch._kismet_active = True
-    orch._sensor_health["kismet"] = True
+    orch.sensor_orchestrator._sensor_health["kismet"] = True
     orch.kismet.poll_devices = AsyncMock(side_effect=ConnectionError("down"))
 
-    with patch.object(orch, "_reconnect", new_callable=AsyncMock, return_value=True) as mock_rc:
-        await orch._poll_kismet()
+    with patch.object(orch.sensor_orchestrator, "_reconnect", new_callable=AsyncMock, return_value=True) as mock_rc:
+        await orch.sensor_orchestrator._poll_kismet()
 
     mock_rc.assert_called_once_with("kismet")
 
@@ -489,11 +488,11 @@ async def test_poll_kismet_triggers_reconnect_on_health_transition(orch):
 async def test_poll_kismet_does_not_reconnect_on_repeated_failure(orch):
     """_poll_kismet() does NOT call _reconnect() when sensor is already degraded."""
     orch._kismet_active = True
-    orch._sensor_health["kismet"] = False  # already degraded
+    orch.sensor_orchestrator._sensor_health["kismet"] = False  # already degraded
     orch.kismet.poll_devices = AsyncMock(side_effect=ConnectionError("still down"))
 
-    with patch.object(orch, "_reconnect", new_callable=AsyncMock) as mock_rc:
-        await orch._poll_kismet()
+    with patch.object(orch.sensor_orchestrator, "_reconnect", new_callable=AsyncMock) as mock_rc:
+        await orch.sensor_orchestrator._poll_kismet()
 
     mock_rc.assert_not_called()
 
@@ -507,8 +506,9 @@ async def test_poll_kismet_does_not_reconnect_on_repeated_failure(orch):
 async def test_shutdown_writes_summary_even_when_shapefile_fails(orch, tmp_path):
     """summary.json must be written even if ShapefileWriter raises."""
     orch.session_id = "20260101_120000"
+    orch.sensor_orchestrator._session_dir = Path(tmp_path) / "20260101_120000"
     orch._session_dir = Path(tmp_path) / "20260101_120000"
-    orch.all_events = [
+    orch.sensor_orchestrator.all_events = [
         {"event_type": "wifi", "mac": "aa:bb:cc:dd:ee:ff", "lat": 51.5, "lon": -0.1}
     ]
     orch._mock_shp.write_session.side_effect = RuntimeError("geopandas crash")
@@ -527,6 +527,7 @@ async def test_shutdown_writes_summary_even_when_shapefile_fails(orch, tmp_path)
 async def test_shutdown_writes_summary_even_when_wigle_fails(orch, tmp_path):
     """summary.json must be written even if WiGLE upload raises."""
     orch.session_id = "20260101_120000"
+    orch.sensor_orchestrator._session_dir = Path(tmp_path) / "20260101_120000"
     orch._session_dir = Path(tmp_path) / "20260101_120000"
     orch._mock_wigle.is_configured.return_value = True
     orch._mock_wigle.upload_session.side_effect = RuntimeError("WiGLE down")
@@ -546,14 +547,15 @@ async def test_shutdown_writes_summary_even_when_wigle_fails(orch, tmp_path):
 async def test_emergency_flush_writes_jsonl_without_geopandas(orch, tmp_path):
     """_emergency_flush() must write all in-memory events using only stdlib."""
     orch.session_id = "20260101_120000"
+    orch.sensor_orchestrator._session_dir = Path(tmp_path) / "20260101_120000"
     orch._session_dir = Path(tmp_path) / "20260101_120000"
-    orch.all_events = [
+    orch.sensor_orchestrator.all_events = [
         {"event_type": "wifi", "mac": "aa:bb:cc:dd:ee:ff", "lat": 51.5, "lon": -0.1}
     ]
-    orch.aircraft_detections = [
+    orch.sensor_orchestrator.aircraft_detections = [
         {"event_type": "aircraft", "icao": "ABC123", "lat": 51.5, "lon": -0.1}
     ]
-    orch.drone_detections = []
+    orch.sensor_orchestrator.drone_detections = []
 
     with patch.dict("sys.modules", {"geopandas": None}):
         orch._emergency_flush()
