@@ -5,6 +5,8 @@ into one always-on asyncio event loop. This is the central brain of the
 entire system.
 '''
 
+# Note: Docstrings updated for clarity (no logic changes)
+
 import asyncio
 import json
 import logging
