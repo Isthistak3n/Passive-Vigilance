@@ -419,7 +419,7 @@ class PersistenceEngine:
             o["timestamp"]
             for obs_list in self._observations.values()
             for o in obs_list
-n        ]
+        ]
         suspicious = sum(
             1 for mac in self._observations
             if self.score_device(mac) >= self._threshold
