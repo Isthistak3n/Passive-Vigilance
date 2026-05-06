@@ -1,15 +1,8 @@
-'''SDR time-share coordinator.
+'''SDR time-share coordinator (SHARED mode only).
 
-Only active in SHARED mode (single RTL-SDR dongle).  Alternates the
-dongle between readsb (ADS-B @ 1090 MHz) and DroneRF (433/868/915 MHz)
-using two configurable time slices.
-
-The coordinator runs as an asyncio task inside the main event loop.
-``start()`` performs the initial handoff (always begins with the ADSB
-slice) and should be called once from ``startup()``.  The loop task
-itself is created by ``main.py``'s ``event_loop()`` so that cancellation
-on shutdown is handled uniformly with all other tasks.  ``stop()`` then
-restores hardware to the clean state (DroneRF idle, readsb running).
+When only one RTL-SDR dongle is available, this module alternates the
+hardware between readsb (ADS-B @ 1090 MHz) and the Drone RF scanner using
+configurable time slices. It contains the core P1 hardening logic.
 '''
 
 import asyncio
