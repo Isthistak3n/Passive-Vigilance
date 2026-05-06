@@ -1,4 +1,8 @@
-"""GPS module — wraps gpsd (python3-gps) to provide position fixes for all sensor events."""
+"""GPS handler — provides location fixes from gpsd for all detections.
+
+Every event in the system (WiFi, Bluetooth, Drone RF, ADS-B) gets stamped
+with the current GPS position from this module.
+"""
 
 import logging
 import os
