@@ -1,8 +1,8 @@
-"""Persistence engine — time-window device tracking and surveillance detection.
+"""Persistence engine — detects persistent or suspicious devices over time.
 
-Inspired by Chasing-Your-Tail-NG's surveillance_detector.py approach.
-Scores each device across four overlapping time windows on four weighted
-criteria to produce a 0.0–1.0 surveillance confidence score.
+Inspired by Chasing-Your-Tail. Scores each device across multiple time
+windows using temporal, location, frequency, and signal strength criteria
+to produce a surveillance confidence score.
 """
 
 import logging
@@ -419,7 +419,7 @@ class PersistenceEngine:
             o["timestamp"]
             for obs_list in self._observations.values()
             for o in obs_list
-        ]
+n        ]
         suspicious = sum(
             1 for mac in self._observations
             if self.score_device(mac) >= self._threshold
