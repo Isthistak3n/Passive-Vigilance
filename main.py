@@ -96,29 +96,44 @@ class PassiveVigilance:
 
     # Active-flag properties: read/write the shared _modules_active dict
     @property
-    def _gps_active(self) -> bool: return self._modules_active["gps"]
+    def _gps_active(self) -> bool:
+        return self._modules_active["gps"]
+
     @_gps_active.setter
-    def _gps_active(self, v: bool) -> None: self._modules_active["gps"] = v
+    def _gps_active(self, v: bool) -> None:
+        self._modules_active["gps"] = v
 
     @property
-    def _kismet_active(self) -> bool: return self._modules_active["kismet"]
+    def _kismet_active(self) -> bool:
+        return self._modules_active["kismet"]
+
     @_kismet_active.setter
-    def _kismet_active(self, v: bool) -> None: self._modules_active["kismet"] = v
+    def _kismet_active(self, v: bool) -> None:
+        self._modules_active["kismet"] = v
 
     @property
-    def _adsb_active(self) -> bool: return self._modules_active["adsb"]
+    def _adsb_active(self) -> bool:
+        return self._modules_active["adsb"]
+
     @_adsb_active.setter
-    def _adsb_active(self, v: bool) -> None: self._modules_active["adsb"] = v
+    def _adsb_active(self, v: bool) -> None:
+        self._modules_active["adsb"] = v
 
     @property
-    def _drone_active(self) -> bool: return self._modules_active["drone_rf"]
+    def _drone_active(self) -> bool:
+        return self._modules_active["drone_rf"]
+
     @_drone_active.setter
-    def _drone_active(self, v: bool) -> None: self._modules_active["drone_rf"] = v
+    def _drone_active(self, v: bool) -> None:
+        self._modules_active["drone_rf"] = v
 
     @property
-    def _sdr_coordinator_active(self) -> bool: return self._modules_active["sdr_coordinator"]
+    def _sdr_coordinator_active(self) -> bool:
+        return self._modules_active["sdr_coordinator"]
+
     @_sdr_coordinator_active.setter
-    def _sdr_coordinator_active(self, v: bool) -> None: self._modules_active["sdr_coordinator"] = v
+    def _sdr_coordinator_active(self, v: bool) -> None:
+        self._modules_active["sdr_coordinator"] = v
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
