@@ -110,9 +110,6 @@ class SDRCoordinator:
             if await self._is_readsb_active():
                 return True
             await asyncio.sleep(0.5)
-        # In CI/test environments (no real systemd) we still consider the handoff successful
-        # after the start command — the original behavior is preserved while keeping
-        # the hardening intent for real deployments.
         logger.debug("readsb handshake could not confirm active state (CI/test env?) — assuming success")
         return True
 
@@ -128,12 +125,14 @@ class SDRCoordinator:
 
     async def _is_readsb_active(self) -> bool:
         loop = asyncio.get_running_loop()
+
         def _check():
             try:
                 result = subprocess.run(["systemctl", "is-active", _READSB_SERVICE], capture_output=True, text=True, timeout=5)
                 return result.stdout.strip() == "active"
             except Exception:
                 return False
+
         return await loop.run_in_executor(None, _check)
 
     def _run_systemctl(self, action: str, service: str) -> None:
