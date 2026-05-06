@@ -1,6 +1,8 @@
-'''Passive Vigilance — asyncio orchestrator (P1 hardened for SHARED SDR mode).
+'''Passive Vigilance — the main orchestrator.
 
-Wires all sensor modules into a unified always-on event loop.
+Coordinates GPS, Kismet, ADS-B (readsb), Drone RF, and SDR time-sharing
+into one always-on asyncio event loop. This is the central brain of the
+entire system.
 '''
 
 import asyncio
@@ -617,7 +619,7 @@ class PassiveVigilance:
         sdr_status = "✓ Healthy" if getattr(self.sdr_coordinator, "healthy", True) else "✗ Degraded"
 
         logger.info(sep)
-        logger.info("── Passive Vigilance Health ──────────────────────────")
+        logger.info("── Passive Vigilance Health ───────────────────────")
         logger.info("Session: %s | Uptime: %s", self.session_id, uptime_str)
         logger.info("GPS:     %s | %s", gps_status, gps_loc)
         logger.info("Kismet:  %s | Devices seen: %d", _status("kismet"), self._stats["kismet_devices_seen"])
