@@ -1,4 +1,8 @@
-"""Kismet module — async REST client for Wi-Fi / Bluetooth device polling."""
+"""Kismet integration — async client for Wi-Fi and Bluetooth device polling.
+
+Talks to the Kismet sensor daemon over its REST API and returns
+GPS-stamped device records. Also handles monitor-mode interface checks.
+"""
 
 import logging
 import os
