@@ -33,7 +33,7 @@ class DroneRFModule:
         self._detections: list = []
         self._sdr = None
         self.can_scan: bool = True
-        self._recovery_backoff: float = 1.0   # seconds, exponential
+        self._recovery_backoff: float = 1.0
 
     def _open_sdr(self) -> bool:
         try:
@@ -41,7 +41,7 @@ class DroneRFModule:
             self._sdr = RtlSdr()
             self._sdr.sample_rate = _SAMPLE_RATE_HZ
             self._sdr.gain = 40
-            self._recovery_backoff = 1.0  # reset on success
+            self._recovery_backoff = 1.0
             logger.debug("SDR device opened")
             return True
         except Exception as exc:
@@ -105,13 +105,10 @@ class DroneRFModule:
                     logger.warning("SDR error at %.1f MHz: %s — attempting recovery (backoff %.1fs)", freq_mhz, exc, self._recovery_backoff)
                     self._close_sdr()
                     await asyncio.sleep(self._recovery_backoff)
-                    self._recovery_backoff = min(self._recovery_backoff * 2, 30.0)  # cap at 30s
+                    self._recovery_backoff = min(self._recovery_backoff * 2, 30.0)
                     if not self._open_sdr():
                         self.can_scan = False
                         logger.error("SDR recovery failed — disabling drone RF scan")
-                        # Signal health degradation to coordinator/main
-                        if hasattr(self, '_healthy'):
-                            self._healthy = False
                     break
 
             if rest_seconds > 0:
@@ -126,7 +123,7 @@ class DroneRFModule:
             else:
                 await asyncio.sleep(0.1)
 
-    def _process_fft_samples(self, samples) -> float:
+    def _process_fft_samples(self, samples):
         import numpy as np
         return float(10 * np.log10(np.mean(np.abs(samples) ** 2) + 1e-12))
 
@@ -142,13 +139,8 @@ class DroneRFModule:
             "gps_lon": gps_fix["lon"] if gps_fix else None,
         }
 
-    def _sample_frequency(self, freq_mhz: float) -> Optional[dict]:
+    def _sample_frequency(self, freq_mhz: float):
         if self._sdr is None:
-            return None
-        try:
-            import numpy as np
-        except ImportError as exc:
-            logger.error("numpy not available: %s", exc)
             return None
         self._sdr.center_freq = freq_mhz * 1e6
         samples = self._sdr.read_samples(_SAMPLE_COUNT)
@@ -163,7 +155,7 @@ class DroneRFModule:
                 pass
         return self._enrich_and_alert(power_db, freq_mhz, gps_fix)
 
-    def _check_cpu_temp(self) -> Optional[float]:
+    def _check_cpu_temp(self):
         try:
             with open("/sys/class/thermal/thermal_zone0/temp", "r") as fh:
                 return float(fh.read().strip()) / 1000.0
