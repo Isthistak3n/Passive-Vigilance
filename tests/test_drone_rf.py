@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
-
 import modules.drone_rf  # noqa: F401 — load before @patch resolves targets
 
 try:
@@ -270,6 +269,47 @@ class TestDroneRFDutyCycle(unittest.TestCase):
             temp = m._check_cpu_temp()
 
         self.assertIsNone(temp)
+
+
+# ---------------------------------------------------------------------------
+# drain_detections() — REQUIRED test (Step 2 standardization)
+# ---------------------------------------------------------------------------
+
+class TestDroneRFDDrainDetections(unittest.TestCase):
+
+    def test_drain_returns_events_and_clears_buffer(self):
+        """After appending events, drain_detections() returns them and empties the buffer."""
+        from modules.drone_rf import DroneRFModule
+
+        m = DroneRFModule()
+        fake_events = [{"freq_mhz": 433.0, "power_db": -15.0}]
+        m._detections.extend(fake_events)
+
+        result = m.drain_detections()
+        self.assertEqual(result, fake_events)
+        self.assertEqual(m._detections, [])
+
+    def test_second_drain_returns_empty(self):
+        """After draining, a second drain returns an empty list."""
+        from modules.drone_rf import DroneRFModule
+
+        m = DroneRFModule()
+        m._detections.append({"freq_mhz": 868.0})
+        m.drain_detections()
+
+        self.assertEqual(m.drain_detections(), [])
+
+    def test_returned_list_is_independent(self):
+        """Mutating the returned list does not affect the internal buffer."""
+        from modules.drone_rf import DroneRFModule
+
+        m = DroneRFModule()
+        m._detections.append({"freq_mhz": 915.0})
+
+        result = m.drain_detections()
+        result.append({"freq_mhz": 999.0})  # mutate returned list
+
+        self.assertEqual(m._detections, [])  # internal buffer must remain clean
 
 
 if __name__ == "__main__":
