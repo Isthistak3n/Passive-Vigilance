@@ -81,7 +81,7 @@ When writing or testing code, always note which node it was validated on.
 
 ## Branch Strategy
 
-```
+``` 
 main
  └── feature/<module-name>       ← Claude Code works here
  └── refactor/<scope>            ← Grok proposes here
@@ -93,11 +93,23 @@ main
 - Claude Code opens its own PRs OR pushes and asks Grok to open the PR
 - Grok reviews all PRs for cross-module impact before human approval
 
+### Docs-Only Exception for `main`
+
+Grok may push **docs-only changes** (CONTEXT.md, README.md, AGENTS.md, SECURITY.md, CONTRIBUTING.md, or files under `docs/`) **directly to `main`** without a full `feature/* → dev → main` cycle **provided**:
+
+- The change is purely documentation or coordination metadata.
+- No code, tests, or configuration that affects runtime behavior is modified.
+- The commit message is tagged `[grok] docs(main): …`
+- Human (Cody) is notified immediately and retains veto power.
+- This exception exists only because CONTEXT.md must remain the single source of truth for every agent session; it does **not** extend to any implementation work.
+
+All non-docs changes continue to require the standard Pi-validated PR path.
+
 ---
 
 ## Commit Message Format
 
-```
+``` 
 [agent] type(scope): short description
 
 Body (optional): what changed and why
@@ -106,7 +118,7 @@ Refs: #issue-number
 ```
 
 **Examples:**
-```
+``` 
 [claude-code] feat(sdr): harden SHARED mode with lock + handshake (P1)
 Tested: Pi 1
 Refs: #22
