@@ -333,8 +333,7 @@ class SensorOrchestrator:
     async def _poll_drone_rf(self) -> None:
         '''Drain DroneRF detections buffer; append events and fire alerts.'''
         try:
-            pending = self.drone_rf._detections[:]
-            self.drone_rf._detections.clear()
+            pending = self.drone_rf.drain_detections()
         except Exception as exc:
             if self._sensor_health["drone_rf"]:
                 logger.warning("Sensor drone_rf degraded: %s", exc)
@@ -434,7 +433,7 @@ class SensorOrchestrator:
         sdr_status = "✓ Healthy" if getattr(self.sdr_coordinator, "healthy", True) else "✗ Degraded"
 
         logger.info(sep)
-        logger.info("── Passive Vigilance Health ───────────────────────")
+        logger.info("── Passive Vigilance Health ──────────────────────────")
         logger.info("Session: %s | Uptime: %s", self.session_id, uptime_str)
         logger.info("GPS:     %s | %s", gps_status, gps_loc)
         logger.info("Kismet:    %s | Devices seen: %d", _status("kismet"), self._stats["kismet_devices_seen"])
