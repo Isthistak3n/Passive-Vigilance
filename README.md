@@ -1,7 +1,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-222%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-280%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.4.2--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -60,29 +60,29 @@ capturing automatically.
 flowchart TD
     subgraph Hardware
         RTL[RTL-SDR / HackRF]
-        WIFI[WiFi Dongle\nMonitor Mode]
+        WIFI[WiFi Dongle\\nMonitor Mode]
         BT[Bluetooth Dongle]
         GPS[GPS Dongle]
     end
     subgraph Daemons
-        READSB[readsb\nADS-B decoder]
-        KISMET[Kismet daemon\nWiFi + BT capture]
-        GPSD[gpsd\nposition + UTC]
+        READSB[readsb\\nADS-B decoder]
+        KISMET[Kismet daemon\\nWiFi + BT capture]
+        GPSD[gpsd\\nposition + UTC]
     end
     subgraph Python Orchestrator
-        ADSB[ADSBModule\n+ adsb.lol enrichment]
-        DRONE[DroneRFModule\n433/868/915 MHz]
-        KIS[KismetModule\nREST API poll]
-        GPSM[GPSModule\nfix quality]
-        IGNORE[IgnoreList\nMAC/OUI/SSID filter]
-        PERSIST[PersistenceEngine\ntime-window scoring]
-        PROBE[ProbeAnalyzer\nSSID patterns]
+        ADSB[ADSBModule\\n+ adsb.lol enrichment]
+        DRONE[DroneRFModule\\n433/868/915 MHz]
+        KIS[KismetModule\\nREST API poll]
+        GPSM[GPSModule\\nfit quality]
+        IGNORE[IgnoreList\\nMAC/OUI/SSID filter]
+        PERSIST[PersistenceEngine\\ntime-window scoring]
+        PROBE[ProbeAnalyzer\\nSSID patterns]
     end
     subgraph Outputs
-        ALERT[Alert Engine\nNtfy / Telegram]
-        SHP[Shapefile Writer\ngeopandas / fiona]
-        WIGLE[WiGLE Uploader\nsession CSV]
-        DB[(SQLite DB\nevent log)]
+        ALERT[Alert Engine\\nNtfy / Telegram]
+        SHP[Shapefile Writer\\ngeopandas / fiona]
+        WIGLE[WiGLE Uploader\\nsession CSV]
+        DB[(SQLite DB\\nevent log)]
     end
     RTL --> READSB
     RTL --> DRONE
@@ -117,7 +117,7 @@ flowchart TD
 | GPS daemon | ✅ Complete | gpsd integration, fix quality, HDOP filter — 12 tests |
 | Kismet integration | ✅ Complete | REST API, API key auth, WiGLE CSV — 10 tests |
 | ADS-B | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
-| Drone RF | ✅ Complete | pyrtlsdr, duty cycle, thermal throttle — 12 tests |
+| Drone RF | ✅ Complete | pyrtlsdr, duty cycle, thermal throttle — 15 tests (includes drain_detections) |
 | WiFi monitor mode | ✅ Complete | MT7610U/RTL8811AU udev + NM unmanaged — 15 tests |
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
 | MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
@@ -129,7 +129,7 @@ flowchart TD
 | Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream — 15 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown — 28 tests |
 
-**222 tests passing** across all modules.
+**280 tests passing** across all modules.
 
 ---
 
@@ -197,7 +197,7 @@ Passive-Vigilance/
 │   ├── gps.py                        # GPSModule — gpsd streaming client; position/time backbone
 │   ├── kismet.py                     # KismetModule — Kismet REST API; async WiFi + BT polling
 │   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
-│   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures
+│   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures + drain_detections()
 │   ├── ignore_list.py                # IgnoreList — MAC/OUI/SSID filter; atomic JSON persistence
 │   ├── mac_utils.py                  # MAC randomization detection, type classification, fingerprinting
 │   ├── alerts.py                     # AlertBackend ABC + Ntfy / Telegram / Discord / Console backends
@@ -205,7 +205,7 @@ Passive-Vigilance/
 │   ├── persistence.py                # PersistenceEngine — time-window scoring; DetectionEvent dataclass
 │   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
 │   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
-│   └── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
+│   ├── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
 ├── gui/
 │   ├── __init__.py                   # Empty package marker
 │   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*
@@ -218,13 +218,13 @@ Passive-Vigilance/
 │   ├── test_gps.py                   # 12 tests — GPSModule + quality filter
 │   ├── test_kismet.py                # 10 tests — KismetModule
 │   ├── test_dump1090.py              # 20 tests — ADSBModule
-│   ├── test_drone_rf.py              # 12 tests — DroneRFModule + duty cycle
+│   ├── test_drone_rf.py              # 15 tests — DroneRFModule + drain_detections()
 │   ├── test_monitor_mode.py          # 15 tests — WiFi monitor mode
 │   ├── test_ignore_list.py           # 25 tests — IgnoreList
 │   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
 │   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
-│   ├── test_kml_writer.py            # 14 tests — KMLWriter
+│   ├── test_kml_writer.py              # 14 tests — KMLWriter
 │   ├── test_orchestrator.py          # 28 tests — PassiveVigilance orchestrator
 │   ├── test_gui.py                   # 15 tests — GUIServer
 │   └── test_alerts.py                # 24 tests — AlertEngine
