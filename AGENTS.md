@@ -109,11 +109,17 @@ All non-docs changes continue to require the standard Pi-validated PR path.
 
 ## Verification Rules (Mandatory)
 
-**Any claim that a step or task is "completed" and references a code commit must include the commit SHA.**
+**Any claim that a step or task is "completed" and references a code commit must include both:**
+- The commit SHA
+- The target branch
 
-Downstream work (next sequential step, PR review, or further changes) **does not proceed** until the SHA is independently verified via `git log` (or equivalent) on the target branch by the receiving agent or human.
+**Downstream work does not proceed** until **all** of the following are true:
+- The SHA is independently verified via `git log` on the target branch
+- CI is green on that commit/branch
 
-This rule exists to prevent doc-vs-code asymmetry and false "completed" claims. It applies to all agents.
+**CI green is a hard gate before any merge.** No PR may be merged until the CI pipeline passes. This is the institutional enforcement of "verify after every push."
+
+This rule applies to all agents and all claims of completion. Vague or incomplete claims (missing SHA, missing branch, or unverified CI) are treated as invalid.
 
 ---
 
@@ -165,6 +171,7 @@ Tested: Pi 2
 - [ ] systemd unit file included if module runs as a service
 - [ ] No x86-only dependencies (check against `requirements.txt`)
 - [ ] `CONTEXT.md` updated to reflect new state post-merge
+- [ ] CI green on the target branch/commit
 
 ---
 
