@@ -107,6 +107,16 @@ All non-docs changes continue to require the standard Pi-validated PR path.
 
 ---
 
+## Verification Rules (Mandatory)
+
+**Any claim that a step or task is "completed" and references a code commit must include the commit SHA.**
+
+Downstream work (next sequential step, PR review, or further changes) **does not proceed** until the SHA is independently verified via `git log` (or equivalent) on the target branch by the receiving agent or human.
+
+This rule exists to prevent doc-vs-code asymmetry and false "completed" claims. It applies to all agents.
+
+---
+
 ## Commit Message Format
 
 ``` 
