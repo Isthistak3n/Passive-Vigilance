@@ -9,9 +9,9 @@
 
 ## Current Sprint Focus
 
-**Active goal:** Complete current refactor (SensorOrchestrator split + SDR handoff tests)  
+**Active goal:** Review and merge orchestrator-refactor branch first  
 **Blocking issues:** None  
-**Next planned features:** Multi-node coordination + Drone Remote ID detection
+**Next after merge:** Integrate and review feature/remote-id (Drone Remote ID detection)
 
 ---
 
@@ -28,31 +28,16 @@
 
 | Module                     | File                              | Node(s)     | Service              | Status             | Last tested |
 |----------------------------|-----------------------------------|-------------|----------------------|--------------------|-------------|
-| GPS Handler                | `modules/gps.py`                   | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| Kismet WiFi/BT Scanner     | `modules/kismet.py`                | Both        | `kismet.service`     | ✅ Stable           | 2026-05-06  |
-| ADS-B (readsb)             | `modules/dump1090.py`              | Pi 1        | `readsb.service`     | ✅ Stable           | 2026-05-06  |
-| Drone RF Detection         | `modules/drone_rf.py`              | Pi 1        | —                    | ✅ Stable           | 2026-05-06  |
-| SDR Coordinator            | `modules/sdr_coordinator.py`       | Pi 1        | —                    | ✅ Hardened (P1)    | 2026-05-06  |
-| SDR Manager                | `modules/sdr_manager.py`           | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| Persistence Engine         | `modules/persistence.py`           | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| Alert Factory              | `modules/alerts.py`                | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| Ignore List                | `modules/ignore_list.py`           | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| MAC Utils                  | `modules/mac_utils.py`             | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| Probe Analyzer             | `modules/probe_analyzer.py`        | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| Shapefile Writer           | `modules/shapefile.py`             | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| KML Writer                 | `modules/kml_writer.py`            | Both        | —                    | ✅ Stable           | 2026-05-06  |
-| WiGLE Uploader             | `modules/wigle.py`                 | Pi 2        | —                    | ✅ Stable           | 2026-05-06  |
-| Sensor Orchestrator        | `modules/orchestrator.py`          | Both        | —                    | ✅ Stable (new)     | 2026-05-06  |
-| Main Orchestrator          | `main.py`                          | Both        | `pv-main.service`    | ✅ Stable           | 2026-05-06  |
-| Web GUI                    | `gui/server.py`                    | Both        | —                    | ✅ Stable           | 2026-05-06  |
-
+| GPS Handler                | `modules/gps.py`                   | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| Kismet WiFi/BT Scanner     | `modules/kismet.py`                | Both        | `kismet.service`     | ✅ Stable           | 2026-05-06  |\n| ADS-B (readsb)             | `modules/dump1090.py`              | Pi 1        | `readsb.service`     | ✅ Stable           | 2026-05-06  |\n| Drone RF Detection         | `modules/drone_rf.py`              | Pi 1        | —                    | ✅ Stable           | 2026-05-06  |\n| SDR Coordinator            | `modules/sdr_coordinator.py`       | Pi 1        | —                    | ✅ Hardened (P1)    | 2026-05-06  |\n| SDR Manager                | `modules/sdr_manager.py`           | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| Persistence Engine         | `modules/persistence.py`           | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| Alert Factory              | `modules/alerts.py`                | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| Ignore List                | `modules/ignore_list.py`           | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| MAC Utils                  | `modules/mac_utils.py`             | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| Probe Analyzer             | `modules/probe_analyzer.py`        | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| Shapefile Writer           | `modules/shapefile.py`             | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| KML Writer                 | `modules/kml_writer.py`            | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| WiGLE Uploader             | `modules/wigle.py`                 | Pi 2        | —                    | ✅ Stable           | 2026-05-06  |\n| Sensor Orchestrator        | `modules/orchestrator.py`          | Both        | —                    | ✅ Stable (new)     | 2026-05-06  |\n| Main Orchestrator          | `main.py`                          | Both        | `pv-main.service`    | ✅ Stable           | 2026-05-06  |\n| Web GUI                    | `gui/server.py`                    | Both        | —                    | ✅ Stable           | 2026-05-06  |\n| Remote ID Detector         | `modules/remote_id.py`             | Both        | —                    | ✅ Complete (local) | 2026-05-06  |\n
 ---
 
 ## Active Branches
 
-| Branch | Owner | Purpose | Pi-tested | PR |
-|--------|-------|---------|-----------|----|
-| `main` | —    | Stable, validated code | ✅ | — |
+| Branch                    | Owner          | Purpose                              | Pi-tested | PR |
+|---------------------------|----------------|--------------------------------------|-----------|----|
+| `main`                    | —              | Stable, validated code               | ✅        | —  |
+| `feature/remote-id`       | [claude-code]  | Drone Remote ID detection (complete) | ✅ (local)| —  |
+| `orchestrator-refactor`   | [claude-code]  | SensorOrchestrator split + SDR tests | ✅ (local)| —  |
 
 ---
 
@@ -101,7 +86,7 @@
 
 > Claude Code appends to this section at session close.
 
-[2026-05-06] Completed full implementation status audit. Almost all core modules are production-ready. Main gaps are multi-node coordination and outdated CONTEXT.md.
+[2026-05-06] Completed Drone Remote ID detection module (`modules/remote_id.py`) + `test_remote_id.py`. Also added backend coverage in `test_alerts.py`. CollectedEvents switched to dataclass (good decision). gh CLI not installed on Pis — recommend `sudo apt install gh` + `gh auth login`.
 
 ---
 
@@ -109,7 +94,7 @@
 
 > Grok appends a note on every merge to main.
 
-[2026-05-06] Updated CONTEXT.md with accurate current module registry and known issues after full repo audit.
+[2026-05-06] Updated CONTEXT.md with orchestrator-refactor and feature/remote-id branches. Ready for review of orchestrator-refactor first.
 
 ---
 
