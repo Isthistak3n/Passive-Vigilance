@@ -129,6 +129,9 @@ class GUIServer:
             with self._data_lock:
                 return jsonify(list(self._recent_alerts))
 
+        # TODO(remote-id): Add /api/remote_id endpoint and a Remote ID tab in
+        # index.html once RemoteIDModule is wired into the SSE push_event stream.
+
         @app.route("/stream")
         def stream():
             client_queue: queue.Queue = queue.Queue(maxsize=500)

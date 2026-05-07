@@ -207,6 +207,10 @@ class AlertBackend(ABC):
         """Format and send an ADS-B aircraft alert."""
 
     @abstractmethod
+    def send_remote_id_alert(self, detection: dict) -> bool:
+        """Format and send a FAA Remote ID (ASTM F3411-22a) detection alert."""
+
+    @abstractmethod
     def is_configured(self) -> bool:
         """Return True if required credentials/config are present."""
 
@@ -304,6 +308,23 @@ class NtfyBackend(AlertBackend):
         title = f"Aircraft Alert — {callsign}"
         return self.send(title, body, priority=priority, tags=["aircraft", "adsb"])
 
+    def send_remote_id_alert(self, detection: dict) -> bool:
+        uas_id = detection.get("uas_id") or "unknown"
+        body = (
+            f"UAS ID: {uas_id} | Type: {detection.get('ua_type', 'N/A')} | "
+            f"Status: {detection.get('status', 'N/A')}\n"
+            f"Drone: {detection.get('drone_lat')}, {detection.get('drone_lon')} "
+            f"@ {detection.get('drone_alt_m')}m\n"
+            f"Operator: {detection.get('operator_lat')}, {detection.get('operator_lon')}\n"
+            f"Operator ID: {detection.get('operator_id') or 'N/A'}\n"
+            f"Source: {detection.get('source_phy', 'WiFi')} | "
+            f"Signal: {detection.get('rssi', 'N/A')} dBm"
+        )
+        return self.send(
+            f"Remote ID — {uas_id}", body,
+            priority="high", tags=["drone", "remoteid", "alert"],
+        )
+
 
 class TelegramBackend(AlertBackend):
     """Alert backend that posts to a Telegram chat via the Bot API."""
@@ -400,6 +421,23 @@ class TelegramBackend(AlertBackend):
         )
         title = f"Aircraft Alert — {callsign}"
         return self.send(title, body, priority=priority, tags=["aircraft", "adsb"])
+
+    def send_remote_id_alert(self, detection: dict) -> bool:
+        uas_id = detection.get("uas_id") or "unknown"
+        body = (
+            f"UAS ID: {uas_id} | Type: {detection.get('ua_type', 'N/A')} | "
+            f"Status: {detection.get('status', 'N/A')}\n"
+            f"Drone: {detection.get('drone_lat')}, {detection.get('drone_lon')} "
+            f"@ {detection.get('drone_alt_m')}m\n"
+            f"Operator: {detection.get('operator_lat')}, {detection.get('operator_lon')}\n"
+            f"Operator ID: {detection.get('operator_id') or 'N/A'}\n"
+            f"Source: {detection.get('source_phy', 'WiFi')} | "
+            f"Signal: {detection.get('rssi', 'N/A')} dBm"
+        )
+        return self.send(
+            f"Remote ID — {uas_id}", body,
+            priority="high", tags=["drone", "remoteid", "alert"],
+        )
 
 
 class DiscordBackend(AlertBackend):
@@ -506,6 +544,23 @@ class DiscordBackend(AlertBackend):
         title = f"Aircraft Alert — {callsign}"
         return self.send(title, body, priority=priority, tags=["aircraft", "adsb"])
 
+    def send_remote_id_alert(self, detection: dict) -> bool:
+        uas_id = detection.get("uas_id") or "unknown"
+        body = (
+            f"UAS ID: {uas_id} | Type: {detection.get('ua_type', 'N/A')} | "
+            f"Status: {detection.get('status', 'N/A')}\n"
+            f"Drone: {detection.get('drone_lat')}, {detection.get('drone_lon')} "
+            f"@ {detection.get('drone_alt_m')}m\n"
+            f"Operator: {detection.get('operator_lat')}, {detection.get('operator_lon')}\n"
+            f"Operator ID: {detection.get('operator_id') or 'N/A'}\n"
+            f"Source: {detection.get('source_phy', 'WiFi')} | "
+            f"Signal: {detection.get('rssi', 'N/A')} dBm"
+        )
+        return self.send(
+            f"Remote ID — {uas_id}", body,
+            priority="high", tags=["drone", "remoteid", "alert"],
+        )
+
 
 class ConsoleBackend(AlertBackend):
     """Alert backend that prints formatted alerts to stdout.
@@ -568,6 +623,23 @@ class ConsoleBackend(AlertBackend):
         )
         title = f"Aircraft Alert — {callsign}"
         return self.send(title, body, priority=priority, tags=["aircraft", "adsb"])
+
+    def send_remote_id_alert(self, detection: dict) -> bool:
+        uas_id = detection.get("uas_id") or "unknown"
+        body = (
+            f"UAS ID: {uas_id} | Type: {detection.get('ua_type', 'N/A')} | "
+            f"Status: {detection.get('status', 'N/A')}\n"
+            f"Drone: {detection.get('drone_lat')}, {detection.get('drone_lon')} "
+            f"@ {detection.get('drone_alt_m')}m\n"
+            f"Operator: {detection.get('operator_lat')}, {detection.get('operator_lon')}\n"
+            f"Operator ID: {detection.get('operator_id') or 'N/A'}\n"
+            f"Source: {detection.get('source_phy', 'WiFi')} | "
+            f"Signal: {detection.get('rssi', 'N/A')} dBm"
+        )
+        return self.send(
+            f"Remote ID — {uas_id}", body,
+            priority="high", tags=["drone", "remoteid", "alert"],
+        )
 
 
 _BACKENDS: dict[str, type[AlertBackend]] = {

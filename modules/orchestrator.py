@@ -9,9 +9,20 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+
+@dataclass
+class CollectedEvents:
+    '''Named container for all session event lists returned at shutdown.'''
+    all_events: list = field(default_factory=list)
+    aircraft_detections: list = field(default_factory=list)
+    drone_detections: list = field(default_factory=list)
+    remote_id_detections: list = field(default_factory=list)
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +47,7 @@ class SensorOrchestrator:
         persistence,
         probe_analyzer,
         gui_server,
+        remote_id=None,
         session_id: str,
         session_start: datetime,
         session_dir: Path,
@@ -45,6 +57,7 @@ class SensorOrchestrator:
         adsb_poll_interval: int,
         kismet_poll_interval: int,
         drone_poll_interval: int,
+        remote_id_poll_interval: int = 5,
         health_banner_interval: int,
         max_reconnect_attempts: int,
         reconnect_interval: int,
@@ -60,6 +73,7 @@ class SensorOrchestrator:
         self.persistence = persistence
         self.probe_analyzer = probe_analyzer
         self.gui_server = gui_server
+        self.remote_id = remote_id
 
         self.session_id = session_id
         self.session_start = session_start
@@ -71,6 +85,7 @@ class SensorOrchestrator:
         self._adsb_poll_interval = adsb_poll_interval
         self._kismet_poll_interval = kismet_poll_interval
         self._drone_poll_interval = drone_poll_interval
+        self._remote_id_poll_interval = remote_id_poll_interval
         self._health_banner_interval = health_banner_interval
         self._max_reconnect_attempts = max_reconnect_attempts
         self._reconnect_interval = reconnect_interval
@@ -78,14 +93,16 @@ class SensorOrchestrator:
 
         self._sensor_health: dict[str, bool] = {
             "gps": True, "kismet": True, "adsb": True, "drone_rf": True, "sdr": True,
+            "remote_id": True,
         }
         self._degraded_log_counter: dict[str, int] = {
-            "gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0, "sdr": 0,
+            "gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0, "sdr": 0, "remote_id": 0,
         }
         self._stats: dict[str, int] = {
             "kismet_devices_seen": 0,
             "aircraft_seen": 0,
             "drone_detections": 0,
+            "remote_id_detections": 0,
             "alerts_sent": 0,
             "alerts_rate_limited": 0,
             "persistent_detections": 0,
@@ -94,13 +111,19 @@ class SensorOrchestrator:
         self.all_events: list[dict] = []
         self.aircraft_detections: list[dict] = []
         self.drone_detections: list[dict] = []
+        self.remote_id_detections: list[dict] = []
         self._current_fix: Optional[dict] = None
         self._gps_fix_count: int = 0
 
     @property
-    def collected_events(self) -> tuple[list, list, list]:
-        '''Return (all_events, aircraft_detections, drone_detections) for shutdown use.'''
-        return self.all_events, self.aircraft_detections, self.drone_detections
+    def collected_events(self) -> CollectedEvents:
+        '''Return all session event lists as a CollectedEvents dataclass for shutdown use.'''
+        return CollectedEvents(
+            all_events=self.all_events,
+            aircraft_detections=self.aircraft_detections,
+            drone_detections=self.drone_detections,
+            remote_id_detections=self.remote_id_detections,
+        )
 
     # ------------------------------------------------------------------
     # Poll loops
@@ -153,6 +176,18 @@ class SensorOrchestrator:
                 raise
             except Exception as exc:
                 logger.error("Drone RF poll loop sleep error: %s", exc)
+
+    async def _poll_remote_id_loop(self) -> None:
+        '''Run Remote ID polling on a fixed interval until stop is signalled.'''
+        while not self._stop_event.is_set():
+            if self._modules_active.get("remote_id", False):
+                await self._poll_remote_id()
+            try:
+                await asyncio.sleep(self._remote_id_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Remote ID poll loop sleep error: %s", exc)
 
     async def _health_banner_loop(self) -> None:
         '''Emit a structured health banner every health_banner_interval seconds.'''
@@ -337,6 +372,40 @@ class SensorOrchestrator:
             else:
                 self._stats["alerts_rate_limited"] += 1
 
+    async def _poll_remote_id(self) -> None:
+        '''Poll Kismet for Remote ID frames; append events and fire alerts.'''
+        if self.remote_id is None:
+            return
+        try:
+            detections = await self.remote_id.poll()
+        except Exception as exc:
+            if self._sensor_health["remote_id"]:
+                logger.warning("Sensor remote_id degraded: %s", exc)
+                self._console_alert(f"Sensor remote_id degraded: {exc}")
+                self._sensor_health["remote_id"] = False
+            else:
+                self._degraded_log_counter["remote_id"] += 1
+                if self._degraded_log_counter["remote_id"] % 10 == 0:
+                    logger.warning(
+                        "Sensor remote_id still degraded after %d consecutive failures",
+                        self._degraded_log_counter["remote_id"],
+                    )
+            return
+        if not self._sensor_health["remote_id"]:
+            logger.info("Sensor remote_id recovered")
+            self._sensor_health["remote_id"] = True
+            self._degraded_log_counter["remote_id"] = 0
+        for detection in detections:
+            self._stats["remote_id_detections"] += 1
+            self.remote_id_detections.append(detection)
+            self._append_jsonl(self._session_dir / "remote_id.jsonl", detection)
+            uas_id = detection.get("uas_id") or "unknown"
+            if await self.rate_limiter.is_allowed(f"remote_id:{uas_id}"):
+                self.alert_backend.send_remote_id_alert(detection)
+                self._stats["alerts_sent"] += 1
+            else:
+                self._stats["alerts_rate_limited"] += 1
+
     # ------------------------------------------------------------------
     # Health banner
     # ------------------------------------------------------------------
@@ -368,12 +437,13 @@ class SensorOrchestrator:
         logger.info("── Passive Vigilance Health ───────────────────────")
         logger.info("Session: %s | Uptime: %s", self.session_id, uptime_str)
         logger.info("GPS:     %s | %s", gps_status, gps_loc)
-        logger.info("Kismet:  %s | Devices seen: %d", _status("kismet"), self._stats["kismet_devices_seen"])
-        logger.info("ADS-B:   %s | Aircraft: %d", _status("adsb"), self._stats["aircraft_seen"])
-        logger.info("DroneRF: %s | Detections: %d", _status("drone_rf"), self._stats["drone_detections"])
-        logger.info("SDR:     %s | Mode: %s | Owner: %s", sdr_status, self.sdr_mode.value, self.sdr_coordinator.current_owner)
-        logger.info("Alerts:  %s | Sent: %d | Rate-limited: %d", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"])
-        logger.info("Events:  %d persistent | %d aircraft | %d drone", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"])
+        logger.info("Kismet:    %s | Devices seen: %d", _status("kismet"), self._stats["kismet_devices_seen"])
+        logger.info("ADS-B:     %s | Aircraft: %d", _status("adsb"), self._stats["aircraft_seen"])
+        logger.info("DroneRF:   %s | Detections: %d", _status("drone_rf"), self._stats["drone_detections"])
+        logger.info("RemoteID:  %s | Detections: %d", _status("remote_id"), self._stats["remote_id_detections"])
+        logger.info("SDR:       %s | Mode: %s | Owner: %s", sdr_status, self.sdr_mode.value, self.sdr_coordinator.current_owner)
+        logger.info("Alerts:    %s | Sent: %d | Rate-limited: %d", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"])
+        logger.info("Events:    %d persistent | %d aircraft | %d drone | %d remote_id", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"], self._stats["remote_id_detections"])
         logger.info(sep)
 
     # ------------------------------------------------------------------
@@ -461,6 +531,7 @@ class SensorOrchestrator:
                 "persistent_detections": len(self.all_events),
                 "aircraft_detected": len(self.aircraft_detections),
                 "drone_detections": len(self.drone_detections),
+                "remote_id_detections": len(self.remote_id_detections),
                 "modules_active": dict(self._modules_active),
             }
             self._session_dir.mkdir(parents=True, exist_ok=True)

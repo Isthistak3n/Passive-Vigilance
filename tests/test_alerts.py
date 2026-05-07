@@ -74,6 +74,27 @@ def _make_aircraft(**overrides) -> dict:
     return a
 
 
+def _make_remote_id(**overrides) -> dict:
+    d = {
+        "uas_id": "SN-TEST-001",
+        "ua_type": "helicopter_or_multirotor",
+        "status": "airborne",
+        "operator_id": "GBR-OP-001",
+        "drone_lat": 51.5074,
+        "drone_lon": -0.1278,
+        "drone_alt_m": 120.0,
+        "operator_lat": 51.5080,
+        "operator_lon": -0.1290,
+        "source_phy": "WiFi",
+        "source_mac": "FA:0B:BC:01:02:03",
+        "rssi": -65,
+        "event_type": "remote_id",
+        "timestamp": "2026-01-01T12:00:00+00:00",
+    }
+    d.update(overrides)
+    return d
+
+
 # ---------------------------------------------------------------------------
 # RateLimiter tests
 # ---------------------------------------------------------------------------
@@ -359,3 +380,66 @@ def test_alert_factory_reads_alert_backend_env():
     with patch.dict(os.environ, {"NTFY_TOPIC": "my-topic", "ALERT_BACKEND": "ntfy"}):
         backend = AlertFactory.get_backend()
     assert isinstance(backend, NtfyBackend)
+
+
+# ---------------------------------------------------------------------------
+# send_remote_id_alert — all four backends
+# ---------------------------------------------------------------------------
+
+
+def test_ntfy_send_remote_id_alert_formats_message():
+    with patch.dict(os.environ, {"NTFY_TOPIC": "test-topic"}):
+        backend = NtfyBackend()
+        detection = _make_remote_id()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
+            result = backend.send_remote_id_alert(detection)
+        assert result is True
+        body_sent = mock_post.call_args[1]["data"].decode("utf-8")
+        assert "SN-TEST-001" in body_sent
+        headers = mock_post.call_args[1]["headers"]
+        assert "SN-TEST-001" in headers["Title"]
+        assert "remoteid" in headers["Tags"]
+        assert headers["Priority"] == "high"
+
+
+def test_telegram_send_remote_id_alert_formats_message():
+    with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "456"}):
+        backend = TelegramBackend()
+        detection = _make_remote_id()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
+            result = backend.send_remote_id_alert(detection)
+        assert result is True
+        payload = mock_post.call_args[1]["json"]
+        assert "SN-TEST-001" in payload["text"]
+
+
+def test_discord_send_remote_id_alert_formats_message():
+    with patch.dict(os.environ, {"DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/fake"}):
+        backend = DiscordBackend()
+        detection = _make_remote_id()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
+            result = backend.send_remote_id_alert(detection)
+        assert result is True
+        payload = mock_post.call_args[1]["json"]
+        embed = payload["embeds"][0]
+        assert "SN-TEST-001" in embed["title"]
+        assert "SN-TEST-001" in embed["description"]
+
+
+def test_console_send_remote_id_alert_returns_true_and_prints(capsys):
+    backend = ConsoleBackend()
+    detection = _make_remote_id()
+    result = backend.send_remote_id_alert(detection)
+    assert result is True
+    captured = capsys.readouterr()
+    assert "SN-TEST-001" in captured.out
+    assert "Remote ID" in captured.out
