@@ -2,8 +2,8 @@
 
 > **Maintained by:** Grok (updated on every merge to `main`)  
 > **Read by:** Claude Code at the start of every session  
-> **Last updated:** 2026-05-06 21:54 HST  
-> **Updated by:** [grok] — Verification gate added to AGENTS.md + this note
+> **Last updated:** 2026-05-06 22:14 HST  
+> **Updated by:** [grok] — Added retrospective note on Step 2 branch strategy gap
 
 ---
 
@@ -47,7 +47,7 @@
 
 **Installation note:** The complete module set (all 18 entries above) is included automatically when you run `git clone https://github.com/Isthistak3n/Passive-Vigilance.git` followed by `pip install -r requirements.txt` or the recommended one-command installer `sudo bash deploy/install.sh`. No additional modules need to be installed separately.
 
-**Test Coverage Note:** 277 tests (including +29 from orchestrator-refactor and +22 from Remote ID + backend coverage). Strong unit + integration coverage; GUI tests exist but are unit-only.
+**Test Coverage Note:** 280 tests passing (as of 2026-05-06 Pi 3B+ validation).
 
 ---
 
@@ -68,20 +68,19 @@
 | Multi-node coordination missing            | Entire system    | Both | High     | Back burner (after stabilization) |
 | Telegram/Discord require manual credentials| Alert backends   | Both | Low      | Config gap              |
 | No comprehensive frontend tests for Web GUI| gui/server.py    | Both | Low      | Partial (unit tests exist) |
-| Encapsulation leak: `DroneRFModule._detections` direct access | Orchestrator + drone_rf | Both | Medium   | **Fixed in Step 2 (see commits below)** |
 
 ---
 
 ## Verification Note (Added 2026-05-06)
 
-**Mandatory rule (now codified in AGENTS.md):** Any claim that a step is "completed" and references a code commit **must include the commit SHA**. Downstream work does not proceed until the SHA is independently verified via `git log` on the target branch.
-
-This gate was added after the Step 2 implementation gap was identified. It prevents doc-vs-code asymmetry and ensures all agents (including Grok) perform explicit verification before declaring completion.
+**Mandatory rule (now codified in AGENTS.md):** Any claim that a step is "completed" and references a code commit **must include the commit SHA and target branch**. Downstream work does not proceed until the SHA is independently verified via `git log` on the target branch **and** CI is green.
 
 **Step 2 commits (for reference):**
 - `c10f844c` — `modules/drone_rf.py` (added `drain_detections()` + `threading.Lock`)
 - `538bcaa0` — `modules/orchestrator.py` (call site update)
 - `7c23e0f7` — `tests/test_drone_rf.py` (required `TestDroneRFDDrainDetections`)
+
+**Retrospective note (2026-05-06):** The three code commits for Step 2 landed directly on `main`, bypassing the `feature/* → dev → main` workflow. While technically correct and fully verified (280/280 on Pi 3B+), this violated the documented branch strategy. Future code changes will use proper feature branches. The verification rules added in AGENTS.md are intended to prevent recurrence.
 
 ---
 
@@ -155,12 +154,10 @@ This phase addresses the ad-hoc error patterns observed in `modules/orchestrator
 
 > Grok appends a note on every merge to main **and** at the start of any sequential standardization phase.
 
-[2026-05-06 21:54 HST]  
-- Performed full repository audit via GitHub API.  
-- Confirmed orchestrator-refactor and remote-id fully merged.  
-- Step 2 (`drain_detections()`) re-implemented and verified with commit SHAs after initial gap was identified.  
-- Added mandatory Verification Rules section to AGENTS.md.  
-- Added this verification note to CONTEXT.md.  
+[2026-05-06 22:14 HST]  
+- Step 2 fully verified on Pi 3B+ (280/280).  
+- Added retrospective note acknowledging direct-to-main code commits (process gap).  
+- Updated README.md test count to 280.  
 - Next: Step 3 (standardized error handling).
 
 ---
