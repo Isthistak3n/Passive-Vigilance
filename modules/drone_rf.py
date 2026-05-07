@@ -6,7 +6,6 @@ signaling so the SDR coordinator knows when this module is struggling.
 '''
 
 import asyncio
-import logging
 import os
 import subprocess
 import threading
