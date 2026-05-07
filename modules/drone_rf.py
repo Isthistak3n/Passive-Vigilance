@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -21,7 +22,9 @@ logger = logging.getLogger(__name__)
 _DRONE_FREQUENCIES_MHZ = [433.0, 868.0, 915.0, 2400.0, 5800.0]
 _MAX_RTL_SDR_FREQ_MHZ = 1750.0
 DRONE_POWER_THRESHOLD_DB = float(os.getenv("DRONE_POWER_THRESHOLD_DB", "-20"))
-_RTL_SDR_USB_IDS = frozenset({"0bda:2832", "0bda:2838", "0bda:2813"})
+_RTL_SDR_USB_IDS = frozenset({
+    "0bda:2832", "0bda:2838", "0bda:2813"
+})
 _SAMPLE_COUNT = 256 * 1024
 _SAMPLE_RATE_HZ = 2.048e6
 
@@ -36,6 +39,7 @@ class DroneRFModule:
         self._sdr = None
         self.can_scan: bool = True
         self._recovery_backoff: float = 1.0
+        self._lock = threading.Lock()
 
     def _open_sdr(self) -> bool:
         try:
@@ -99,7 +103,8 @@ class DroneRFModule:
                 try:
                     detection = await loop.run_in_executor(None, self._sample_frequency, freq_mhz)
                     if detection is not None:
-                        self._detections.append(detection)
+                        with self._lock:
+                            self._detections.append(detection)
                         logger.info("Drone RF detection: %.1f MHz  %.1f dB", detection["freq_mhz"], detection["power_db"])
                 except asyncio.CancelledError:
                     raise
@@ -175,3 +180,15 @@ class DroneRFModule:
         except Exception:
             pass
         return False
+
+    def drain_detections(self) -> list[dict]:
+        """Atomically return and clear the internal detection buffer.
+
+        This is the recommended public API for the orchestrator to consume
+        detections without accessing private attributes.
+        """
+        with self._lock:
+            events = self._detections.copy()
+            self._detections.clear()
+            logger.debug("drain_detections: %d events", len(events))
+            return events
