@@ -15,9 +15,11 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from core.logging import get_logger
+
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _DRONE_FREQUENCIES_MHZ = [433.0, 868.0, 915.0, 2400.0, 5800.0]
 _MAX_RTL_SDR_FREQ_MHZ = 1750.0
