@@ -2,8 +2,8 @@
 
 > **Maintained by:** Grok (updated on every merge to `main`)  
 > **Read by:** Claude Code at the start of every session  
-> **Last updated:** 2026-05-06 21:26 HST  
-> **Updated by:** [grok] — Sequential standardization phase (user clarifications applied)
+> **Last updated:** 2026-05-06 21:54 HST  
+> **Updated by:** [grok] — Verification gate added to AGENTS.md + this note
 
 ---
 
@@ -68,7 +68,20 @@
 | Multi-node coordination missing            | Entire system    | Both | High     | Back burner (after stabilization) |
 | Telegram/Discord require manual credentials| Alert backends   | Both | Low      | Config gap              |
 | No comprehensive frontend tests for Web GUI| gui/server.py    | Both | Low      | Partial (unit tests exist) |
-| Encapsulation leak: `DroneRFModule._detections` direct access | Orchestrator + drone_rf | Both | Medium   | **In progress — Step 2 of current phase** |
+| Encapsulation leak: `DroneRFModule._detections` direct access | Orchestrator + drone_rf | Both | Medium   | **Fixed in Step 2 (see commits below)** |
+
+---
+
+## Verification Note (Added 2026-05-06)
+
+**Mandatory rule (now codified in AGENTS.md):** Any claim that a step is "completed" and references a code commit **must include the commit SHA**. Downstream work does not proceed until the SHA is independently verified via `git log` on the target branch.
+
+This gate was added after the Step 2 implementation gap was identified. It prevents doc-vs-code asymmetry and ensures all agents (including Grok) perform explicit verification before declaring completion.
+
+**Step 2 commits (for reference):**
+- `c10f844c` — `modules/drone_rf.py` (added `drain_detections()` + `threading.Lock`)
+- `538bcaa0` — `modules/orchestrator.py` (call site update)
+- `7c23e0f7` — `tests/test_drone_rf.py` (required `TestDroneRFDDrainDetections`)
 
 ---
 
@@ -142,14 +155,13 @@ This phase addresses the ad-hoc error patterns observed in `modules/orchestrator
 
 > Grok appends a note on every merge to main **and** at the start of any sequential standardization phase.
 
-[2026-05-06 21:26 HST]  
-- Performed full repository audit via GitHub API (all paths, branches, modules, tests, and code patterns).  
-- Confirmed orchestrator-refactor and remote-id fully merged and integrated on `main`.  
-- Verified 277 tests, thin `PassiveVigilance` coordinator in `main.py`, `SensorOrchestrator` in `modules/orchestrator.py`, and the single encapsulation leak in `drone_rf.py`.  
-- Removed inaccurate Node Status section per user request.  
-- Clarified Module Registry with explicit installation note covering all modules.  
-- Updated this file as **Step 1** of the Clean Module Integration phase.  
-- Next: `drain_detections()` implementation (Step 2).
+[2026-05-06 21:54 HST]  
+- Performed full repository audit via GitHub API.  
+- Confirmed orchestrator-refactor and remote-id fully merged.  
+- Step 2 (`drain_detections()`) re-implemented and verified with commit SHAs after initial gap was identified.  
+- Added mandatory Verification Rules section to AGENTS.md.  
+- Added this verification note to CONTEXT.md.  
+- Next: Step 3 (standardized error handling).
 
 ---
 
