@@ -12,6 +12,9 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 
 - **Drone RF detection** — passive scan of 2.4 / 5.8 GHz bands for drone command link
   signatures; triggers alerts on detection
+- **FAA Remote ID detection** — parses ASTM F3411-22a vendor-specific 802.11 beacons
+  (OUI FA:0B:BC) received via Kismet; extracts UAS ID, operator position, drone position,
+  UA type, and status; fires alerts per unique UAS ID with configurable rate limiting
 - **WiFi and Bluetooth device tracking** — Kismet captures and correlates devices; devices
   are logged and geo-stamped
 - **ADS-B aircraft detection** — dump1090 decodes Mode S transponders; flights enriched via
@@ -62,6 +65,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson + .kml |
 | `modules/sdr_manager.py` | `SDRManager` | RTL-SDR inventory detection via rtl_test, SDRMode enum resolution |
 | `modules/sdr_coordinator.py` | `SDRCoordinator` | asyncio time-share scheduler for single-dongle setups — slices readsb and DroneRF |
+| `modules/remote_id.py` | `RemoteIDModule` | Kismet REST API; parses FAA Remote ID (ASTM F3411-22a) from 802.11 vendor IE (OUI FA:0B:BC) |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
 | `gui/__init__.py` | — | Empty package marker |
 | `gui/server.py` | `GUIServer` | Flask in daemon thread; SSE `/stream`; REST `/api/*` |

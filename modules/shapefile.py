@@ -59,7 +59,7 @@ class ShapefileWriter:
         Args:
             session_id: Unique session identifier (used as sub-directory name).
             events: List of event dicts; each must have an ``event_type`` key
-                    (``'wifi'``, ``'aircraft'``, or ``'drone'``).
+                    (``'wifi'``, ``'aircraft'``, ``'drone'``, or ``'remote_id'``).
 
         Returns:
             Absolute path to the WiFi shapefile (even if no WiFi events were
@@ -77,6 +77,7 @@ class ShapefileWriter:
         wifi_events = [e for e in events if e.get("event_type") == "wifi"]
         aircraft_events = [e for e in events if e.get("event_type") == "aircraft"]
         drone_events = [e for e in events if e.get("event_type") == "drone"]
+        remote_id_events = [e for e in events if e.get("event_type") == "remote_id"]
 
         # WiFi / persistence detections
         if wifi_events:
@@ -133,6 +134,33 @@ class ShapefileWriter:
             gdf = self._make_gdf(records, geometries)
             gdf.to_file(drone_path)
             logger.info("Wrote %d drone detections → %s", len(drone_events), drone_path)
+
+        # Remote ID detections — one point per frame at drone_lat/drone_lon
+        if remote_id_events:
+            rid_path = str(session_dir / "detections_remote_id.shp")
+            geometries = [
+                Point(e.get("drone_lon") or 0.0, e.get("drone_lat") or 0.0)
+                for e in remote_id_events
+            ]
+            records = [
+                {
+                    "uas_id":      str(e.get("uas_id") or ""),
+                    "ua_type":     str(e.get("ua_type") or ""),
+                    "status":      str(e.get("status") or ""),
+                    "operator_id": str(e.get("operator_id") or ""),
+                    "op_lat":      float(e.get("operator_lat") or 0.0),
+                    "op_lon":      float(e.get("operator_lon") or 0.0),
+                    "alt_m":       float(e.get("drone_alt_m") or 0.0),
+                    "src_phy":     str(e.get("source_phy") or ""),
+                    "src_mac":     str(e.get("source_mac") or ""),
+                    "rssi":        int(e.get("rssi") or 0),
+                    "timestamp":   str(e.get("timestamp") or ""),
+                }
+                for e in remote_id_events
+            ]
+            gdf = self._make_gdf(records, geometries)
+            gdf.to_file(rid_path)
+            logger.info("Wrote %d Remote ID detections → %s", len(remote_id_events), rid_path)
 
         # KML output — written alongside shapefiles
         try:

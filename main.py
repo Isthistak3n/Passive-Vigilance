@@ -29,6 +29,7 @@ from modules.kismet import KismetModule
 from modules.orchestrator import SensorOrchestrator
 from modules.persistence import PersistenceEngine
 from modules.probe_analyzer import ProbeAnalyzer
+from modules.remote_id import RemoteIDModule
 from modules.sdr_coordinator import SDRCoordinator
 from modules.sdr_manager import SDRMode, detect_sdr_count, resolve_sdr_mode
 from modules.shapefile import ShapefileWriter
@@ -53,7 +54,8 @@ class PassiveVigilance:
         self.session_start: datetime = datetime.now(timezone.utc)
         self._stop: asyncio.Event = asyncio.Event()
         self._modules_active: dict[str, bool] = {
-            "gps": False, "kismet": False, "adsb": False, "drone_rf": False, "sdr_coordinator": False,
+            "gps": False, "kismet": False, "adsb": False,
+            "drone_rf": False, "sdr_coordinator": False, "remote_id": False,
         }
         self._session_dir: Path = Path(_SESSION_OUTPUT_DIR) / self.session_id
 
@@ -65,6 +67,7 @@ class PassiveVigilance:
         self.sdr_coordinator: SDRCoordinator = SDRCoordinator(self.drone_rf)
         self.persistence = PersistenceEngine()
         self.probe_analyzer = ProbeAnalyzer()
+        self.remote_id = RemoteIDModule(gps_module=self.gps)
         self.alert_backend = AlertFactory.get_backend(persist_path=_RATE_LIMIT_PERSIST)
         self.rate_limiter = RateLimiter(persist_path=_RATE_LIMIT_PERSIST)
         self.shapefile_writer = ShapefileWriter()
@@ -77,13 +80,15 @@ class PassiveVigilance:
             drone_rf=self.drone_rf, sdr_coordinator=self.sdr_coordinator,
             alert_backend=self.alert_backend, rate_limiter=self.rate_limiter,
             persistence=self.persistence, probe_analyzer=self.probe_analyzer,
-            gui_server=None, session_id=self.session_id,
-            session_start=self.session_start, session_dir=self._session_dir,
-            sdr_mode=self.sdr_mode, stop_event=self._stop,
+            gui_server=None, remote_id=self.remote_id,
+            session_id=self.session_id, session_start=self.session_start,
+            session_dir=self._session_dir, sdr_mode=self.sdr_mode,
+            stop_event=self._stop,
             gps_poll_interval=int(os.getenv("GPS_POLL_INTERVAL_SECONDS", "1")),
             adsb_poll_interval=int(os.getenv("ADSB_POLL_INTERVAL_SECONDS", "5")),
             kismet_poll_interval=int(os.getenv("KISMET_POLL_INTERVAL_SECONDS", "30")),
             drone_poll_interval=int(os.getenv("DRONE_POLL_INTERVAL_SECONDS", "5")),
+            remote_id_poll_interval=int(os.getenv("REMOTE_ID_POLL_INTERVAL_SECONDS", "5")),
             health_banner_interval=int(os.getenv("HEALTH_BANNER_INTERVAL_SECONDS", "300")),
             max_reconnect_attempts=int(os.getenv("MAX_RECONNECT_ATTEMPTS", "3")),
             reconnect_interval=int(os.getenv("RECONNECT_INTERVAL_SECONDS", "5")),
@@ -135,6 +140,14 @@ class PassiveVigilance:
     def _sdr_coordinator_active(self, v: bool) -> None:
         self._modules_active["sdr_coordinator"] = v
 
+    @property
+    def _remote_id_active(self) -> bool:
+        return self._modules_active["remote_id"]
+
+    @_remote_id_active.setter
+    def _remote_id_active(self, v: bool) -> None:
+        self._modules_active["remote_id"] = v
+
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -155,6 +168,7 @@ class PassiveVigilance:
             asyncio.create_task(so._poll_adsb_loop(), name="poll-adsb"),
             asyncio.create_task(so._poll_kismet_loop(), name="poll-kismet"),
             asyncio.create_task(so._poll_drone_rf_loop(), name="poll-dronrf"),
+            asyncio.create_task(so._poll_remote_id_loop(), name="poll-remoteid"),
             asyncio.create_task(so._health_banner_loop(), name="health-banner"),
         ]
         if self.sdr_mode == SDRMode.SHARED and self._drone_active:
@@ -204,6 +218,12 @@ class PassiveVigilance:
             self._kismet_active = True
         except Exception as exc:
             logger.warning("Kismet: unavailable (%s) — WiFi/BT capture disabled", exc)
+
+        try:
+            await self.remote_id.connect()
+            self._remote_id_active = True
+        except Exception as exc:
+            logger.warning("RemoteID: unavailable (%s) — Remote ID detection disabled", exc)
 
         sdr_env = os.getenv("SDR_MODE", "auto")
         _valid_sdr_modes = {"auto", "shared", "dedicated"}
@@ -273,7 +293,12 @@ class PassiveVigilance:
                 await self.drone_rf.stop_scan()
             except Exception as exc:
                 logger.debug("DroneRF stop error: %s", exc)
-        for label, coro in [("Kismet", self.kismet.close()), ("readsb", self.adsb.close())]:
+        close_coros = [
+            ("Kismet", self.kismet.close()),
+            ("readsb", self.adsb.close()),
+            ("RemoteID", self.remote_id.close()),
+        ]
+        for label, coro in close_coros:
             try:
                 await coro
             except Exception as exc:
@@ -283,7 +308,11 @@ class PassiveVigilance:
         except Exception as exc:
             logger.debug("GPS close error: %s", exc)
 
-        all_events, aircraft_detections, drone_detections = self.sensor_orchestrator.collected_events
+        ev = self.sensor_orchestrator.collected_events
+        all_events = ev.all_events
+        aircraft_detections = ev.aircraft_detections
+        drone_detections = ev.drone_detections
+        remote_id_detections = ev.remote_id_detections
 
         end_time = datetime.now(timezone.utc)
         summary = {
@@ -296,6 +325,7 @@ class PassiveVigilance:
             "persistent_detections": len(all_events),
             "aircraft_detected": len(aircraft_detections),
             "drone_detections": len(drone_detections),
+            "remote_id_detections": len(remote_id_detections),
             "modules_active": dict(self._modules_active),
         }
         self._session_dir.mkdir(parents=True, exist_ok=True)
@@ -307,7 +337,7 @@ class PassiveVigilance:
         except Exception as exc:
             logger.error("Failed to write session summary: %s", exc)
 
-        all_session_events = all_events + aircraft_detections + drone_detections
+        all_session_events = all_events + aircraft_detections + drone_detections + remote_id_detections
         kml_path = None
         if all_session_events:
             try:
@@ -346,24 +376,22 @@ class PassiveVigilance:
         if kml_path:
             logger.info("KML output → %s", kml_path)
         logger.info(
-            "Session %s complete — WiFi:%d  Aircraft:%d  Drone:%d",
-            self.session_id, len(all_events), len(aircraft_detections), len(drone_detections),
+            "Session %s complete — WiFi:%d  Aircraft:%d  Drone:%d  RemoteID:%d",
+            self.session_id, len(all_events), len(aircraft_detections),
+            len(drone_detections), len(remote_id_detections),
         )
 
     def _emergency_flush(self) -> None:
         try:
-            all_events, aircraft_detections, drone_detections = self.sensor_orchestrator.collected_events
+            ev = self.sensor_orchestrator.collected_events
             self._session_dir.mkdir(parents=True, exist_ok=True)
             dump_path = self._session_dir / "emergency_dump.jsonl"
             total = 0
             with open(dump_path, "w", encoding="utf-8") as fh:
-                for event in all_events:
-                    fh.write(json.dumps(event, default=str) + "\n")
-                    total += 1
-                for event in aircraft_detections:
-                    fh.write(json.dumps(event, default=str) + "\n")
-                    total += 1
-                for event in drone_detections:
+                for event in (
+                    ev.all_events + ev.aircraft_detections
+                    + ev.drone_detections + ev.remote_id_detections
+                ):
                     fh.write(json.dumps(event, default=str) + "\n")
                     total += 1
             logger.error("Emergency flush: wrote %d events to %s", total, dump_path)
