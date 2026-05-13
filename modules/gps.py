@@ -64,6 +64,10 @@ class GPSModule:
         self._session: Optional[GpsSession] = None
         self._last_fix_rejected: bool = False
 
+        # Cache quality settings once at construction (avoids repeated env reads in hot path)
+        self._min_quality = os.getenv("GPS_MIN_QUALITY", "2d").lower()
+        self._max_hdop = float(os.getenv("GPS_MAX_HDOP", "5.0"))
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
@@ -79,9 +83,6 @@ class GPSModule:
         """
         try:
             self._session = GpsSession(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
-            # Apply a read timeout so session.read() returns promptly when
-            # gpsd has no data.  Without this the blocking recv() hangs
-            # forever, freezing the startup GPS-wait loop.
             if self._session.sock is not None:
                 self._session.sock.settimeout(0.5)
             logger.info("Connected to gpsd (device: %s)", GPS_DEVICE)
@@ -137,26 +138,20 @@ class GPSModule:
             logger.debug("No GPS fix yet (mode=%d)", mode)
             return None
 
-        # Quality filter — read from env each call so changes to .env take effect on restart
-        min_quality = os.getenv("GPS_MIN_QUALITY", "2d").lower()
-        max_hdop = float(os.getenv("GPS_MAX_HDOP", "5.0"))
-
-        if min_quality != "any":
-            # Mode filter: 3d requires a 3-D fix
-            if min_quality == "3d" and mode < MODE_3D:
+        # Use cached quality settings (set in __init__)
+        if self._min_quality != "any":
+            if self._min_quality == "3d" and mode < MODE_3D:
                 logger.debug("GPS fix rejected: mode=%d (3D required)", mode)
                 self._last_fix_rejected = True
                 return None
 
-            # HDOP filter: reject if HDOP is known and exceeds threshold.
-            # Convert to float safely — gpsd may return nan, None, or (in tests) a mock.
             try:
                 hdop = float(getattr(fix, "hdop", float("nan")))
             except (TypeError, ValueError):
                 hdop = float("nan")
 
-            if isfinite(hdop) and hdop > max_hdop:
-                logger.debug("GPS fix rejected: HDOP=%.1f (max=%.1f)", hdop, max_hdop)
+            if isfinite(hdop) and hdop > self._max_hdop:
+                logger.debug("GPS fix rejected: HDOP=%.1f (max=%.1f)", hdop, self._max_hdop)
                 self._last_fix_rejected = True
                 return None
 
