@@ -399,7 +399,6 @@ class PassiveVigilance:
             logger.error("Emergency flush failed: %s", exc)
 
     def _log_startup_banner(self) -> None:
-        drone_status = "active" if self._drone_active else "hardware absent"
         active_parts = []
         if self._gps_active:
             active_parts.append("GPS")
@@ -407,9 +406,12 @@ class PassiveVigilance:
             active_parts.append("Kismet")
         if self._adsb_active:
             active_parts.append("ADS-B")
-        active_parts.append(f"DroneRF ({drone_status})")
+        if self._drone_active:
+            active_parts.append("DroneRF (active)")
         if self._sdr_coordinator_active:
             active_parts.append("SDR-Coordinator (hardened)")
+        if self._remote_id_active:
+            active_parts.append("RemoteID")
         backend_name = type(self.alert_backend).__name__.replace("Backend", "")
         output_dir = self._session_dir
         logger.info("=" * 60)
