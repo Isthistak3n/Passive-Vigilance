@@ -178,8 +178,7 @@ if [ -n "$GPS_DEVICE_ENV" ]; then
 elif [ -e "/dev/ttyAMA0" ]; then
     DEVICES="/dev/ttyAMA0"
     echo "$LOG GPS HAT detected: using $DEVICES"
-elif ls /dev/ttyUSB* 2>/dev/null | head -1 | grep -q ttyUSB; then
-    DEVICES=$(ls /dev/ttyUSB* | head -1)
+elif DEVICES=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1) && [ -n "$DEVICES" ]; then
     echo "$LOG USB GPS detected: using $DEVICES"
 else
     DEVICES="/dev/ttyUSB0"
