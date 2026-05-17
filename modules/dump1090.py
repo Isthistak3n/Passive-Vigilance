@@ -13,10 +13,9 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 DUMP1090_HOST = os.getenv("DUMP1090_HOST", "localhost")
-DUMP1090_JSON_PORT = 8080  # readsb HTTP JSON port (separate from SBS-1 port 30003)
 ADSBXLOL_API_KEY = os.getenv("ADSBXLOL_API_KEY", "")
 
-_AIRCRAFT_URL = f"http://{DUMP1090_HOST}:{DUMP1090_JSON_PORT}/data/aircraft.json"
+_AIRCRAFT_URL = os.getenv("READSB_URL", f"http://{DUMP1090_HOST}:8080/data/aircraft.json")
 _ADSB_LOL_URL = "https://adsbexchange-com1.p.rapidapi.com/v2/icao/{icao}/"
 _ADSB_LOL_HOST = "adsbexchange-com1.p.rapidapi.com"
 
@@ -68,8 +67,8 @@ class ADSBModule:
                     )
                 else:
                     logger.info(
-                        "Connected to readsb at %s:%d (%d aircraft in view)",
-                        DUMP1090_HOST, DUMP1090_JSON_PORT, aircraft_count,
+                        "Connected to readsb at %s (%d aircraft in view)",
+                        _AIRCRAFT_URL, aircraft_count,
                     )
         except aiohttp.ClientConnectorError as exc:
             await self.close()
