@@ -5,6 +5,39 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ---
 
+## [v0.4.3-alpha] — 2026-05-17
+
+### What's better now
+
+RTL-SDR dongle now works on a fresh install and the SDR coordinator
+reliably hands the dongle between ADS-B and drone scanning. Six fixes
+from the Pi 4 smoke test, plus three smaller cleanups.
+
+- **wiedehopf readsb** — installer builds RTL-SDR-capable readsb from
+  source; the Debian Trixie package lacks `ENABLE_RTLSDR` and crash-looped
+  with 181 restarts on prod
+- **tar1090 + port 8080** — tar1090 web interface installed; lighttpd
+  patched to serve `/data/aircraft.json` on port 8080 (matches PV default)
+- **READSB_URL configurable** — ADS-B JSON endpoint now read from
+  `READSB_URL` env var; default `http://localhost:8080/data/aircraft.json`
+- **DVB blacklist survives reboot** — blacklist file renamed to `.conf`
+  (initramfs-tools ignores `.rules`); `install /bin/false` directives added;
+  `update-initramfs -u` called; legacy `rtlsdr.rules` removed
+- **GPS detects ttyACM\*** — installer now probes `/dev/ttyUSB*` and
+  `/dev/ttyACM*` (CDC-ACM u-blox dongles)
+- **SDR coordinator sudo fix** — `systemctl start/stop readsb` now prefixed
+  with `sudo`; scoped sudoers rule written by installer; eliminates
+  "Interactive authentication required" that blocked every SDR handoff
+- **Health banner shows all 6 modules** — DroneRF was unconditionally listed
+  even when absent (false-green); RemoteID was never listed at all
+- **`datetime.utcnow()` replaced** — deprecated in Python 3.12+; replaced
+  with `datetime.now(timezone.utc)` in `modules/alerts.py`
+- **Test class typo fixed** — `TestDroneRFDDrainDetections` → `TestDroneRFDrainDetections`
+
+**280 tests passing.**
+
+---
+
 ## [v0.4.2-alpha] — 2026-04-18
 
 ### What's better now
