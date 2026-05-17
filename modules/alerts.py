@@ -482,7 +482,7 @@ class DiscordBackend(AlertBackend):
                     "title": title,
                     "description": description,
                     "color": color,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             ]
         }

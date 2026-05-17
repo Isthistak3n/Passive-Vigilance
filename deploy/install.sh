@@ -31,8 +31,24 @@ ${DISTRO} main" | tee /etc/apt/sources.list.d/kismet.list
 apt update -qq
 DEBIAN_FRONTEND=noninteractive apt install -y \
   gpsd gpsd-clients python3-gps python3-pip python3-venv \
-  kismet readsb \
-  librtlsdr0 librtlsdr-dev
+  kismet \
+  rtl-sdr librtlsdr0 librtlsdr-dev
+
+# ── 2b. readsb (wiedehopf build — RTL-SDR enabled) ────────────────────────
+# The Debian Trixie readsb package is compiled without ENABLE_RTLSDR.
+# wiedehopf's build supports --device-type rtlsdr and includes tar1090
+# (lighttpd-based web map) which serves /data/aircraft.json on port 8080.
+echo "$LOG Installing readsb (wiedehopf — RTL-SDR + tar1090 included)..."
+bash -c "$(wget -O - https://raw.githubusercontent.com/wiedehopf/adsb-scripts/master/readsb-install.sh)"
+
+# Align tar1090's alternate HTTP port with PV's READSB_URL default (port 8080).
+# readsb-install.sh creates 95-tar1090-otherport.conf on port 8504 by default.
+LIGHTTPD_OTHERPORT="/etc/lighttpd/conf-enabled/95-tar1090-otherport.conf"
+if [ -f "$LIGHTTPD_OTHERPORT" ]; then
+    sed -i 's/":8504"/":8080"/' "$LIGHTTPD_OTHERPORT"
+    systemctl restart lighttpd
+    echo "$LOG tar1090 configured on port 8080 (/data/aircraft.json)"
+fi
 
 # ── 3. Python dependencies ─────────────────────────────────────────────────
 # Install GDAL and GIS system dependencies first
@@ -122,16 +138,39 @@ udevadm control --reload-rules
 systemctl restart NetworkManager
 
 # ── 3d. RTL-SDR kernel module blacklist ────────────────────────────────────
-# Prevent DVB-T drivers from claiming the dongle before rtlsdr can
+# Prevent DVB-T drivers from claiming the dongle before rtlsdr can.
+# IMPORTANT: must be a .conf file — update-initramfs ignores .rules files
+# when building the initramfs, so a .rules blacklist never applies at boot.
+# The install directives are stronger than blacklist alone: they block
+# explicit modprobe calls too, not just automatic USB hotplug loading.
 echo "$LOG Blacklisting conflicting RTL-SDR kernel modules..."
-echo "blacklist dvb_usb_rtl28xxu" | tee /etc/modprobe.d/rtlsdr.rules > /dev/null
-echo "blacklist rtl2832"          | tee -a /etc/modprobe.d/rtlsdr.rules > /dev/null
-echo "blacklist rtl2830"          | tee -a /etc/modprobe.d/rtlsdr.rules > /dev/null
+# Remove any legacy .rules file from prior installs to avoid duplicate config.
+rm -f /etc/modprobe.d/rtlsdr.rules
+cat > /etc/modprobe.d/blacklist-rtlsdr.conf << 'BLACKLIST'
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
+install dvb_usb_rtl28xxu /bin/false
+install rtl2832 /bin/false
+install rtl2830 /bin/false
+BLACKLIST
+echo "$LOG Rebuilding initramfs (required for blacklist to apply at boot)..."
+update-initramfs -u
 
 # ── 4. Groups ──────────────────────────────────────────────────────────────
 echo "$LOG Configuring user groups..."
 usermod -aG kismet "$PI_USER"
 usermod -aG dialout "$PI_USER"
+
+# Allow the PV service user to start/stop readsb without interactive auth.
+# The SDR coordinator time-shares the dongle between readsb and DroneRF;
+# it needs to start/stop readsb as a system service during each slice.
+echo "$LOG Writing sudoers rule for readsb management..."
+cat > /etc/sudoers.d/passive-vigilance << EOF
+# Allow $PI_USER to start/stop readsb for SDR coordinator time-sharing
+$PI_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl start readsb.service, /usr/bin/systemctl stop readsb.service
+EOF
+chmod 0440 /etc/sudoers.d/passive-vigilance
 
 # ── 5. gpsd config ─────────────────────────────────────────────────────────
 echo "$LOG Configuring gpsd..."
@@ -149,8 +188,7 @@ if [ -n "$GPS_DEVICE_ENV" ]; then
 elif [ -e "/dev/ttyAMA0" ]; then
     DEVICES="/dev/ttyAMA0"
     echo "$LOG GPS HAT detected: using $DEVICES"
-elif ls /dev/ttyUSB* 2>/dev/null | head -1 | grep -q ttyUSB; then
-    DEVICES=$(ls /dev/ttyUSB* | head -1)
+elif DEVICES=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1) && [ -n "$DEVICES" ]; then
     echo "$LOG USB GPS detected: using $DEVICES"
 else
     DEVICES="/dev/ttyUSB0"

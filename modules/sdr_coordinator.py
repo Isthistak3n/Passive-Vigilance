@@ -129,8 +129,11 @@ class SDRCoordinator:
         return await loop.run_in_executor(None, _check)
 
     def _run_systemctl(self, action: str, service: str) -> None:
+        # sudo required: passive-vigilance runs as a non-root user but needs to
+        # start/stop the readsb system service. install.sh writes a scoped
+        # sudoers rule (/etc/sudoers.d/passive-vigilance) for this operation.
         try:
-            result = subprocess.run(["systemctl", action, service], capture_output=True, text=True, timeout=15)
+            result = subprocess.run(["sudo", "systemctl", action, service], capture_output=True, text=True, timeout=15)
             if result.returncode != 0:
                 logger.warning("systemctl %s %s exited %d: %s", action, service, result.returncode, result.stderr.strip())
             else:
