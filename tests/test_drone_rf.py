@@ -275,7 +275,7 @@ class TestDroneRFDutyCycle(unittest.TestCase):
 # drain_detections() — REQUIRED test (Step 2 standardization)
 # ---------------------------------------------------------------------------
 
-class TestDroneRFDDrainDetections(unittest.TestCase):
+class TestDroneRFDrainDetections(unittest.TestCase):
 
     def test_drain_returns_events_and_clears_buffer(self):
         """After appending events, drain_detections() returns them and empties the buffer."""
