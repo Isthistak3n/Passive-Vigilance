@@ -140,7 +140,8 @@ async def test_coordinator_handoff_to_drone_sets_owner():
     drone_rf.start_scan = AsyncMock()
 
     coordinator = SDRCoordinator(drone_rf)
-    with patch.object(coordinator, "_stop_readsb", new_callable=AsyncMock) as mock_stop:
+    with patch.object(coordinator, "_stop_readsb", new_callable=AsyncMock) as mock_stop, \
+         patch.object(coordinator, "_is_readsb_active", new_callable=AsyncMock, return_value=False):
         await coordinator._handoff_to_drone()
 
     assert coordinator.current_owner == "drone_rf"

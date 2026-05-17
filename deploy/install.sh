@@ -162,6 +162,16 @@ echo "$LOG Configuring user groups..."
 usermod -aG kismet "$PI_USER"
 usermod -aG dialout "$PI_USER"
 
+# Allow the PV service user to start/stop readsb without interactive auth.
+# The SDR coordinator time-shares the dongle between readsb and DroneRF;
+# it needs to start/stop readsb as a system service during each slice.
+echo "$LOG Writing sudoers rule for readsb management..."
+cat > /etc/sudoers.d/passive-vigilance << EOF
+# Allow $PI_USER to start/stop readsb for SDR coordinator time-sharing
+$PI_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl start readsb.service, /usr/bin/systemctl stop readsb.service
+EOF
+chmod 0440 /etc/sudoers.d/passive-vigilance
+
 # ── 5. gpsd config ─────────────────────────────────────────────────────────
 echo "$LOG Configuring gpsd..."
 
