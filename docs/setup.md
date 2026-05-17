@@ -311,16 +311,22 @@ If `wlan1` reverts to managed mode after reboot:
 ### About readsb
 
 `readsb` is a drop-in replacement for `dump1090-fa` and is the ADS-B decoder used by
-this project. It is available in the Debian Trixie repos and serves data on the same
-ports as dump1090-fa.
+this project. It serves data on the same ports as dump1090-fa.
 
 ### Install
 
+> **Important:** The `readsb` package in Debian Trixie is compiled without RTL-SDR support.
+> `apt install readsb` installs a binary that only accepts `modesbeast`, `gnshulc`, `ifile`,
+> `none` — passing `--device-type rtlsdr` causes a crash loop. Use the wiedehopf build:
+
 ```bash
-sudo apt install -y readsb
+sudo bash -c "$(wget -O - https://raw.githubusercontent.com/wiedehopf/adsb-scripts/master/readsb-install.sh)"
 ```
 
-readsb is enabled as a systemd service automatically and starts when an RTL-SDR dongle is connected.
+The script builds readsb from source with RTL-SDR support (`-DENABLE_RTLSDR`) and installs
+tar1090 (lighttpd map interface at `http://<pi-ip>/tar1090`). `deploy/install.sh` does this
+automatically and patches tar1090's lighttpd port to 8080 so PV can reach it at the default
+`READSB_URL`.
 
 ### Test ADS-B output
 
@@ -354,13 +360,25 @@ The DVB-T kernel drivers claim RTL-SDR hardware before the rtlsdr library can.
 Blacklist them:
 
 ```bash
-echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/rtlsdr.rules
-echo "blacklist rtl2832"          | sudo tee -a /etc/modprobe.d/rtlsdr.rules
-echo "blacklist rtl2830"          | sudo tee -a /etc/modprobe.d/rtlsdr.rules
+sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf << 'EOF'
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
+install dvb_usb_rtl28xxu /bin/false
+install rtl2832 /bin/false
+install rtl2830 /bin/false
+EOF
 sudo modprobe -r dvb_usb_rtl28xxu rtl2832 rtl2830 2>/dev/null || true
+sudo update-initramfs -u
 ```
 
 `deploy/install.sh` does this automatically.
+
+> **Why `.conf`, not `.rules`:** `initramfs-tools` only bundles `*.conf` files from
+> `/etc/modprobe.d/` when rebuilding the initramfs. A `.rules` filename is silently
+> excluded so the blacklist never applies at boot. The `install ... /bin/false`
+> directives are stronger than bare `blacklist` — they block explicit `modprobe`
+> calls too, not just automatic USB hotplug loading.
 
 ### Test the RTL-SDR dongle
 
@@ -403,8 +421,11 @@ DRONE_POWER_THRESHOLD_DB=-20
 
 Lower values (e.g. `-30`) increase sensitivity but also false positives.
 
-**Hardware conflict:** `readsb` and `DroneRFModule` both require an RTL-SDR dongle.
-With a single dongle, stop readsb before running a drone scan, or use two dongles.
+**Single-dongle setup:** `readsb` and `DroneRFModule` both need the RTL-SDR dongle.
+`SDRCoordinator` handles this automatically in `SHARED` mode — it time-shares the
+dongle between ADS-B and drone scanning on a configurable schedule
+(`ADSB_SLICE_SECONDS`, `DRONE_RF_SLICE_SECONDS`). Set `SDR_MODE=auto` in `.env`
+(default). Two dongles enable `DEDICATED` mode where both run simultaneously.
 
 ---
 

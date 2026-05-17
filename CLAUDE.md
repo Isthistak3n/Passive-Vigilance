@@ -109,7 +109,7 @@ feature/* → dev → main
 |---|---|---|
 | Kismet | `2025.09.0` | apt — `kismet-release` trixie repo |
 | Kismet binary | `/usr/bin/kismet` | — |
-| readsb | `3.14.1630` | apt (Trixie main) — dump1090-fa drop-in |
+| readsb | `3.16.15 wiedehopf` | source build via `readsb-install.sh` — Trixie apt package lacks RTL-SDR support |
 | readsb binary | `/usr/bin/readsb` | — |
 | gpsd | `3.25` | apt |
 | Python | `3.13` | system |
@@ -141,7 +141,7 @@ Re-run the monitor mode commands after any NM restart.
 
 - `readsb` (not dump1090) is the ADS-B decoder; binary at `/usr/bin/readsb`
 - readsb is a drop-in for dump1090-fa — same ports, same JSON format
-- JSON aircraft data: `http://localhost:8080/data/aircraft.json`
+- JSON aircraft data: `http://localhost:8080/data/aircraft.json` (configurable via `READSB_URL` env var — override when tar1090 serves on a different port, e.g. 8504 default before `install.sh` patches it)
 - SBS-1 stream: `tcp://localhost:30003`
 - readsb runs as systemd service, activates automatically when RTL-SDR dongle is connected
 - adsb.lol enrichment API: `https://adsbexchange-com1.p.rapidapi.com/v2/icao/{icao}/`
@@ -352,6 +352,10 @@ If `.env` does not exist or `GPS_DEVICE` is unset, it defaults to `/dev/ttyUSB0`
 - **readsb JSON port:** readsb serves aircraft JSON on port 8080 (HTTP), not 30003 (SBS-1 TCP). The `.env` `DUMP1090_PORT=30003` is the SBS-1 port; the `ADSBModule` connects to port 8080 directly.
 - **Single RTL-SDR time-sharing:** `SDRCoordinator` handles one-dongle setups automatically in `SHARED` mode — slices readsb (ADS-B) and DroneRF on a configurable schedule. Set `SDR_MODE=auto` in `.env` (default). `DEDICATED` mode activates automatically when 2+ dongles are detected.
 - **NM resets wlan1 on restart:** `sudo systemctl restart NetworkManager` resets wlan1 to managed once before the unmanaged rule applies. Re-run monitor mode commands after any NM restart. The udev rule handles boot/plug-in automatically.
+- **Trixie `readsb` apt package has no RTL-SDR support:** `apt install readsb` on Debian 13 installs version 3.14.x compiled without `ENABLE_RTLSDR`. Supported device types are only `modesbeast`, `gnshulc`, `ifile`, `none` — `--device-type rtlsdr` causes a crash loop (181 restarts observed on prod). Fix: build from source using `readsb-install.sh` from `wiedehopf/adsb-scripts`. `install.sh` does this automatically.
+- **RTL-SDR blacklist must use `.conf` extension + `update-initramfs -u`:** `initramfs-tools` only bundles `*.conf` files from `/etc/modprobe.d/`; `.rules` files are silently excluded so the blacklist never applies at boot. Prefer `install .../bin/false` over bare `blacklist` — it blocks explicit `modprobe` calls too. Always run `sudo update-initramfs -u` after writing the file.
+- **SDR coordinator needs sudo for systemctl:** `passive-vigilance.service` runs as a non-root user; plain `systemctl start/stop readsb` requires interactive polkit auth. `install.sh` writes `/etc/sudoers.d/passive-vigilance` (mode 0440) scoped to those two operations. The coordinator prefixes calls with `["sudo", "systemctl", ...]`.
+- **READSB_URL / tar1090 port mismatch:** wiedehopf's `readsb-install.sh` configures tar1090's alternate lighttpd listener on port 8504 by default. `install.sh` patches this to 8080 (`sed 's/":8504"/":8080"/'`). Override via `READSB_URL` in `.env` if serving elsewhere.
 
 ---
 
