@@ -31,8 +31,8 @@ ${DISTRO} main" | tee /etc/apt/sources.list.d/kismet.list
 apt update -qq
 DEBIAN_FRONTEND=noninteractive apt install -y \
   gpsd gpsd-clients python3-gps python3-pip python3-venv \
-  kismet readsb \
-  librtlsdr0 librtlsdr-dev
+  kismet \
+  rtl-sdr librtlsdr0 librtlsdr-dev
 
 # ── 3. Python dependencies ─────────────────────────────────────────────────
 # Install GDAL and GIS system dependencies first
