@@ -138,11 +138,24 @@ udevadm control --reload-rules
 systemctl restart NetworkManager
 
 # ── 3d. RTL-SDR kernel module blacklist ────────────────────────────────────
-# Prevent DVB-T drivers from claiming the dongle before rtlsdr can
+# Prevent DVB-T drivers from claiming the dongle before rtlsdr can.
+# IMPORTANT: must be a .conf file — update-initramfs ignores .rules files
+# when building the initramfs, so a .rules blacklist never applies at boot.
+# The install directives are stronger than blacklist alone: they block
+# explicit modprobe calls too, not just automatic USB hotplug loading.
 echo "$LOG Blacklisting conflicting RTL-SDR kernel modules..."
-echo "blacklist dvb_usb_rtl28xxu" | tee /etc/modprobe.d/rtlsdr.rules > /dev/null
-echo "blacklist rtl2832"          | tee -a /etc/modprobe.d/rtlsdr.rules > /dev/null
-echo "blacklist rtl2830"          | tee -a /etc/modprobe.d/rtlsdr.rules > /dev/null
+# Remove any legacy .rules file from prior installs to avoid duplicate config.
+rm -f /etc/modprobe.d/rtlsdr.rules
+cat > /etc/modprobe.d/blacklist-rtlsdr.conf << 'BLACKLIST'
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
+install dvb_usb_rtl28xxu /bin/false
+install rtl2832 /bin/false
+install rtl2830 /bin/false
+BLACKLIST
+echo "$LOG Rebuilding initramfs (required for blacklist to apply at boot)..."
+update-initramfs -u
 
 # ── 4. Groups ──────────────────────────────────────────────────────────────
 echo "$LOG Configuring user groups..."
