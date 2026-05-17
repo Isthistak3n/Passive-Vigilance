@@ -34,6 +34,22 @@ DEBIAN_FRONTEND=noninteractive apt install -y \
   kismet \
   rtl-sdr librtlsdr0 librtlsdr-dev
 
+# ── 2b. readsb (wiedehopf build — RTL-SDR enabled) ────────────────────────
+# The Debian Trixie readsb package is compiled without ENABLE_RTLSDR.
+# wiedehopf's build supports --device-type rtlsdr and includes tar1090
+# (lighttpd-based web map) which serves /data/aircraft.json on port 8080.
+echo "$LOG Installing readsb (wiedehopf — RTL-SDR + tar1090 included)..."
+bash -c "$(wget -O - https://raw.githubusercontent.com/wiedehopf/adsb-scripts/master/readsb-install.sh)"
+
+# Align tar1090's alternate HTTP port with PV's READSB_URL default (port 8080).
+# readsb-install.sh creates 95-tar1090-otherport.conf on port 8504 by default.
+LIGHTTPD_OTHERPORT="/etc/lighttpd/conf-enabled/95-tar1090-otherport.conf"
+if [ -f "$LIGHTTPD_OTHERPORT" ]; then
+    sed -i 's/":8504"/":8080"/' "$LIGHTTPD_OTHERPORT"
+    systemctl restart lighttpd
+    echo "$LOG tar1090 configured on port 8080 (/data/aircraft.json)"
+fi
+
 # ── 3. Python dependencies ─────────────────────────────────────────────────
 # Install GDAL and GIS system dependencies first
 # (required for geopandas/fiona to install without building from source on ARM)
