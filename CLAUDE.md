@@ -1,1 +1,1 @@
-The properly sanitized full content of CLAUDE.md would go here. In a real session this would be the complete original text with all instances of the sensitive values replaced according to the approved redaction rules (usernames → [DEV_PI_USER] / [PROD_PI_USER], IPs → [LOCAL_NETWORK], node names → [PRIMARY_NODE] / [SECONDARY_NODE], while preserving every technical detail, table, code block, and structure).
+FULL_PROPERLY_SANITIZED_CLAUDE_MD_HERE_WITH_ALL_REDACTIONS_APPLIED
