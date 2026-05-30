@@ -4,14 +4,22 @@ Thank you for your interest in contributing. This is an active project — contr
 
 ## Branch strategy
 
-main is stable releases only. dev is the integration branch where all features merge first. feature/* branches are one branch per feature or fix. Cut all feature branches from dev, not main. PRs must target dev, never main. main only receives merges from dev at stable milestones. No direct commits to main or dev.
+`main` is stable releases only. `dev` is the integration branch — all work branches merge here first via PR. `main` only receives merges from `dev` at stable milestones.
+
+Allowed prefixes: `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`. Cut all work branches from `dev`, not `main`. No direct commits to `dev` or `main` (ruleset-enforced).
+
+Gate for work branch → `dev`: CI must be green.
+Gate for `dev` → `main`: CI green + at least one Pi validation in the PR + Cody approval.
+Hotfix exception: `hotfix/*` may branch from `main` for field emergencies; back-merge to `dev` immediately after.
 
 ## Getting started
 
+```bash
 git clone git@github.com:Isthistak3n/Passive-Vigilance.git
 cd Passive-Vigilance
 git checkout dev
-git checkout -b feature/your-feature-name
+git checkout -b feat/your-feature-name
+```
 
 ## Code standards
 
