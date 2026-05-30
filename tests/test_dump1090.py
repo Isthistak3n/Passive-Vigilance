@@ -8,7 +8,7 @@ import modules.dump1090  # noqa: F401 — load before @patch resolves targets
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 def _mock_response(status: int, json_data=None):

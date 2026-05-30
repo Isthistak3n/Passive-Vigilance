@@ -16,7 +16,7 @@ except ImportError:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +214,7 @@ class TestDroneRFDutyCycle(unittest.TestCase):
                         except asyncio.CancelledError:
                             pass
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         self.assertTrue(
             any(d == 15 for d in sleep_calls),
             f"Expected rest sleep of 15s, got {sleep_calls}",
@@ -243,7 +243,7 @@ class TestDroneRFDutyCycle(unittest.TestCase):
                     except asyncio.CancelledError:
                         pass
 
-        asyncio.get_event_loop().run_until_complete(run())
+        asyncio.run(run())
         self.assertTrue(
             all(d == 0.1 for d in sleep_calls),
             f"Expected only 0.1s yield sleeps, got {sleep_calls}",
