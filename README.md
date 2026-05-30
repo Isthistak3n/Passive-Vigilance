@@ -118,7 +118,7 @@ flowchart TD
 | Kismet integration | ✅ Complete | REST API, API key auth, WiGLE CSV — 10 tests |
 | ADS-B | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
 | Drone RF | ✅ Complete | pyrtlsdr, duty cycle, thermal throttle — 15 tests (includes drain_detections) |
-| WiFi monitor mode | ✅ Complete | MT7610U/RTL8811AU udev + NM unmanaged — 15 tests |
+| WiFi monitor mode | ✅ Complete | RTL8811CU udev + NM unmanaged — 15 tests |
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
 | MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
 | Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 27 tests |
@@ -193,11 +193,19 @@ Passive-Vigilance/
 ├── main.py                           # asyncio orchestrator; loads .env; SIGINT/SIGTERM shutdown
 ├── requirements.txt                  # Python dependencies
 ├── .env.example                      # Environment variable template (never commit .env)
+├── core/
+│   ├── exceptions.py                 # Custom exception hierarchy + ErrorSeverity enum
+│   └── logging.py                    # Structured logger factory — consistent log format across modules
 ├── modules/
 │   ├── gps.py                        # GPSModule — gpsd streaming client; position/time backbone
 │   ├── kismet.py                     # KismetModule — Kismet REST API; async WiFi + BT polling
 │   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
 │   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures + drain_detections()
+│   ├── remote_id.py                  # RemoteIDModule — FAA Remote ID (ASTM F3411-22a) via Kismet 802.11 vendor IE
+│   ├── sdr_manager.py                # SDRManager — RTL-SDR inventory detection; SDRMode resolution
+│   ├── sdr_coordinator.py            # SDRCoordinator — asyncio time-share scheduler for single-dongle setups
+│   ├── sdr_utils.py                  # Shared RTL-SDR hardware detection utilities
+│   ├── orchestrator.py               # SensorOrchestrator — module lifecycle and health management
 │   ├── ignore_list.py                # IgnoreList — MAC/OUI/SSID filter; atomic JSON persistence
 │   ├── mac_utils.py                  # MAC randomization detection, type classification, fingerprinting
 │   ├── alerts.py                     # AlertBackend ABC + Ntfy / Telegram / Discord / Console backends
@@ -224,7 +232,12 @@ Passive-Vigilance/
 │   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
 │   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
-│   ├── test_kml_writer.py              # 14 tests — KMLWriter
+│   ├── test_kml_writer.py            # 14 tests — KMLWriter
+│   ├── test_shapefile.py             # 7 tests — ShapefileWriter
+│   ├── test_wigle.py                 # 7 tests — WiGLEUploader
+│   ├── test_sdr_manager.py           # SDRManager + SDRCoordinator tests
+│   ├── test_sdr_handoff.py           # SDRCoordinator handoff tests
+│   ├── test_remote_id.py             # RemoteIDModule tests
 │   ├── test_orchestrator.py          # 28 tests — PassiveVigilance orchestrator
 │   ├── test_gui.py                   # 15 tests — GUIServer
 │   └── test_alerts.py                # 24 tests — AlertEngine
