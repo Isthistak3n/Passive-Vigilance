@@ -79,13 +79,14 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 ## Branch Strategy
 
 ```
-feature/* → dev → main
+feat|fix|docs|hotfix|refactor/<name> → dev → main
 ```
 
-- **`main`** — stable, public releases only. No direct commits ever.
-- **`dev`** — integration branch. All feature branches merge here via PR.
-- **`feature/*`** — one branch per module or capability. Branch off `dev`.
-- PRs are required to merge into `dev`; maintainer merges `dev` → `main` at release time.
+- **`main`** — stable, public releases only. No direct commits ever (ruleset-enforced).
+- **`dev`** — integration branch. All work branches merge here via PR (CI green required).
+- **Allowed prefixes:** `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/` — cut from `dev`.
+- **`dev` → `main`** requires CI green + Pi validation + Cody approval.
+- See `AGENTS.md` for the full gate rules and merge checklist.
 
 ---
 
