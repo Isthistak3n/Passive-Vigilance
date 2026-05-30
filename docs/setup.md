@@ -236,8 +236,7 @@ sudo dpkg --configure -a
 
 ### Hardware
 
-This project uses the **MediaTek MT7610U** USB dongle (`0e8d:7610`) on interface `wlan1`.
-The driver (`mt76` series) is built into the Linux kernel — no DKMS or out-of-tree driver needed.
+The WiFi adapter on `wlan1` varies by node — see **`CONTEXT.md` → Hardware & Adapter Map** for the verified chipset, USB ID, and driver for each node. The procedural steps below are chipset-agnostic.
 
 > **Do not touch `wlan0`** — that is the Pi's built-in WiFi used for network connectivity.
 
