@@ -93,8 +93,8 @@ feature/* → dev → main
 
 | Item | Value |
 |---|---|
-| Dev/test device | Raspberry Pi 3B+ (username: `XXXXXXX`) at 192.168.1.8 |
-| Production target | Raspberry Pi 4B (username: `XXXXX`) at 192.168.1.9 |
+| Dev/test device | Raspberry Pi 3B+ (username: `XXXXXXX`) at 192.168.1.x |
+| Production target | Raspberry Pi 4B (username: `XXXXX`) at 192.168.1.x |
 | OS (dev Pi) | **Debian 13 Trixie** (not Bookworm, not Raspberry Pi OS) |
 | GPS device (Pi3) | `/dev/ttyUSB0` (default) |
 | GPS device (Pi4) | `/dev/ttyAMA0` — Waveshare SX126X LoRaWAN/GNSS HAT (L76K GNSS) |
