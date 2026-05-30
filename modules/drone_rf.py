@@ -89,7 +89,7 @@ class DroneRFModule:
         logger.info("Drone RF scan stopped")
 
     async def _scan_loop(self) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         rest_seconds = int(os.getenv("DRONE_RF_REST_SECONDS", "20"))
         max_temp_c = float(os.getenv("DRONE_RF_MAX_TEMP_C", "75"))
 
