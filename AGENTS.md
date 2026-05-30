@@ -82,24 +82,18 @@ When writing or testing code, always note which node it was validated on.
 ## Branch Strategy
 
 ```
-feat|fix|docs|hotfix|refactor/<name>   ← all work branches (cut from dev)
- └── dev                               ← integration branch
-      └── main                         ← stable releases only
+feat|fix|docs|hotfix|refactor/<name>  →  main   (via PR)
 ```
 
-**Flow:** all work branches → `dev` → `main`. No direct commits to `dev` or `main` by anyone (ruleset-enforced: PRs required, force-push and direct update blocked).
+**Flow:** all work branches cut from `main`, merged back to `main` via PR. No intermediate integration branch.
 
 **Allowed prefixes:** `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`
 
-**Gate: work branch → `dev`**
-- CI must be green
-
-**Gate: `dev` → `main`**
+**Gate: work branch → `main`**
 - CI must be green
 - At least one confirmed Pi validation recorded in the PR
 - Cody approval
-
-**Hotfix shortcut:** `hotfix/*` may branch from `main` for field emergencies only. Back-merge to `dev` immediately after merging to `main`.
+- PR required (ruleset-enforced — direct pushes to `main` are blocked)
 
 - Claude Code opens its own PRs; Grok reviews all PRs for cross-module impact before Cody approval
 - There is no docs-only exception — all changes go through the normal PR path
@@ -123,6 +117,8 @@ This rule applies to all agents and all claims of completion. Vague or incomplet
 ---
 
 ## Commit Message Format
+
+> This format governs **AI-agent commit subject lines** (machine-parseable, per-agent attribution). For PR titles, release notes, and human contributor commits, see `CLAUDE.md` → Commit & Release Standards.
 
 ``` 
 [agent] type(scope): short description
@@ -164,14 +160,14 @@ Tested: Pi 2
 ## Merge Checklist (Grok enforces on every PR)
 
 - [ ] Commit messages follow `[agent] type(scope):` format
-- [ ] At least one `Tested: Pi 1` or `Tested: Pi 2` in commit history (required for `dev` → `main`; recommended for work → `dev`)
+- [ ] At least one `Tested: Pi 1` or `Tested: Pi 2` in commit history (required on every PR to `main`)
 - [ ] No hardcoded credentials, API keys, or local paths
 - [ ] New modules registered in `CONTEXT.md` module table
 - [ ] systemd unit file included if module runs as a service
 - [ ] No x86-only dependencies (check against `requirements.txt`)
 - [ ] `CONTEXT.md` updated to reflect new state post-merge
 - [ ] CI green on the target branch/commit
-- [ ] PR required — direct pushes to `dev` and `main` are blocked by the repository ruleset
+- [ ] PR required — direct pushes to `main` are blocked by the repository ruleset
 - [ ] CodeQL code-scanning must pass — high+ severity security alerts block merge (ruleset-enforced)
 
 ---

@@ -4,20 +4,18 @@ Thank you for your interest in contributing. This is an active project — contr
 
 ## Branch strategy
 
-`main` is stable releases only. `dev` is the integration branch — all work branches merge here first via PR. `main` only receives merges from `dev` at stable milestones.
+`main` is the single protected branch. All work branches merge directly to `main` via PR — no intermediate integration branch.
 
-Allowed prefixes: `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`. Cut all work branches from `dev`, not `main`. No direct commits to `dev` or `main` (ruleset-enforced).
+Allowed prefixes: `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`. Cut all branches from `main`. No direct commits to `main` (ruleset-enforced).
 
-Gate for work branch → `dev`: CI must be green.
-Gate for `dev` → `main`: CI green + at least one Pi validation in the PR + Cody approval.
-Hotfix exception: `hotfix/*` may branch from `main` for field emergencies; back-merge to `dev` immediately after.
+Gate for work branch → `main`: CI green + at least one Pi validation recorded in the PR + Cody approval.
 
 ## Getting started
 
 ```bash
 git clone git@github.com:Isthistak3n/Passive-Vigilance.git
 cd Passive-Vigilance
-git checkout dev
+git checkout main
 git checkout -b feat/your-feature-name
 ```
 
