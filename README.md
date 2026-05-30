@@ -274,7 +274,7 @@ Key variables:
 | `DRONE_RF_REST_SECONDS` | Seconds to rest between DroneRF sweep cycles | `20` |
 | `DRONE_RF_MAX_TEMP_C` | CPU temp threshold that doubles rest period | `75` |
 | `GUI_ENABLED` | Enable live web dashboard | `false` |
-| `GUI_PORT` | Web dashboard port | `5000` |
+| `GUI_PORT` | Web dashboard port | `8080` |
 
 ---
 
