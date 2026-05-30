@@ -39,8 +39,8 @@ When writing or testing code, always note which node it was validated on.
 - Runtime testing and validation on ARM64 hardware
 
 **Never modifies without coordination:**
-- Active `feature/*` branches that another agent is actively working on
-- `main` branch directly (always works on `feature/*` branches)
+- Active `feat/*` branches that another agent is actively working on
+- `main` or `dev` directly (always works on prefixed work branches, never main directly)
 
 **Session discipline:**
 - Pull latest branch and read `CONTEXT.md` at the start of every session
@@ -61,7 +61,7 @@ When writing or testing code, always note which node it was validated on.
 - Maintaining and updating `CONTEXT.md` on every merge to `main`
 
 **Never:**
-- Force-pushes to any `feature/*` branch Claude Code has active
+- Force-pushes to any `feat/*` branch Claude Code has active
 - Merges to `main` without at least one confirmed Pi validation in the PR
 - Modifies hardware-specific logic without flagging for Claude Code review
 
@@ -81,29 +81,28 @@ When writing or testing code, always note which node it was validated on.
 
 ## Branch Strategy
 
-``` 
-main
- └── feature/<module-name>       ← Claude Code works here
- └── refactor/<scope>            ← Grok proposes here
- └── docs/<topic>                ← Grok only
- └── hotfix/<description>        ← Human or Claude Code, fast-tracked
+```
+feat|fix|docs|hotfix|refactor/<name>   ← all work branches (cut from dev)
+ └── dev                               ← integration branch
+      └── main                         ← stable releases only
 ```
 
-- `main` is protected — only merges via PR with human approval
-- Claude Code opens its own PRs OR pushes and asks Grok to open the PR
-- Grok reviews all PRs for cross-module impact before human approval
+**Flow:** all work branches → `dev` → `main`. No direct commits to `dev` or `main` by anyone (ruleset-enforced: PRs required, force-push and direct update blocked).
 
-### Docs-Only Exception for `main`
+**Allowed prefixes:** `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`
 
-Grok may push **docs-only changes** (CONTEXT.md, README.md, AGENTS.md, SECURITY.md, CONTRIBUTING.md, or files under `docs/`) **directly to `main`** without a full `feature/* → dev → main` cycle **provided**:
+**Gate: work branch → `dev`**
+- CI must be green
 
-- The change is purely documentation or coordination metadata.
-- No code, tests, or configuration that affects runtime behavior is modified.
-- The commit message is tagged `[grok] docs(main): …`
-- Human (Cody) is notified immediately and retains veto power.
-- This exception exists only because CONTEXT.md must remain the single source of truth for every agent session; it does **not** extend to any implementation work.
+**Gate: `dev` → `main`**
+- CI must be green
+- At least one confirmed Pi validation recorded in the PR
+- Cody approval
 
-All non-docs changes continue to require the standard Pi-validated PR path.
+**Hotfix shortcut:** `hotfix/*` may branch from `main` for field emergencies only. Back-merge to `dev` immediately after merging to `main`.
+
+- Claude Code opens its own PRs; Grok reviews all PRs for cross-module impact before Cody approval
+- There is no docs-only exception — all changes go through the normal PR path
 
 ---
 
@@ -165,13 +164,15 @@ Tested: Pi 2
 ## Merge Checklist (Grok enforces on every PR)
 
 - [ ] Commit messages follow `[agent] type(scope):` format
-- [ ] At least one `Tested: Pi 1` or `Tested: Pi 2` in commit history
+- [ ] At least one `Tested: Pi 1` or `Tested: Pi 2` in commit history (required for `dev` → `main`; recommended for work → `dev`)
 - [ ] No hardcoded credentials, API keys, or local paths
 - [ ] New modules registered in `CONTEXT.md` module table
 - [ ] systemd unit file included if module runs as a service
 - [ ] No x86-only dependencies (check against `requirements.txt`)
 - [ ] `CONTEXT.md` updated to reflect new state post-merge
 - [ ] CI green on the target branch/commit
+- [ ] PR required — direct pushes to `dev` and `main` are blocked by the repository ruleset
+- [ ] CodeQL code-scanning must pass — high+ severity security alerts block merge (ruleset-enforced)
 
 ---
 

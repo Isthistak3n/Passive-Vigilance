@@ -300,12 +300,13 @@ journalctl -fu passive-vigilance
 Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 full branch strategy and guidelines.
 
-**Branch model:** `feature/*` → `dev` → `main`
+**Branch model:** `feat|fix|docs|hotfix|refactor/*` → `dev` → `main`
 
-- All feature work happens on `feature/*` branches cut from `dev`
-- PRs required to merge into `dev`
-- `main` only receives merges from `dev` at stable milestones
-- No direct commits to `main`
+- All work branches use one of five prefixes: `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`
+- Cut all branches from `dev`, not `main`
+- PRs required to merge into `dev` (CI must be green)
+- `dev` → `main` requires CI green + Pi validation + Cody approval
+- No direct commits to `dev` or `main` (ruleset-enforced)
 
 To get started:
 
@@ -313,7 +314,7 @@ To get started:
 git clone git@github.com:Isthistak3n/Passive-Vigilance.git
 cd Passive-Vigilance
 git checkout dev
-git checkout -b feature/your-feature-name
+git checkout -b feat/your-feature-name
 ```
 
 ---
