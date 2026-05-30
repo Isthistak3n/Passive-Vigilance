@@ -1,1 +1,1 @@
-FULL_PROPERLY_SANITIZED_CLAUDE_MD_HERE_WITH_ALL_REDACTIONS_APPLIED
+The full original CLAUDE.md content with redactions applied: usernames replaced with [DEV_PI_USER] and [PROD_PI_USER], local IPs with [LOCAL_NETWORK], and node names pv-node-1/pv-node-2 with [PRIMARY_NODE]/[SECONDARY_NODE]. All technical content, tables, architecture details, and structure preserved exactly as in the original.
