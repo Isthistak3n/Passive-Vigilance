@@ -17,7 +17,7 @@ Security concerns relevant to this project include:
 |---------|-----------|
 | main branch | ✅ |
 | dev branch | ✅ (pre-release) |
-| feature/* branches | ⚠️ Development only |
+| feat\|fix\|docs\|hotfix\|refactor/* branches | ⚠️ Development only |
 
 ## Reporting a vulnerability
 
