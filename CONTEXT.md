@@ -39,7 +39,7 @@ chase (Pi 4B+) — base station
   └── coordination hub for spoke nodes
 
 survkis (Pi 3B+) — spoke node (WiFi + GPS)
-  ├── Alfa WiFi adapter (monitor mode, Kismet)
+  ├── RTL8811CU WiFi adapter (monitor mode, Kismet)
   └── u-blox 8 GNSS (ttyACM0)
 
 future spoke nodes — niche sensor subsets per Pi hardware/power limits
@@ -74,7 +74,7 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 | Component | Detail | Interface / Path | Status |
 |-----------|--------|-----------------|--------|
 | Onboard WiFi | Pi 3B+ built-in (BCM43438) | `wlan0` — UP (SSH/network) | ✅ Active |
-| Alfa WiFi adapter | Realtek 802.11ac NIC (0bda:c811) | `wlan1` — monitor mode (Kismet) | ✅ Active |
+| RTL8811CU WiFi adapter | Realtek RTL8811CU (0bda:c811), driver rtl8821cu/rtw88, 1×1 dual-band | `wlan1` — monitor mode (Kismet) | ✅ Active |
 | GNSS receiver | u-blox 8 (1546:01a8), cdc_acm driver | `/dev/ttyACM0` | ✅ Active |
 | Ethernet | — | `eth0` — DOWN (no cable) | — |
 | RTL-SDR | — | not present | — (intended for chase) |

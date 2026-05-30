@@ -92,15 +92,9 @@ feat|fix|docs|hotfix|refactor/<name> → dev → main
 
 ## Hardware
 
-| Item | Value |
-|---|---|
-| Dev/test device | Raspberry Pi 3B+ (username: `XXXXXXX`) at 192.168.1.x |
-| Production target | Raspberry Pi 4B (username: `XXXXX`) at 192.168.1.x |
-| OS (dev Pi) | **Debian 13 Trixie** (not Bookworm, not Raspberry Pi OS) |
-| GPS device (Pi3) | `/dev/ttyUSB0` (default) |
-| GPS device (Pi4) | `/dev/ttyAMA0` — Waveshare SX126X LoRaWAN/GNSS HAT (L76K GNSS) |
-| Kismet port | `2501` |
-| dump1090/readsb port | `30003` (SBS-1), `8080` (JSON) |
+> Live hardware state (which node, which adapter, which GPS path, which ports) is maintained in **`CONTEXT.md` → Hardware & Adapter Map and Service Port Map**. That file is verified per-node and is the authority. Do not duplicate hardware facts here — read `CONTEXT.md` for current values.
+
+OS on all nodes: **Debian 13 Trixie** (not Bookworm, not Raspberry Pi OS).
 
 ---
 
@@ -120,17 +114,13 @@ feat|fix|docs|hotfix|refactor/<name> → dev → main
 
 ---
 
-## WiFi Dongle
+## WiFi Monitor Mode
 
-| Item | Value |
-|---|---|
-| Device | MediaTek MT7610U (`0e8d:7610`) |
-| Interface | `wlan1` |
-| Driver | `mt76` series — **in-kernel, no DKMS needed** |
-| Mode | monitor (set via udev rule at boot) |
-| NM state | unmanaged (`/etc/NetworkManager/conf.d/99-unmanaged-wlan1.conf`) |
-| udev rule | `/etc/udev/rules.d/99-wifi-monitor.rules` |
-| Monitor script | `/usr/local/bin/set-monitor-mode.sh` |
+> The specific chipset and USB ID on each node live in `CONTEXT.md`. The operational rules below apply regardless of chipset.
+
+- udev rule: `/etc/udev/rules.d/99-wifi-monitor.rules` — sets `wlan1` to monitor at boot/plug-in
+- NM unmanaged: `/etc/NetworkManager/conf.d/99-unmanaged-wlan1.conf`
+- Monitor script: `/usr/local/bin/set-monitor-mode.sh`
 
 **`wlan0` = Pi built-in WiFi — used for SSH/network. DO NOT set to monitor mode.**
 **`wlan1` = USB dongle — monitor mode only. DO NOT use for network connectivity.**
