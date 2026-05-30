@@ -138,12 +138,14 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 
 ## Active Branches
 
+Single-tier model: all work branches merge directly to `main` via PR. No integration branch.
+
 | Branch | Owner | Purpose | Protected | Pi-tested | Notes |
 |--------|-------|---------|-----------|-----------|-------|
-| `main` | — | Stable releases | Yes | ✅ | Current production |
-| `dev` | — | Integration branch — all work branches merge here | Yes | ✅ | Created 2026-05-30 from main |
-| `fix/field-hardening` | — | Field hardening (stale) | Yes | — | 0 unique commits, 100+ behind main — **abandoned** |
-| `fix/orchestrator-gui-hardening` | — | GUI hardening (stale) | Yes | — | 0 unique commits, 100+ behind main — **abandoned** |
+| `main` | — | Stable releases — single protected target | Yes | ✅ | All PRs base here |
+| `dev` | — | ~~Integration branch~~ | Yes | — | Retired 2026-05-30 — bypassed in practice; pending deletion after current PR cycle |
+| `fix/field-hardening` | — | Field hardening (stale) | Yes | — | 0 unique commits — **abandoned** |
+| `fix/orchestrator-gui-hardening` | — | GUI hardening (stale) | Yes | — | 0 unique commits — **abandoned** |
 
 ---
 
@@ -228,6 +230,8 @@ GitHub authentication on each Pi uses per-Pi SSH ed25519 keys held in `~/.ssh/` 
 
 [2026-05-30] Context refresh session (survkis). Diagnosed Grok's gutted CLAUDE.md (stub restored from 20e6484, PR #38 merged). Created fresh `dev` from main (old `dev/improvements` retired — its only unique commit 4b6fa69 gutted CI workflows). Reconciled branch strategy docs across AGENTS.md/CONTRIBUTING.md/README.md/CLAUDE.md/SECURITY.md (PRs merged to dev, then to main). Verified: no secrets in history, u-blox 8 on ttyACM0 (not ttyUSB0), GPS_DEVICE set in .env. Port collision noted: GUI + readsb both default 8080. ModuleHealth (Step 4) confirmed not yet built.
 
+[2026-05-30] Branch model simplified to single-tier: all work branches → main directly. `dev` was bypassed in practice (all PRs during this session went to main); retired. Commit-style conflict resolved: AGENTS.md governs agent commit subjects ([agent] type(scope):); CLAUDE.md governs PR titles, release notes, human commits. Version string bumped to 0.4.3-alpha. README/setup.md/CLAUDE.md architecture tree synced. `dev` pending deletion after this PR cycle.
+
 ---
 
 ## Grok Merge / Update Notes
@@ -244,7 +248,7 @@ GitHub authentication on each Pi uses per-Pi SSH ed25519 keys held in `~/.ssh/` 
 
 ## Handoff Checklist for Claude Code Session Start
 
-- [ ] `git fetch origin && git checkout dev && git pull origin dev`
+- [ ] `git fetch origin && git checkout main && git pull origin main`
 - [ ] Read **Current Sprint Focus** and **Error Handling Standardization Roadmap**
 - [ ] Confirm hardware matches **Hardware & Adapter Map** for this node
 - [ ] Check **Module Registry** for latest status

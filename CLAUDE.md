@@ -79,13 +79,12 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 ## Branch Strategy
 
 ```
-feat|fix|docs|hotfix|refactor/<name> → dev → main
+feat|fix|docs|hotfix|refactor/<name> → main
 ```
 
-- **`main`** — stable, public releases only. No direct commits ever (ruleset-enforced).
-- **`dev`** — integration branch. All work branches merge here via PR (CI green required).
-- **Allowed prefixes:** `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/` — cut from `dev`.
-- **`dev` → `main`** requires CI green + Pi validation + Cody approval.
+- **`main`** — single protected branch. All PRs merge here directly (ruleset-enforced, no direct pushes).
+- **Allowed prefixes:** `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/` — cut from `main`.
+- Gate: CI green + Pi validation recorded in the PR + Cody approval.
 - See `AGENTS.md` for the full gate rules and merge checklist.
 
 ---
@@ -356,6 +355,8 @@ Every commit, PR, and release must be human-readable first,
 technical second. Follow these rules on every branch.
 
 ### Commit message format
+
+> This style governs **PR titles, release notes, and human contributor commits**. AI-agent commit subject lines use `[agent] type(scope):` format — see `AGENTS.md` → Commit Message Format.
 
 First line: plain English summary of what improved (max 72 chars)
 - Use "Add", "Fix", "Improve", "Extend" not "feat(scope):"
