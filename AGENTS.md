@@ -17,10 +17,10 @@ any action on the codebase.
 
 ## Node Roles
 
-| Node | Hostname     | Primary Responsibilities                          |
-|------|--------------|---------------------------------------------------|
-| Pi 1 | `pv-node-1` | Primary sensor orchestration, ADS-B, Drone RF, SDR coordination |
-| Pi 2 | `pv-node-2` | Wardriving, Bluetooth scanning, WiGLE staging     |
+| Node   | Hostname   | Logical Alias | Primary Responsibilities                                        |
+|--------|------------|---------------|-----------------------------------------------------------------|
+| Pi 3B+ | `survkis`  | `pv-node-1`   | Active dev + WiFi/GPS spoke (Kismet, GPS, persistence)          |
+| Pi 4B+ | `chase`    | `pv-node-2`   | Intended base station — SDR/ADS-B/Drone RF (unpowered)          |
 
 When writing or testing code, always note which node it was validated on.
 
@@ -40,7 +40,7 @@ When writing or testing code, always note which node it was validated on.
 
 **Never modifies without coordination:**
 - Active `feat/*` branches that another agent is actively working on
-- `main` or `dev` directly (always works on prefixed work branches, never main directly)
+- `main` directly — always works on prefixed work branches via PR
 
 **Session discipline:**
 - Pull latest branch and read `CONTEXT.md` at the start of every session
