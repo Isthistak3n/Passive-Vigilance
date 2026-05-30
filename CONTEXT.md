@@ -259,5 +259,5 @@ GitHub authentication on each Pi uses per-Pi SSH ed25519 keys held in `~/.ssh/` 
 - [ ] Commit with `[claude-code] type(scope): description` + `Tested: Pi/untested`
 - [ ] Append session note to **Claude Code Session Notes**
 - [ ] Push branch to `origin`
-- [ ] Open PR base `dev` (or report compare URL if gh unavailable)
+- [ ] Open PR base `main` (or report compare URL if gh unavailable)
 - [ ] Update **Module Registry** status if anything changed
