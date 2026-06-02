@@ -45,7 +45,7 @@ _IE_TAG_VENDOR_SPECIFIC = 221
 _RID_DEVICE_FIELDS = [
     "kismet.device.base.macaddr",
     "kismet.device.base.phyname",
-    "kismet.device.base.signal/last_signal",
+    "kismet.device.base.signal/kismet.common.signal.last_signal",
     "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.ie_tag_list",
     "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.ie_tag_content",
 ]
@@ -220,7 +220,7 @@ class RemoteIDModule:
 
         source_mac = dev.get("kismet.device.base.macaddr", "")
         source_phy = dev.get("kismet.device.base.phyname", "WiFi")
-        rssi_raw = dev.get("kismet.device.base.signal/last_signal")
+        rssi_raw = dev.get("kismet.device.base.signal/kismet.common.signal.last_signal")
         rssi: Optional[int] = int(rssi_raw) if rssi_raw is not None else None
 
         results: list[dict] = []
