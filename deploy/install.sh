@@ -73,22 +73,8 @@ echo "$LOG Installing Python packages into virtualenv..."
 # geopy: geodesic distance fallback for persistence engine location clustering
 "$VENV_DIR/bin/pip" install geopy -q
 
-# Leaflet.js for offline use — only download if web GUI is enabled
-if grep -qE "^\s*GUI_ENABLED\s*=\s*true" "$REPO_DIR/.env" 2>/dev/null; then
-  echo "$LOG Downloading Leaflet.js for offline use (field deployments)..."
-  LEAFLET_VERSION="1.9.4"
-  LEAFLET_DIR="$REPO_DIR/gui/static/leaflet"
-  mkdir -p "$LEAFLET_DIR"
-  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.js" \
-      -o "$LEAFLET_DIR/leaflet.js"
-  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/leaflet.css" \
-      -o "$LEAFLET_DIR/leaflet.css"
-  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/images/marker-icon.png" \
-      -o "$LEAFLET_DIR/marker-icon.png"
-  curl -sL "https://unpkg.com/leaflet@${LEAFLET_VERSION}/dist/images/marker-shadow.png" \
-      -o "$LEAFLET_DIR/marker-shadow.png"
-  echo "$LOG Leaflet downloaded for offline use"
-fi
+# Leaflet assets ship vendored in-repo (gui/static/leaflet/) — no download needed.
+# The GUI serves them locally and works on a fresh clone with no internet.
 
 ln -sf "$VENV_DIR/bin/python3" /usr/local/bin/pv-python
 echo "$LOG Virtualenv ready. To run manually: $VENV_DIR/bin/python3 main.py"

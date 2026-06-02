@@ -236,7 +236,7 @@ Re-run the monitor mode commands after any NM restart.
 - `push_event("wifi", event_dict)` called after `all_events.append()` in `_poll_kismet`
 - `push_event("aircraft", event)` called after `aircraft_detections.append()` in `_poll_adsb`
 - `push_event("drone", event_dict)` called after `drone_detections.append()` in `_poll_drone_rf`
-- `gui/templates/index.html` — single SPA; Leaflet loaded from CDN unpkg; 5 tabs; dark theme
+- `gui/templates/index.html` — single SPA; Leaflet vendored in-repo (`gui/static/leaflet/`); 5 tabs; dark theme
 - `gui/static/app.js` — WiFi deduplication by MAC; Leaflet dark tile layer with CSS invert filter
 - `gui/static/style.css` — KML-matched alert colors (red=high, orange=likely, yellow=suspicious)
 - `tests/test_gui.py` — 15 unit tests; no Flask server started during tests
