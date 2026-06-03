@@ -125,9 +125,9 @@ class DroneRFModule:
                 if temp is not None and temp > max_temp_c:
                     actual_rest = rest_seconds * 2
                     logger.warning("DroneRF throttling: CPU temp %.1f°C > %.1f°C — rest extended to %ds", temp, max_temp_c, actual_rest)
-                logger.info("DroneRF resting %ds", actual_rest)
+                logger.debug("DroneRF resting %ds", actual_rest)
                 await asyncio.sleep(actual_rest)
-                logger.info("DroneRF resuming scan")
+                logger.debug("DroneRF resuming scan")
             else:
                 await asyncio.sleep(0.1)
 
