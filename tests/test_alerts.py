@@ -28,6 +28,7 @@ from modules.alerts import (  # noqa: E402  (import after env cleanup)
     NtfyBackend,
     RateLimiter,
     TelegramBackend,
+    _header_safe,
 )
 from modules.persistence import DetectionEvent  # noqa: E402
 
@@ -202,6 +203,59 @@ def test_ntfy_send_calls_correct_url():
         assert call_args[1]["headers"]["Title"] == "Title"
         assert call_args[1]["headers"]["Priority"] == "high"
         assert call_args[1]["headers"]["Tags"] == "tag1"
+
+
+def _is_latin1_safe(value: str) -> bool:
+    """True if *value* can be placed in an HTTP/1.1 header without crashing."""
+    try:
+        value.encode("latin-1")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def test_header_safe_transliterates_em_dash():
+    # The exact title that crashed poll-kismet in the 2026-06-02 soak (#57).
+    out = _header_safe("Persistent Device — HIGH")
+    assert out == "Persistent Device - HIGH"
+    assert _is_latin1_safe(out)
+
+
+def test_header_safe_replaces_arbitrary_unicode_device_name():
+    # A Kismet device name / SSID with CJK + emoji must not crash a header.
+    out = _header_safe("ネットワーク 📡 café")
+    assert _is_latin1_safe(out)
+
+
+def test_ntfy_send_unicode_title_is_header_safe():
+    # Regression for #57: a unicode title must reach requests as a latin-1
+    # header value, never raising UnicodeEncodeError.
+    with patch.dict(os.environ, {"NTFY_TOPIC": "test-topic"}):
+        backend = NtfyBackend()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
+            result = backend.send("Persistent Device — HIGH", "body", tags=["wifi—alert"])
+        assert result is True
+        headers = mock_post.call_args[1]["headers"]
+        assert _is_latin1_safe(headers["Title"])
+        assert _is_latin1_safe(headers["Tags"])
+
+
+def test_ntfy_persistence_alert_with_unicode_device_name_does_not_crash():
+    # End-to-end: a persistence event carrying a unicode device name/manufacturer
+    # must send without raising (the title also carries the em-dash).
+    with patch.dict(os.environ, {"NTFY_TOPIC": "test-topic"}):
+        backend = NtfyBackend()
+        event = _make_event(device_type="スマホ 📱", manufacturer="Beställa—AB")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status.return_value = None
+        with patch("modules.alerts.requests.post", return_value=mock_resp) as mock_post:
+            result = backend.send_persistence_alert(event)
+        assert result is True
+        assert _is_latin1_safe(mock_post.call_args[1]["headers"]["Title"])
 
 
 def test_ntfy_send_returns_false_on_http_error():

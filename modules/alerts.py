@@ -77,6 +77,32 @@ _NTFY_PRIORITY = {
     "urgent": "max",
 }
 
+# Common typographic characters that show up in our own titles and in
+# Kismet device names/SSIDs but are not encodable in a latin-1 HTTP header.
+_HEADER_TRANSLITERATIONS = {
+    "—": "-",  # em dash
+    "–": "-",  # en dash
+    "‘": "'",  # left single quote
+    "’": "'",  # right single quote
+    "“": '"',  # left double quote
+    "”": '"',  # right double quote
+    "…": "...",  # ellipsis
+}
+
+
+def _header_safe(value: str) -> str:
+    """Return *value* made safe for an HTTP/1.1 (latin-1) header.
+
+    HTTP header values are latin-1; requests raises ``UnicodeEncodeError`` on
+    anything outside it. Our alert titles use an em dash, and device names /
+    SSIDs from Kismet can carry arbitrary UTF-8. Transliterate the common
+    cases to ASCII, then replace any remaining non-latin-1 character with '?'
+    so the request can never crash the caller (e.g. the poll-kismet task).
+    """
+    for uni, ascii_ in _HEADER_TRANSLITERATIONS.items():
+        value = value.replace(uni, ascii_)
+    return value.encode("latin-1", "replace").decode("latin-1")
+
 
 class RateLimiter:
     """Cooldown tracker with optional JSON persistence across restarts.
@@ -243,9 +269,9 @@ class NtfyBackend(AlertBackend):
             return False
         url = f"{self._server}/{self._topic}"
         headers = {
-            "Title": title,
+            "Title": _header_safe(title),
             "Priority": _NTFY_PRIORITY.get(priority, "default"),
-            "Tags": ",".join(tags) if tags else "",
+            "Tags": _header_safe(",".join(tags) if tags else ""),
         }
         try:
             _post_with_retry(url, data=body.encode("utf-8"), headers=headers)
