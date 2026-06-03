@@ -115,7 +115,7 @@ _SAMPLE_DEVICES = [
         "kismet.device.base.phyname": "IEEE802.11",
         "kismet.device.base.first_time": 1700000000,
         "kismet.device.base.last_time": 1700000060,
-        "kismet.device.base.signal/kismet.common.signal.last_signal": -72,
+        "kismet.common.signal.last_signal": -72,
     }
 ]
 

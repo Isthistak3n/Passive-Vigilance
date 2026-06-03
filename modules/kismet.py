@@ -185,7 +185,9 @@ class KismetModule:
                 "phyname":      entry.get("kismet.device.base.phyname", ""),
                 "first_time":   entry.get("kismet.device.base.first_time", 0),
                 "last_time":    entry.get("kismet.device.base.last_time", 0),
-                "last_signal":  entry.get("kismet.device.base.signal/kismet.common.signal.last_signal", None),
+                # Kismet returns the simplified "a/b" field under its LEAF key,
+                # so read kismet.common.signal.last_signal (not the slash-path).
+                "last_signal":  entry.get("kismet.common.signal.last_signal", None),
                 "gps_lat":      gps_fix["lat"]  if gps_fix else None,
                 "gps_lon":      gps_fix["lon"]  if gps_fix else None,
                 "gps_utc":      gps_fix["utc"]  if gps_fix else None,
