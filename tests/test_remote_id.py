@@ -100,7 +100,7 @@ def _build_kismet_device(
     return {
         "kismet.device.base.macaddr": mac,
         "kismet.device.base.phyname": phy,
-        "kismet.device.base.signal/kismet.common.signal.last_signal": rssi,
+        "kismet.common.signal.last_signal": rssi,
         "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.ie_tag_list": tag_list,
         "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.ie_tag_content": (
             ie_bytes.hex() if ie_bytes else None

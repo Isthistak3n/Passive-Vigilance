@@ -220,7 +220,8 @@ class RemoteIDModule:
 
         source_mac = dev.get("kismet.device.base.macaddr", "")
         source_phy = dev.get("kismet.device.base.phyname", "WiFi")
-        rssi_raw = dev.get("kismet.device.base.signal/kismet.common.signal.last_signal")
+        # Kismet returns the simplified "a/b" field under its LEAF key.
+        rssi_raw = dev.get("kismet.common.signal.last_signal")
         rssi: Optional[int] = int(rssi_raw) if rssi_raw is not None else None
 
         results: list[dict] = []
