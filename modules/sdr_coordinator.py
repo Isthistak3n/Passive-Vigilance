@@ -71,7 +71,7 @@ class SDRCoordinator:
 
     async def _handoff_to_adsb(self) -> None:
         async with self._lock:
-            logger.info("SDR timeshare: handing off to ADS-B (readsb)")
+            logger.debug("SDR timeshare: handing off to ADS-B (readsb)")
             self._drone_rf.can_scan = False
             if self._drone_rf._scan_task and not self._drone_rf._scan_task.done():
                 await self._drone_rf.stop_scan()
@@ -85,7 +85,7 @@ class SDRCoordinator:
 
     async def _handoff_to_drone(self) -> None:
         async with self._lock:
-            logger.info("SDR timeshare: handing off to DroneRF")
+            logger.debug("SDR timeshare: handing off to DroneRF")
             success = await self._stop_readsb_with_handshake()
             if success:
                 self._drone_rf.can_scan = True
