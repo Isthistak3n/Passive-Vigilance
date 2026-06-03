@@ -34,7 +34,7 @@ _DEVICE_FIELDS = [
     "kismet.device.base.phyname",
     "kismet.device.base.first_time",
     "kismet.device.base.last_time",
-    "kismet.device.base.signal/last_signal",
+    "kismet.device.base.signal/kismet.common.signal.last_signal",
 ]
 
 
@@ -185,7 +185,7 @@ class KismetModule:
                 "phyname":      entry.get("kismet.device.base.phyname", ""),
                 "first_time":   entry.get("kismet.device.base.first_time", 0),
                 "last_time":    entry.get("kismet.device.base.last_time", 0),
-                "last_signal":  entry.get("kismet.device.base.signal/last_signal", None),
+                "last_signal":  entry.get("kismet.device.base.signal/kismet.common.signal.last_signal", None),
                 "gps_lat":      gps_fix["lat"]  if gps_fix else None,
                 "gps_lon":      gps_fix["lon"]  if gps_fix else None,
                 "gps_utc":      gps_fix["utc"]  if gps_fix else None,

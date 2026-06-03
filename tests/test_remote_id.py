@@ -100,7 +100,7 @@ def _build_kismet_device(
     return {
         "kismet.device.base.macaddr": mac,
         "kismet.device.base.phyname": phy,
-        "kismet.device.base.signal/last_signal": rssi,
+        "kismet.device.base.signal/kismet.common.signal.last_signal": rssi,
         "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.ie_tag_list": tag_list,
         "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.ie_tag_content": (
             ie_bytes.hex() if ie_bytes else None
@@ -265,6 +265,8 @@ async def test_poll_returns_detection_for_wifi_device(module):
     assert abs(d["drone_lat"] - 51.5) < 0.01
     assert abs(d["drone_lon"] - (-0.1)) < 0.01
     assert d["drone_alt_m"] is not None
+    # Guard the same #51 nested-key bug here: RSSI must be read, not dropped to None.
+    assert d["rssi"] == -65
 
 
 @pytest.mark.asyncio

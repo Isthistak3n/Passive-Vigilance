@@ -115,7 +115,7 @@ _SAMPLE_DEVICES = [
         "kismet.device.base.phyname": "IEEE802.11",
         "kismet.device.base.first_time": 1700000000,
         "kismet.device.base.last_time": 1700000060,
-        "kismet.device.base.signal/last_signal": -72,
+        "kismet.device.base.signal/kismet.common.signal.last_signal": -72,
     }
 ]
 
@@ -160,6 +160,9 @@ class TestKismetModulePollDevices(unittest.TestCase):
                       "first_time", "last_time", "last_signal",
                       "gps_lat", "gps_lon", "gps_utc"):
             self.assertIn(field, device, f"missing field: {field}")
+        # Guard #51: signal must be read from the real nested leaf key,
+        # not dropped to None. Mock mirrors Kismet's actual field path.
+        self.assertEqual(device["last_signal"], -72)
         _run(km.close())
 
     @patch("modules.kismet.aiohttp.ClientSession")
