@@ -234,7 +234,19 @@ class PassiveVigilance:
         self.sdr_mode = resolve_sdr_mode(sdr_env, sdr_count)
         self.sensor_orchestrator.sdr_mode = self.sdr_mode
 
-        if self.sdr_mode == SDRMode.DEDICATED:
+        drone_enabled = os.getenv("DRONE_RF_ENABLED", "true").strip().lower() in ("true", "1", "yes", "on")
+
+        if not drone_enabled:
+            # DroneRF disabled (DRONE_RF_ENABLED=false): no SDR time-share, no native
+            # RTL-SDR scan path. readsb keeps the dongle full-time for ADS-B. This is the
+            # stable fallback while the DroneRF/libusb SIGSEGV (issue #63) is unresolved.
+            logger.info("DroneRF disabled (DRONE_RF_ENABLED=false) — readsb-only, no SDR time-share")
+            try:
+                await self.adsb.connect()
+                self._adsb_active = True
+            except Exception as exc:
+                logger.warning("readsb: unavailable (%s) — ADS-B disabled", exc)
+        elif self.sdr_mode == SDRMode.DEDICATED:
             logger.info("SDR mode: DEDICATED (%d dongle(s) detected) — ADS-B and DroneRF run simultaneously", sdr_count)
             try:
                 await self.adsb.connect()
@@ -283,12 +295,12 @@ class PassiveVigilance:
 
     async def shutdown(self) -> None:
         logger.info("Shutdown initiated — saving session data...")
-        if self.sdr_mode == SDRMode.SHARED:
+        if self._sdr_coordinator_active:
             try:
                 await self.sdr_coordinator.stop()
             except Exception as exc:
                 logger.debug("SDR coordinator stop error: %s", exc)
-        else:
+        elif self._drone_active:
             try:
                 await self.drone_rf.stop_scan()
             except Exception as exc:
