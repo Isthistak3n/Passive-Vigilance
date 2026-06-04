@@ -25,7 +25,7 @@ Single-dongle setup → SDR runs in **SHARED** time-share mode (readsb ADS-B and
 
 ## 2. Live-hardware functional test (6 phases)
 
-Functional verification on real hardware. **5 of 6 phases PASS;** the two degraded results are environmental/hardware, not software defects:
+Functional verification on real hardware. **4 of 6 phases PASS.** Drone RF **fails** under sustained operation (a native SIGSEGV — §4, #63); ADS-B + Bluetooth are environmentally/hardware-degraded, not code faults:
 
 | Phase | Result | Notes |
 |---|---|---|
@@ -33,7 +33,7 @@ Functional verification on real hardware. **5 of 6 phases PASS;** the two degrad
 | WiFi / Kismet capture | ✅ PASS | Thousands of devices captured and tracked |
 | Persistence / scoring | ✅ PASS | Engine scores and surfaces devices (gating behavior characterized — see §5) |
 | GUI / map | ✅ PASS | Flask dashboard, live SSE, Leaflet map serve and populate |
-| Drone RF | ✅ PASS | R820T tuner sweeps configured bands under the SHARED duty cycle |
+| Drone RF | ❌ FAIL (sustained) | Tuner initializes and a sweep starts, but the scan path segfaults natively (`SIGSEGV`) within ~1 cycle under sustained operation — see §4 / #63. Disabled via `DRONE_RF_ENABLED=false` (#64). |
 | ADS-B + Bluetooth | ⚠️ Degraded | ADS-B limited by single-dongle time-share + local traffic; BT pending dongle. Environmental/hardware, not a code fault. |
 
 ---
@@ -60,19 +60,47 @@ After ~20 h of zero restarts, the orchestrator entered a tight crash loop: **0 �
 ### Initial (wrong) hypothesis
 The ~75 s cadence matched the SDR time-share handoff, so the single-dongle thrash was the first suspect. We could not confirm it: the SDR coordinator logged a full handoff/duty cycle every ~75 s, flooding the journal (~149 MB / 2 h) and rotating the crash window out before it could be read.
 
-### Actual root cause — found, confirmed, fixed
-After making journald persistent and reducing the log spam, a restart surfaced the real fault directly:
+### Root cause — corrected 2026-06-03
+
+**Correction.** An earlier version of this report named the ntfy unicode bug (below) as the
+crash-loop cause and "exonerated" the SDR time-share. **That was wrong.** The ntfy bug is real
+and is fixed, but it was *not* what crash-looped the node. Once journald was genuinely
+persistent, the actual fault was captured: a native segfault, not a Python exception.
+
+**The red herring (a real but separate bug).** A first pass surfaced a Python exception:
+`UnicodeEncodeError: 'latin-1' codec can't encode character '—'` in `poll-kismet`. The ntfy
+backend put the alert title (em dash, U+2014) into a latin-1 HTTP `Title` header, raising on
+any persistence/aircraft alert. It is genuinely broken and is fixed (#58 — header values
+sanitized; regression tests for a unicode title and a unicode device name). But it is a
+separate, lower-frequency fault, not the crash loop.
+
+**The actual cause.** Persistent journald never engaged at first — a Raspberry Pi OS
+`40-rpi-volatile-storage` drop-in silently overrode the setting (fixed in #61). Once it was
+truly persistent, a clean production-config soak crash-looped to **278 restarts** and the
+journal captured the real signal — **`SIGSEGV` (status=11/SEGV), not a Python exception** —
+every ~73 s at the SDR time-share cadence:
 
 ```
-ERROR __main__: Task poll-kismet raised UnicodeEncodeError:
-'latin-1' codec can't encode character '—' in position 18
+Found Rafael Micro R820T tuner
+[R82XX] PLL not locked!
+INFO modules.drone_rf: Drone RF scan started
+libusb: debug [libusb_submit_transfer] transfer 0x...
+systemd: Main process exited, code=killed, status=11/SEGV
 ```
 
-The ntfy alert backend put the alert **title** into the HTTP `Title` header. HTTP/1.1 headers are latin-1, and the title `"Persistent Device — {LEVEL}"` contains an em dash (U+2014) at position 18. Every ntfy persistence/aircraft alert raised `UnicodeEncodeError`, which killed the `poll-kismet` task; the orchestrator treated that as fatal and restarted, and the in-memory rate limiter reset on each restart → the next poll re-fired → the crash loop. Device names / SSIDs carrying UTF-8 would trip the same path.
+This is a **native segfault in the RTL-SDR / libusb / pyrtlsdr stack during DroneRF scanning**
+(issue #63). Being native, it produces no Python traceback, can't be caught in Python, kills
+the single-process orchestrator, and systemd restarts it → loop. **The SDR time-share
+hypothesis was correct, not exonerated.**
 
-The soak's loosened detection threshold (lowered to populate the GUI for observation) is what made alerts fire and exposed the latent bug; at the production threshold alerts are rare, which is why it took ~20 h to hit.
+**Mitigation.** A `DRONE_RF_ENABLED=false` switch (#64) lets the node run capture + GUI +
+ADS-B stably without the crashing scan path (validated live: NRestarts 0, zero SEGV). The
+durable fix (#63) is to isolate DroneRF in a subprocess so a native crash can't take down the
+orchestrator.
 
-**The SDR time-share was exonerated.** Fixed in the ntfy backend by sanitizing all header-bound values to latin-1-safe (transliterate typographic characters, replace anything else). Regression tests cover a unicode title and a unicode device name.
+**Lesson recorded honestly:** the first diagnosis was confidently wrong because the
+observability to see the real signal (`SIGSEGV`) wasn't actually in place yet. Fixing the
+journal-persistence gap is what surfaced the truth — and is exactly why it was worth fixing.
 
 ---
 
@@ -84,17 +112,24 @@ The soak's loosened detection threshold (lowered to populate the GUI for observa
 
 ---
 
-## 6. Production-config validation soak (in progress)
+## 6. Production-config validation soak — crash-looped (this exposed the real cause)
 
-A follow-up soak is running at **production configuration** (alert threshold 0.7, ntfy backend) with the ntfy fix in place, to confirm the node runs clean at production settings without the bug. Early state: stable, `throttled=0x0`, 55.5 °C, mode-3 GPS, NRestarts 0, capture active.
+The follow-up soak ran at **production configuration** (alert threshold 0.7, ntfy fix in place)
+to confirm clean operation. It did **not** stay clean. It held power `0x0` and showed no memory
+leak, but crash-looped to **278 `SIGSEGV` restarts** over ~13 h — and that is precisely what
+captured the true root cause (§4): the native DroneRF/libusb segfault (#63), now mitigated by
+`DRONE_RF_ENABLED=false` (#64). An earlier draft of this section ("stable, NRestarts 0")
+reflected only the first ~15 minutes and was premature.
 
 ---
 
 ## 7. Conclusion
 
-Core functions are **validated on real hardware**: GPS, WiFi/Kismet capture, persistence scoring, the web GUI/map, and Drone RF all pass. Over a 12-hour soak, **power (0x0), thermal (55.5 °C peak), GPS (mode-3 throughout), and memory (no leak) were all solid.** One stability defect surfaced — an episodic crash loop — which was **root-caused to a unicode-in-HTTP-header bug in the ntfy alert path and fixed**; the SDR time-share initially suspected was exonerated. ADS-B and Bluetooth were environmentally/hardware-limited, not software faults.
+Core capture functions are **validated on real hardware**: GPS, WiFi/Kismet capture, persistence scoring, and the web GUI/map all pass. Over the soak, **power (0x0), thermal (55.5 °C peak), GPS (mode-3 throughout), and memory (no leak) were all solid.**
 
-The honest summary: the platform's measured hardware behavior is solid, and the one real software defect found during the soak was diagnosed and fixed rather than papered over.
+The stability story is the honest one. An episodic crash loop was first **misdiagnosed** as an ntfy unicode bug — a real but *separate* fault (fixed in #58) — and the SDR time-share was wrongly exonerated. Once journald persistence was actually working (#61, after an RPi drop-in had silently overridden it), the true cause was captured: a **native `SIGSEGV` in the RTL-SDR / libusb DroneRF scan path** (#63). **DroneRF is therefore the one function that does not currently pass on this hardware**; it is disabled via `DRONE_RF_ENABLED=false` (#64) so the rest of the node runs stably, pending the durable fix (isolating DroneRF in a subprocess so a native crash can't kill the orchestrator). ADS-B and Bluetooth were environmentally/hardware-limited.
+
+The honest summary: capture, GPS, power, thermal, and memory are solid; the DroneRF scan path has a native crash under investigation (#63); and this report's *first* crash diagnosis was wrong and is corrected here rather than quietly dropped.
 
 ---
 
@@ -102,9 +137,10 @@ The honest summary: the platform's measured hardware behavior is solid, and the 
 
 | Item | Status |
 |---|---|
-| ntfy unicode header crash | Issue #57 → fixed in PR #58 |
+| **DroneRF native SIGSEGV crash loop (actual crash-loop cause)** | **Issue #63 — open; mitigated by `DRONE_RF_ENABLED=false` (PR #64); durable fix = subprocess isolation** |
+| ntfy unicode header crash (separate bug, not the crash loop) | Issue #57 → fixed in PR #58 |
 | Kismet `last_signal` correct field | PR #54 (merged) + PR #59 (leaf-key correction, live-validated) |
-| SDR/DroneRF log spam → DEBUG | PR #56 |
-| journald persistent (500 MB) | Applied on node |
-| GUI port-bind race | #49 — deferred (needs persistent journal to observe) |
-| Persistence gate on stationary node | Tracked for the fixed-node use case (#50 design decision) |
+| SDR/DroneRF log spam → DEBUG | PR #56 (merged) |
+| journald persistent (500 MB) — RPi volatile drop-in override | PR #61 (merged); this is what captured #63 |
+| GUI port-bind race | #49 — deferred |
+| Fixed vs. mobile detection modes / stationary persistence gate | Design spec PR #62; tracked in #50 |
