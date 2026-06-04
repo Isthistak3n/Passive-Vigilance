@@ -205,6 +205,25 @@ PI_USER="$PI_USER" envsubst '$PI_USER' \
   < "$REPO_DIR/deploy/passive-vigilance.service" \
   > /etc/systemd/system/passive-vigilance.service
 
+# ── 7b. Persistent journald (so a crash window survives) ───────────────────
+# Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
+# which forces Storage=volatile — logs live in RAM and are lost on reboot, to spare
+# the SD card. That drop-in overrides /etc/systemd/journald.conf, so editing the main
+# file has no effect. We add a higher-priority /etc drop-in (99- sorts last) so logs
+# persist across reboots for crash diagnosis, capped at 500M to bound SD-card wear.
+echo "$LOG Enabling persistent journald (capped at 500M)..."
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/99-persistent.conf << 'JOURNALD'
+[Journal]
+Storage=persistent
+SystemMaxUse=500M
+JOURNALD
+mkdir -p /var/log/journal
+# Set correct ownership/ACLs on the journal dir, then apply the new config.
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
+systemctl restart systemd-journald
+journalctl --flush 2>/dev/null || true
+
 # ── 8. Enable services ─────────────────────────────────────────────────────
 echo "$LOG Enabling services..."
 systemctl daemon-reload
