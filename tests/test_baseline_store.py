@@ -103,3 +103,62 @@ def test_baseline_count_counts_pre_freeze_profiles(tmp_path):
     assert store.baseline_count() == 2
     assert store.profile_count() == 3
     store.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — reserved columns now populated (hour mask + signal stats)
+# ---------------------------------------------------------------------------
+
+
+def test_upsert_accumulates_hour_mask(tmp_path):
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=72, now=T0)
+    store.upsert("mac:a", T0)                       # hour 0
+    store.upsert("mac:a", T0 + timedelta(hours=5))  # hour 5
+    p = store.get_profile("mac:a")
+    assert p.hour_mask == (1 << 0) | (1 << 5)
+    store.close()
+
+
+def test_upsert_signal_stats_welford_and_none_skipped(tmp_path):
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=72, now=T0)
+    store.upsert("mac:a", T0, last_signal=-50)
+    store.upsert("mac:a", T0, last_signal=-60)
+    store.upsert("mac:a", T0, last_signal=None)   # skipped, not counted
+    p = store.get_profile("mac:a")
+    assert p.signal_count == 2
+    assert p.signal_mean == -55.0
+    assert p.signal_var == 25.0                    # population variance of [-50, -60]
+    store.close()
+
+
+def test_accumulate_baseline_false_freezes_stats_but_advances_recency(tmp_path):
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=72, now=T0)
+    store.upsert("mac:a", T0, last_signal=-50)                       # baseline
+    store.upsert("mac:a", T0 + timedelta(hours=9), last_signal=-90,
+                 accumulate_baseline=False)                          # post-freeze
+    p = store.get_profile("mac:a")
+    assert p.hour_mask == (1 << 0)        # hour 9 NOT added to baseline
+    assert p.signal_count == 1            # -90 NOT counted
+    assert p.signal_mean == -50.0
+    assert p.observation_count == 2       # recency still advanced
+    store.close()
+
+
+def test_phase2_stats_survive_reopen_and_keep_accumulating(tmp_path):
+    db = str(tmp_path / "b.db")
+    s1 = BaselineStore(db, baseline_hours=72, now=T0)
+    s1.upsert("mac:a", T0, last_signal=-50)
+    s1.upsert("mac:a", T0 + timedelta(hours=3), last_signal=-54)
+    s1.close()
+
+    s2 = BaselineStore(db, baseline_hours=72, now=T0 + timedelta(hours=1))
+    p = s2.get_profile("mac:a")
+    assert p.hour_mask == (1 << 0) | (1 << 3)
+    assert p.signal_count == 2
+    assert p.signal_mean == -52.0
+    # Welford accumulator resumes correctly across the restart.
+    s2.upsert("mac:a", T0 + timedelta(hours=7), last_signal=-52)
+    p2 = s2.get_profile("mac:a")
+    assert p2.hour_mask == (1 << 0) | (1 << 3) | (1 << 7)
+    assert p2.signal_count == 3
+    s2.close()
