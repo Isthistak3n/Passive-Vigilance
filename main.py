@@ -26,6 +26,7 @@ from modules.drone_rf import DroneRFModule
 from modules.gps import GPSModule
 from modules.ignore_list import IgnoreList
 from modules.kismet import KismetModule
+from modules.fixed_scoring import FixedScoring
 from modules.orchestrator import SensorOrchestrator
 from modules.persistence import PersistenceEngine
 from modules.probe_analyzer import ProbeAnalyzer
@@ -46,10 +47,60 @@ _VERSION = "0.4.3-alpha"
 _SESSION_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
 _RATE_LIMIT_PERSIST = "data/rate_limits.json"
 
+_VALID_NODE_MODES = ("fixed", "mobile")
+
+
+def resolve_node_mode(env_value: Optional[str], cli_mode: Optional[str]) -> str:
+    """Resolve the node's scoring mode, failing loud rather than guessing.
+
+    Precedence (design 2.1 — explicit, required, no silent default):
+      1. ``NODE_MODE`` from the environment, if set and valid — wins.
+      2. else the ``--mode`` CLI flag, if valid.
+      3. else abort: the node was never told whether it is fixed or mobile.
+
+    A present-but-invalid ``NODE_MODE`` is itself a misconfiguration and aborts;
+    it does not silently fall through to the flag ("fail loud, never guess").
+
+    Raises:
+        SystemExit: when no valid mode can be resolved.
+    """
+    if env_value is not None and env_value.strip():
+        v = env_value.strip().lower()
+        if v in _VALID_NODE_MODES:
+            return v
+        logger.error(
+            "NODE_MODE=%r is not valid — must be one of %s. Refusing to start.",
+            env_value, " | ".join(_VALID_NODE_MODES),
+        )
+        raise SystemExit(2)
+
+    if cli_mode is not None:
+        v = cli_mode.strip().lower()
+        if v in _VALID_NODE_MODES:
+            return v
+        logger.error(
+            "--mode %r is not valid — must be one of %s. Refusing to start.",
+            cli_mode, " | ".join(_VALID_NODE_MODES),
+        )
+        raise SystemExit(2)
+
+    logger.error(
+        "Node mode not configured. Set NODE_MODE=fixed|mobile in .env or pass "
+        "--mode fixed|mobile. There is NO default — a fixed node run as mobile "
+        "never alerts (#50); a mobile node run as fixed flags everything. "
+        "Refusing to enter scoring under an assumed mode.",
+    )
+    raise SystemExit(2)
+
 
 class PassiveVigilance:
 
-    def __init__(self) -> None:
+    def __init__(self, cli_mode: Optional[str] = None) -> None:
+        # Resolve the scoring mode first — fail loud BEFORE constructing any
+        # sensor modules or the scoring engine (design 2.1). .env wins over the
+        # --mode flag; an unset/invalid mode aborts startup here.
+        self.node_mode: str = resolve_node_mode(os.getenv("NODE_MODE"), cli_mode)
+
         self.session_id: str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.session_start: datetime = datetime.now(timezone.utc)
         self._stop: asyncio.Event = asyncio.Event()
@@ -65,7 +116,15 @@ class PassiveVigilance:
         self.adsb = ADSBModule(gps_module=self.gps)
         self.drone_rf = DroneRFModule(gps_module=self.gps)
         self.sdr_coordinator: SDRCoordinator = SDRCoordinator(self.drone_rf)
-        self.persistence = PersistenceEngine()
+        # Scoring engine forked by mode: fixed = baseline-deviation (durable
+        # SQLite), mobile = location-diversity (existing PersistenceEngine).
+        # The orchestrator calls .update() on whichever is injected here.
+        if self.node_mode == "fixed":
+            self.persistence = FixedScoring()
+            logger.info("NODE_MODE=fixed — baseline-deviation scoring (FixedScoring)")
+        else:
+            self.persistence = PersistenceEngine()
+            logger.info("NODE_MODE=mobile — location-diversity scoring (PersistenceEngine)")
         self.probe_analyzer = ProbeAnalyzer()
         self.remote_id = RemoteIDModule(gps_module=self.gps)
         self.alert_backend = AlertFactory.get_backend(persist_path=_RATE_LIMIT_PERSIST)
@@ -441,5 +500,15 @@ class PassiveVigilance:
 
 
 if __name__ == "__main__":
-    orchestrator = PassiveVigilance()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Passive Vigilance sensor orchestrator")
+    parser.add_argument(
+        "--mode",
+        choices=_VALID_NODE_MODES,
+        default=None,
+        help="Node scoring mode (fixed|mobile). NODE_MODE in .env takes precedence.",
+    )
+    args = parser.parse_args()
+    orchestrator = PassiveVigilance(cli_mode=args.mode)
     asyncio.run(orchestrator.run())
