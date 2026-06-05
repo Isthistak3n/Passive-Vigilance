@@ -14,6 +14,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from modules.scoring_engine import ScoringEngine
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,7 @@ class DetectionEvent:
     mac_type: str = "static"    # "static" | "randomized"
 
 
-class PersistenceEngine:
+class PersistenceEngine(ScoringEngine):
     """Multi-window device persistence scorer for counter-surveillance detection.
 
     Call :meth:`update` on every ``poll_devices()`` result.  Devices whose
@@ -430,3 +432,21 @@ class PersistenceEngine:
             "oldest_observation":    min(all_ts) if all_ts else None,
             "newest_observation":    max(all_ts) if all_ts else None,
         }
+
+    def status(self) -> dict:
+        """Return engine state for health logging / the GUI (ScoringEngine API).
+
+        Thin wrapper over :meth:`stats` tagged with the mode so callers can frame
+        results without knowing the concrete engine.
+        """
+        s = self.stats()
+        return {
+            "mode": "mobile",
+            "total_devices_tracked": s["total_devices_tracked"],
+            "suspicious_count": s["suspicious_count"],
+        }
+
+
+# Design vocabulary: the existing PersistenceEngine *is* the mobile
+# (location-diversity) scoring strategy. Exposed under its design name.
+MobileScoring = PersistenceEngine

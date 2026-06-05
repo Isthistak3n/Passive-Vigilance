@@ -57,6 +57,9 @@ def orch(tmp_path):
         "SESSION_OUTPUT_DIR": str(tmp_path),
         # Speed up GPS startup wait loop — no real device available in tests
         "GPS_STARTUP_TIMEOUT_SECONDS": "0",
+        # NODE_MODE is now required (fail-loud); mobile keeps PersistenceEngine
+        # as the injected engine, which these tests patch via main.PersistenceEngine.
+        "NODE_MODE": "mobile",
     }
 
     with (
