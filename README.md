@@ -1,9 +1,9 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-280%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-331%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.4.2--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
+[![Release](https://img.shields.io/badge/release-v0.4.3--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
 
 > A passive RF/WiFi/BT/ADS-B sensor platform for counter-surveillance,
@@ -33,8 +33,12 @@ with any device or network.**
 
 ## Use cases
 
-- **Counter-surveillance** — detect devices that follow you across multiple
-  locations using WiFi and Bluetooth beacon persistence scoring
+- **Counter-surveillance (mobile)** — detect devices that follow you across
+  multiple locations using WiFi and Bluetooth beacon persistence scoring
+- **Counter-surveillance (fixed / leave-behind)** — deploy as a stationary
+  sensor that learns the location's normal RF "pattern of life," then flags
+  devices that deviate from it — new devices that appear and linger (see
+  [Detection modes](#detection-modes))
 - **Drone detection** — alert when drone command link frequencies
   (433 MHz, 868 MHz, 915 MHz, 2.4 GHz) are active in your area
 - **Aircraft awareness** — track aircraft overhead with full registration,
@@ -75,7 +79,7 @@ flowchart TD
         KIS[KismetModule\\nREST API poll]
         GPSM[GPSModule\\nfit quality]
         IGNORE[IgnoreList\\nMAC/OUI/SSID filter]
-        PERSIST[PersistenceEngine\\ntime-window scoring]
+        PERSIST[ScoringEngine\\nMobile or Fixed mode]
         PROBE[ProbeAnalyzer\\nSSID patterns]
     end
     subgraph Outputs
@@ -110,6 +114,49 @@ flowchart TD
 
 ---
 
+## Detection modes
+
+Counter-surveillance means different things depending on whether the sensor is
+**moving** or **stationary**, so the scoring strategy forks on a required
+`NODE_MODE` setting. There is **no default** — the node refuses to start scoring
+under an assumed mode (set `NODE_MODE` in `.env`, or pass `--mode fixed|mobile`).
+
+| Mode | Question it answers | The signal |
+|------|---------------------|------------|
+| `mobile` | *"Does this device follow me across locations?"* | A device seen at many of the places you go (location diversity). The original wardriving / on-person model — unchanged. |
+| `fixed` | *"What deviates from this location's normal?"* | A device that was **not** part of the learned baseline and now appears and lingers (novelty). The base-station / leave-behind model. |
+
+A fixed node run under mobile scoring never alerts — a stationary sensor only
+ever produces one location cluster, so every device forfeits the location signal.
+That is exactly why mode is an explicit, fail-loud deployment choice.
+
+**Fixed mode — pattern of life (Phase 1):**
+
+- On first start the node enters a **baseline learning window**
+  (`FIXED_BASELINE_HOURS`, default 72h), characterising the environment's normal
+  RF devices before it begins flagging.
+- After the window freezes, **novel-persistent** devices — never seen during
+  baseline, now present and lingering — are flagged.
+- Devices are keyed by MAC (stable) or by **probe-SSID fingerprint** (randomized
+  MACs), so one logical device's rotating MACs map to a single profile.
+- The baseline persists to **SQLite** and survives restarts and reboots — a
+  crash loop resumes the existing learning window instead of resetting it, so the
+  node still eventually alerts. The learning start time is durable and never
+  recomputed on boot.
+
+**Switching modes from the dashboard:** when the optional web GUI is enabled with
+a `GUI_TOKEN` set, the dashboard header has a small **Mode** control to write
+`NODE_MODE` to `.env`. Mode is read once at startup, so the control makes the
+**restart requirement explicit** — the running node keeps its current mode until
+it is restarted.
+
+> Roadmap: later phases add egregious-during-baseline alerting, off-schedule /
+> abnormal-dwell / approaching-signal detection, slow baseline adaptation, and
+> WiGLE resident-vs-visitor enrichment. See
+> [docs/design-detection-modes.md](docs/design-detection-modes.md).
+
+---
+
 ## Project status
 
 | Module | Status | Description |
@@ -122,14 +169,15 @@ flowchart TD
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
 | MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
 | Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 27 tests |
+| Detection modes | ✅ Phase 1 | `NODE_MODE` selector, ScoringEngine interface, FixedScoring novelty, durable SQLite baseline — 33 tests |
 | Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 24 tests |
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
 | KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
-| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream — 15 tests |
+| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle — 34 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown — 28 tests |
 
-**280 tests passing** across all modules.
+**331 tests passing** across all modules.
 
 ---
 
@@ -169,8 +217,12 @@ After install, follow the on-screen prompts to:
 ```bash
    nano .env
 ```
+   Set `NODE_MODE` to `fixed` or `mobile` — this is **required** and has no
+   default; the node refuses to start scoring without it (see
+   [Detection modes](#detection-modes)).
    To enable the optional web dashboard, set `GUI_ENABLED=true` in `.env`
-   then open `http://[pi-ip]:8080` in any browser.
+   then open `http://[pi-ip]:8080` in any browser. Set `GUI_TOKEN` as well if
+   you want to use the in-dashboard mode toggle.
 3. Add your own devices to the ignore list to reduce noise:
 ```bash
    python3 scripts/manage_ignore_list.py --import-kismet
@@ -210,13 +262,16 @@ Passive-Vigilance/
 │   ├── mac_utils.py                  # MAC randomization detection, type classification, fingerprinting
 │   ├── alerts.py                     # AlertBackend ABC + Ntfy / Telegram / Discord / Console backends
 │   ├── kml_writer.py                 # KMLWriter — Google Earth KML with color-coded placemarks and track lines
-│   ├── persistence.py                # PersistenceEngine — time-window scoring; DetectionEvent dataclass
+│   ├── persistence.py                # PersistenceEngine — mobile (location-diversity) scoring; DetectionEvent dataclass
+│   ├── scoring_engine.py             # ScoringEngine ABC — strategy interface (update + status) selected by NODE_MODE
+│   ├── fixed_scoring.py              # FixedScoring — fixed-node baseline-deviation (novelty) scoring
+│   ├── baseline_store.py             # BaselineStore — durable SQLite baseline; crash-safe learning window
 │   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
 │   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
 │   ├── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
 ├── gui/
 │   ├── __init__.py                   # Empty package marker
-│   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*
+│   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*; mode toggle (/api/mode)
 │   ├── templates/
 │   │   └── index.html                # Dark-theme SPA; 5 tabs; Leaflet map; SSE client
 │   └── static/
@@ -232,6 +287,10 @@ Passive-Vigilance/
 │   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
 │   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
+│   ├── test_node_mode.py             # 10 tests — NODE_MODE resolution + fail-loud
+│   ├── test_scoring_engine.py        # 6 tests — ScoringEngine interface conformance
+│   ├── test_fixed_scoring.py         # 10 tests — FixedScoring novelty detection
+│   ├── test_baseline_store.py        # 7 tests — durable SQLite baseline + crash-loop regression
 │   ├── test_kml_writer.py            # 14 tests — KMLWriter
 │   ├── test_shapefile.py             # 7 tests — ShapefileWriter
 │   ├── test_wigle.py                 # 7 tests — WiGLEUploader
@@ -239,7 +298,7 @@ Passive-Vigilance/
 │   ├── test_sdr_handoff.py           # SDRCoordinator handoff tests
 │   ├── test_remote_id.py             # RemoteIDModule tests
 │   ├── test_orchestrator.py          # 28 tests — PassiveVigilance orchestrator
-│   ├── test_gui.py                   # 15 tests — GUIServer
+│   ├── test_gui.py                   # 34 tests — GUIServer + mode toggle
 │   └── test_alerts.py                # 24 tests — AlertEngine
 ├── scripts/
 │   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
@@ -271,6 +330,9 @@ Key variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
+| `NODE_MODE` | **Required** scoring mode: `fixed` or `mobile` (no default — node refuses to start without it) | — |
+| `FIXED_BASELINE_HOURS` | Fixed mode: baseline learning window before novelty flagging begins | `72` |
+| `BASELINE_DB_PATH` | Fixed mode: durable baseline SQLite path (blank = `data/baseline.db`) | — |
 | `KISMET_API_KEY` | Generated in Kismet web UI at `:2501` | — |
 | `WIGLE_API_NAME` | WiGLE.net account API name | — |
 | `WIGLE_API_KEY` | WiGLE.net account API key | — |
@@ -288,6 +350,7 @@ Key variables:
 | `DRONE_RF_MAX_TEMP_C` | CPU temp threshold that doubles rest period | `75` |
 | `GUI_ENABLED` | Enable live web dashboard | `false` |
 | `GUI_PORT` | Web dashboard port | `8080` |
+| `GUI_TOKEN` | Bearer/`?token=` for the dashboard; **required** to use the mode toggle | — |
 
 ---
 
