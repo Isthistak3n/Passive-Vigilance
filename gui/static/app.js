@@ -186,6 +186,65 @@ async function pollStatus() {
 setInterval(pollStatus, 5000);
 pollStatus();
 
+// ── Node mode toggle ─────────────────────────────────────────────────────────
+// The dashboard authenticates by carrying ?token=<GUI_TOKEN> in its URL; we
+// reuse it for the control endpoint so POST /api/mode passes check_auth.
+const MODE_TOKEN = new URLSearchParams(location.search).get('token') || '';
+function modeUrl() {
+  return MODE_TOKEN ? `/api/mode?token=${encodeURIComponent(MODE_TOKEN)}` : '/api/mode';
+}
+
+async function initModeControl() {
+  const sel = document.getElementById('mode-select');
+  const btn = document.getElementById('mode-save');
+  const msg = document.getElementById('mode-msg');
+  if (!sel || !btn || !msg) return;
+  try {
+    const r = await fetch(modeUrl());
+    if (r.status === 401) {
+      msg.textContent = 'locked — open with ?token=';
+      return;
+    }
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.mode) sel.value = d.mode;
+    if (!d.control_enabled) {
+      // GUI_TOKEN not set on the node — control is unavailable, not silent.
+      sel.disabled = true;
+      btn.disabled = true;
+      msg.textContent = 'set GUI_TOKEN to enable';
+      return;
+    }
+    sel.disabled = false;
+    btn.disabled = false;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      msg.classList.remove('mode-restart');
+      msg.textContent = 'saving…';
+      try {
+        const resp = await fetch(modeUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: sel.value }),
+        });
+        const body = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          msg.classList.add('mode-restart');
+          msg.textContent = body.message || 'Saved — restart required to take effect.';
+        } else {
+          msg.textContent = body.error || `error (${resp.status})`;
+        }
+      } catch {
+        msg.textContent = 'network error';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  } catch { /* ignore */ }
+}
+
+initModeControl();
+
 // ── Seed from REST on load ───────────────────────────────────────────────────
 async function seedFromRest() {
   const endpoints = [

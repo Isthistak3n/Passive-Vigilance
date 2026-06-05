@@ -1,7 +1,10 @@
 """Unit tests for gui/server.py — GUIServer class."""
 
 import json
+import os
 import queue
+import shutil
+import tempfile
 import threading
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -138,6 +141,193 @@ class TestGUIServerStartWithoutFlask(unittest.TestCase):
         gui._app = None  # simulate missing Flask
         result = gui.start()
         self.assertFalse(result)
+
+
+# A realistic .env with comments, blank lines, and fake secrets. The toggle must
+# touch ONLY the NODE_MODE line and leave everything else byte-for-byte intact.
+FIXTURE_ENV = (
+    "# Passive Vigilance config\n"
+    "LOG_LEVEL=INFO\n"
+    "\n"
+    "# Detection mode\n"
+    "NODE_MODE=mobile\n"
+    "\n"
+    "# secrets — must never be touched\n"
+    "KISMET_API_KEY=KISMET_FAKE_SECRET_abc123\n"
+    "NTFY_TOPIC=my-private-topic\n"
+    "WIGLE_API_KEY=wigle-fake-xyz\n"
+    "\n"
+    "GUI_TOKEN=\n"
+)
+
+
+class TestSurgicalEnvWrite(unittest.TestCase):
+    """write_node_mode / read_node_mode must be surgical and crash-safe."""
+
+    def _env(self, content=FIXTURE_ENV):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, ".env")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return p
+
+    def test_read_node_mode_returns_value(self):
+        from gui.server import read_node_mode
+        self.assertEqual(read_node_mode(self._env()), "mobile")
+
+    def test_read_node_mode_absent_returns_empty(self):
+        from gui.server import read_node_mode
+        p = self._env("LOG_LEVEL=INFO\nKISMET_API_KEY=x\n")
+        self.assertEqual(read_node_mode(p), "")
+
+    def test_replace_preserves_all_other_lines_and_secret(self):
+        from gui.server import write_node_mode
+        p = self._env()
+        write_node_mode("fixed", p)
+        with open(p, encoding="utf-8") as fh:
+            after = fh.read()
+
+        # Only the NODE_MODE line changed; every other line byte-identical.
+        before_lines = FIXTURE_ENV.splitlines(keepends=True)
+        after_lines = after.splitlines(keepends=True)
+        self.assertEqual(len(before_lines), len(after_lines))
+        for b, a in zip(before_lines, after_lines):
+            if b.startswith("NODE_MODE="):
+                self.assertEqual(a, "NODE_MODE=fixed\n")
+            else:
+                self.assertEqual(a, b)  # byte-identical
+
+        # Secrets explicitly survived.
+        self.assertIn("KISMET_API_KEY=KISMET_FAKE_SECRET_abc123\n", after)
+        self.assertIn("NTFY_TOPIC=my-private-topic\n", after)
+        self.assertIn("WIGLE_API_KEY=wigle-fake-xyz\n", after)
+
+    def test_append_when_node_mode_absent(self):
+        from gui.server import read_node_mode, write_node_mode
+        p = self._env("LOG_LEVEL=INFO\nKISMET_API_KEY=keepme\n")
+        write_node_mode("fixed", p)
+        with open(p, encoding="utf-8") as fh:
+            after = fh.read()
+        self.assertIn("KISMET_API_KEY=keepme\n", after)  # untouched
+        self.assertTrue(after.endswith("NODE_MODE=fixed\n"))
+        self.assertEqual(read_node_mode(p), "fixed")
+
+    def test_does_not_match_commented_node_mode(self):
+        from gui.server import write_node_mode
+        p = self._env("# NODE_MODE=mobile\nKISMET_API_KEY=keepme\n")
+        write_node_mode("fixed", p)
+        with open(p, encoding="utf-8") as fh:
+            after = fh.read()
+        self.assertIn("# NODE_MODE=mobile\n", after)      # comment preserved
+        self.assertTrue(after.endswith("NODE_MODE=fixed\n"))  # real value appended
+
+
+class TestModeEndpoint(unittest.TestCase):
+    """POST/GET /api/mode — control endpoint with stricter token rules."""
+
+    def _env(self, content=FIXTURE_ENV):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, ".env")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return p
+
+    def _client(self, token, env_path):
+        # GUI_TOKEN is read in __init__, so patch the env before constructing.
+        with patch.dict(os.environ, {"GUI_TOKEN": token}):
+            from gui.server import GUIServer
+            gui = GUIServer(env_path=env_path)
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping mode-endpoint tests")
+        return gui.app.test_client()
+
+    def _read(self, p):
+        with open(p, encoding="utf-8") as fh:
+            return fh.read()
+
+    # ---- valid writes (token configured + supplied) ----
+
+    def test_post_valid_fixed_writes_env_and_requires_restart(self):
+        p = self._env()
+        client = self._client("secret", p)
+        resp = client.post("/api/mode?token=secret", json={"mode": "fixed"})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertEqual(body["mode"], "fixed")
+        self.assertTrue(body["restart_required"])
+        self.assertIn("RESTART REQUIRED", body["message"])
+        self.assertIn("NODE_MODE=fixed\n", self._read(p))
+
+    def test_post_valid_mobile_writes_env(self):
+        p = self._env("NODE_MODE=fixed\nKISMET_API_KEY=keep\n")
+        client = self._client("secret", p)
+        resp = client.post("/api/mode?token=secret", json={"mode": "mobile"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("NODE_MODE=mobile\n", self._read(p))
+        self.assertIn("KISMET_API_KEY=keep\n", self._read(p))
+
+    def test_post_invalid_value_400_no_write(self):
+        p = self._env()
+        before = self._read(p)
+        client = self._client("secret", p)
+        resp = client.post("/api/mode?token=secret", json={"mode": "wardrive"})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(self._read(p), before)  # unchanged
+
+    # ---- no GUI_TOKEN configured → 403, no write ----
+
+    def test_post_without_token_configured_403_no_write(self):
+        p = self._env()
+        before = self._read(p)
+        client = self._client("", p)  # GUI_TOKEN empty
+        resp = client.post("/api/mode", json={"mode": "fixed"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertIn("GUI_TOKEN", resp.get_json()["error"])
+        self.assertEqual(self._read(p), before)  # no write performed
+
+    # ---- GUI_TOKEN configured but caller unauthenticated → 401 (existing auth) ----
+
+    def test_post_missing_token_401_no_write(self):
+        p = self._env()
+        before = self._read(p)
+        client = self._client("secret", p)
+        resp = client.post("/api/mode", json={"mode": "fixed"})  # no ?token=
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(self._read(p), before)
+
+    def test_post_wrong_token_401_no_write(self):
+        p = self._env()
+        before = self._read(p)
+        client = self._client("secret", p)
+        resp = client.post("/api/mode?token=nope", json={"mode": "fixed"})
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(self._read(p), before)
+
+    # ---- GET reports current mode + whether control is enabled ----
+
+    def test_get_reports_mode_and_control_enabled_with_token(self):
+        p = self._env()
+        client = self._client("secret", p)
+        body = client.get("/api/mode?token=secret").get_json()
+        self.assertEqual(body["mode"], "mobile")
+        self.assertTrue(body["control_enabled"])
+
+    def test_get_control_disabled_when_no_token(self):
+        p = self._env()
+        client = self._client("", p)
+        body = client.get("/api/mode").get_json()
+        self.assertEqual(body["mode"], "mobile")
+        self.assertFalse(body["control_enabled"])
+
+    def test_read_only_endpoints_stay_open_without_token(self):
+        # Guard: the new rule must NOT have tightened read-only routes.
+        p = self._env()
+        client = self._client("", p)
+        for route in ("/api/status", "/api/wifi", "/api/aircraft",
+                      "/api/drone", "/api/alerts"):
+            self.assertEqual(client.get(route).status_code, 200, route)
 
 
 class TestGUIServerAuth(unittest.TestCase):

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import queue
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,73 @@ logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _MAX_RECENT = 200
+
+# Mode values the toggle accepts — must mirror main._VALID_NODE_MODES.
+_VALID_MODES = ("fixed", "mobile")
+
+# Default .env location: project root (gui/ -> repo root), resolved from this
+# file so it matches how the rest of the app loads .env — not a hardcoded path.
+_DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def read_node_mode(env_path) -> str:
+    """Return the NODE_MODE value currently set in *env_path*, or "" if absent.
+
+    Ignores commented-out lines (``# NODE_MODE=...``).
+    """
+    try:
+        text = Path(env_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    for line in text.splitlines():
+        if line.split("=", 1)[0].strip() == "NODE_MODE":
+            return line.split("=", 1)[1].strip() if "=" in line else ""
+    return ""
+
+
+def write_node_mode(mode: str, env_path) -> None:
+    """Surgically set NODE_MODE in *env_path*, preserving everything else.
+
+    Only the ``NODE_MODE=`` assignment line is rewritten in place; if no such
+    line exists it is appended. All other lines, comments, blank lines, ordering
+    and secrets are left byte-for-byte untouched. The write is atomic
+    (temp file in the same directory + ``os.rename``), matching the crash-safe
+    pattern in :class:`modules.ignore_list.IgnoreList`.
+    """
+    path = Path(env_path)
+    try:
+        original = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        original = ""
+
+    lines = original.splitlines(keepends=True)
+    new_lines: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.split("=", 1)[0].strip() == "NODE_MODE":
+            nl = "\n" if line.endswith("\n") else ""
+            new_lines.append(f"NODE_MODE={mode}{nl}")
+            replaced = True
+        else:
+            new_lines.append(line)
+    if not replaced:
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] = new_lines[-1] + "\n"
+        new_lines.append(f"NODE_MODE={mode}\n")
+
+    content = "".join(new_lines)
+    dir_ = str(path.parent)
+    fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.rename(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 class GUIServer:
@@ -35,10 +103,13 @@ class GUIServer:
         host: str = "0.0.0.0",
         port: int = 8080,
         orchestrator=None,
+        env_path=None,
     ) -> None:
         self._host = host
         self._port = port
         self._orchestrator = orchestrator  # weak back-reference for /api/status
+        # .env path the mode toggle writes to; overridable for tests.
+        self._env_path = Path(env_path) if env_path else _DEFAULT_ENV_PATH
 
         self._gui_token: str = os.getenv("GUI_TOKEN", "").strip()
 
@@ -128,6 +199,59 @@ class GUIServer:
         def api_alerts():
             with self._data_lock:
                 return jsonify(list(self._recent_alerts))
+
+        @app.route("/api/mode", methods=["GET", "POST"])
+        def api_mode():
+            """Report (GET) or change (POST) the node's NODE_MODE in .env.
+
+            GET returns the configured mode and whether the control is enabled
+            (a GUI_TOKEN must be set for writes). POST is a control action: it
+            requires GUI_TOKEN to be configured, validates the mode, writes .env
+            surgically, and tells the operator a RESTART is required — NODE_MODE
+            is only read at startup, so a running node keeps its current mode
+            until restarted.
+            """
+            from flask import request as _req
+
+            if _req.method == "GET":
+                return jsonify({
+                    "mode": read_node_mode(self._env_path),
+                    "control_enabled": bool(gui_token),
+                })
+
+            # POST — control action. The before_request check_auth already
+            # enforced the bearer/?token= check when a token IS configured. When
+            # no token is configured, that check is open, so we must refuse here:
+            # control actions must never be reachable unauthenticated.
+            if not gui_token:
+                return jsonify({
+                    "error": "control actions require GUI_TOKEN to be configured",
+                }), 403
+
+            data = _req.get_json(silent=True) or {}
+            mode = str(data.get("mode", "")).strip().lower()
+            if mode not in _VALID_MODES:
+                return jsonify({
+                    "error": f"mode must be one of {' | '.join(_VALID_MODES)}",
+                }), 400
+
+            try:
+                write_node_mode(mode, self._env_path)
+            except Exception as exc:
+                logger.error("Mode toggle: failed to write .env: %s", exc)
+                return jsonify({"error": f"failed to write .env: {exc}"}), 500
+
+            logger.info("Mode toggle: NODE_MODE set to '%s' (restart required)", mode)
+            return jsonify({
+                "mode": mode,
+                "saved": True,
+                "restart_required": True,
+                "message": (
+                    f"NODE_MODE saved as '{mode}'. RESTART REQUIRED to take "
+                    "effect — the node only reads NODE_MODE at startup and will "
+                    "keep running in its current mode until it is restarted."
+                ),
+            })
 
         # TODO(remote-id): Add /api/remote_id endpoint and a Remote ID tab in
         # index.html once RemoteIDModule is wired into the SSE push_event stream.
