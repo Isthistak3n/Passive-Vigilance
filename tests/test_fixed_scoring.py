@@ -1,9 +1,15 @@
-"""Tests for FixedScoring novelty detection (Phase 1)."""
+"""Tests for FixedScoring — novelty (Phase 1) + off-schedule / severity (Phase 2).
+
+Fixture timing note: the learning window is 1h starting at T0 (hour 0), so every
+baseline sighting lands in hour 0 and the baseline hour-mask is {0}. "Known
+device stays silent" tests therefore advance the clock by whole days (+24h) to
+stay in a baselined hour; off-schedule tests advance to a *different* hour.
+"""
 
 from datetime import datetime, timedelta, timezone
 
 from modules.baseline_store import BaselineStore
-from modules.fixed_scoring import FixedScoring
+from modules.fixed_scoring import FixedScoring, _coerce_signal
 from modules.persistence import DetectionEvent
 
 T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
@@ -49,9 +55,9 @@ def test_no_flags_during_learning():
 def test_in_baseline_device_no_alert_after_freeze():
     engine, clock = _clocked_engine(baseline_hours=1.0)
     dev = _static_device()
-    engine.update([dev])               # seen during learning -> baseline
-    clock[0] = T0 + timedelta(hours=2)  # baseline now frozen
-    # Same device reappears repeatedly — it is part of the baseline, not novel.
+    engine.update([dev])                # seen during learning (hour 0) -> baseline
+    clock[0] = T0 + timedelta(hours=24)  # frozen, and back at a baselined hour (0)
+    # Same device, same hour-of-day — part of the baseline, not novel, on-schedule.
     assert engine.update([dev]) == []
     assert engine.update([dev]) == []
 
@@ -75,9 +81,12 @@ def test_novel_persistent_device_flagged():
     ev = events[0]
     assert isinstance(ev, DetectionEvent)
     assert ev.mac == "d8:96:85:99:99:99"
-    assert ev.alert_level == "high"
-    assert ev.score == 1.0
-    assert ev.score_breakdown == {"novelty": 1.0}
+    # Phase 2: novelty alone is now a LOW (suspicious) flag, not hardcoded high.
+    assert ev.alert_level == "suspicious"
+    assert ev.score == 0.5
+    assert ev.score_breakdown == {
+        "novelty": 1.0, "off_schedule": 0.0, "abnormal_dwell": 0.0, "approaching": 0.0,
+    }
     assert ev.locations == []  # no location gate in fixed mode (the #50 bug)
     assert ev.observation_count == 2
     assert ev.manufacturer == "Spy Inc"
@@ -99,7 +108,7 @@ def test_randomized_macs_share_fingerprint_key():
     engine, clock = _clocked_engine(baseline_hours=1.0)
     # Two DIFFERENT randomized MACs sharing a probe SSID -> one logical device.
     engine.update([_random_device("a2:11:11:11:11:11", probe="HomeNet")])  # baseline
-    clock[0] = T0 + timedelta(hours=2)  # frozen
+    clock[0] = T0 + timedelta(hours=24)  # frozen, back at a baselined hour (0)
     # A rotated MAC with the same probe fingerprint is the SAME device -> not novel.
     assert engine.update([_random_device("a6:22:22:22:22:22", probe="HomeNet")]) == []
     assert engine.update([_random_device("ae:33:33:33:33:33", probe="HomeNet")]) == []
@@ -156,3 +165,108 @@ def test_status_reports_learning_then_frozen():
     assert engine.status()["learning"] is True
     clock[0] = T0 + timedelta(hours=2)
     assert engine.status()["learning"] is False
+
+
+# ===========================================================================
+# Phase 2 — off-schedule, graduated severity, baseline signal stats
+# ===========================================================================
+
+
+def test_coerce_signal():
+    assert _coerce_signal(None) is None
+    assert _coerce_signal(-55) == -55.0
+    assert _coerce_signal("-55") == -55.0
+    assert _coerce_signal("nope") is None
+
+
+def test_novelty_alone_flags_suspicious():
+    """No-regression invariant: a Phase-1 novel-persistent device STILL emits an
+    event — now at the LOW (suspicious) level, not silent and not high."""
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)   # frozen immediately; nothing baselined
+    dev = _static_device(mac="d8:96:85:ca:fe:01")
+    assert engine.update([dev]) == []    # 1 sighting — not persistent yet
+    events = engine.update([dev])        # 2 sightings — novel-persistent
+    assert len(events) == 1
+    assert events[0].alert_level == "suspicious"
+    assert events[0].alert_level != "high"
+    assert events[0].score == 0.5
+
+
+def test_off_schedule_new_hour_flags():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:aa:bb:cc")
+    engine.update([dev])                  # baseline at hour 0
+    clock[0] = T0 + timedelta(hours=2)    # frozen, hour 2 (never baselined)
+    events = engine.update([dev])
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.alert_level == "suspicious"
+    assert ev.score == 0.5
+    assert ev.score_breakdown["off_schedule"] == 1.0
+    assert ev.score_breakdown["novelty"] == 0.0
+
+
+def test_off_schedule_same_hour_no_flag():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:aa:bb:cc")
+    engine.update([dev])                   # baseline hour 0
+    clock[0] = T0 + timedelta(hours=24)    # frozen, hour 0 again (on-schedule)
+    assert engine.update([dev]) == []
+
+
+def test_off_schedule_not_applied_to_novel():
+    # A novel device has no baseline schedule — off-schedule must not apply even
+    # when it appears in an hour never seen during baseline.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    engine.update([_static_device(mac="00:11:22:33:44:55")])  # some baseline
+    clock[0] = T0 + timedelta(hours=2)     # frozen, hour 2
+    novel = _static_device(mac="d8:96:85:de:ad:00")
+    engine.update([novel])                 # 1st post-freeze (novel)
+    events = engine.update([novel])        # persists -> flags
+    assert len(events) == 1
+    bd = events[0].score_breakdown
+    assert bd["novelty"] == 1.0
+    assert bd["off_schedule"] == 0.0
+
+
+def test_combine_severity_mapping():
+    combine = FixedScoring._combine
+    base = {"novelty": 0.0, "off_schedule": 0.0, "abnormal_dwell": 0.0, "approaching": 0.0}
+    # one active signal -> suspicious
+    assert combine({**base, "novelty": 1.0}) == (0.5, "suspicious")
+    assert combine({**base, "off_schedule": 1.0}) == (0.5, "suspicious")
+    # two active signals -> likely
+    assert combine({**base, "novelty": 1.0, "off_schedule": 1.0}) == (0.7, "likely")
+    # three -> high (reachable in Phase 2.5 when more signals activate)
+    assert combine({**base, "novelty": 1.0, "off_schedule": 1.0, "abnormal_dwell": 1.0}) == (0.9, "high")
+    # none -> no flag
+    assert combine(base) == (0.0, None)
+
+
+def test_baseline_signal_stats_populated_and_none_skipped():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+
+    def dev(sig):
+        return {"macaddr": "d8:96:85:11:22:33", "manuf": "Acme", "type": "AP", "last_signal": sig}
+
+    engine.update([dev(-50)])
+    engine.update([dev(-60)])
+    engine.update([dev(None)])                       # None -> skipped, not counted
+    engine.update([{"macaddr": "d8:96:85:11:22:33"}])  # missing last_signal -> None
+    p = engine._store.get_profile("mac:d8:96:85:11:22:33")
+    assert p.signal_count == 2
+    assert p.signal_mean == -55.0
+    assert p.signal_var == 25.0          # population variance of [-50, -60]
+    assert p.hour_mask == (1 << 0)        # all sightings in hour 0
+
+
+def test_baseline_signal_stats_not_accumulated_after_freeze():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = lambda sig: {"macaddr": "d8:96:85:11:22:33", "last_signal": sig}
+    engine.update([dev(-50)])                         # learning sample
+    clock[0] = T0 + timedelta(hours=24)               # frozen (same hour)
+    engine.update([dev(-90)])                         # post-freeze — must NOT count
+    p = engine._store.get_profile("mac:d8:96:85:11:22:33")
+    assert p.signal_count == 1
+    assert p.signal_mean == -50.0

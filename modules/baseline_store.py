@@ -18,6 +18,7 @@ for randomized MACs — see :mod:`modules.fixed_scoring`). This module is keying
 agnostic: it stores whatever string key it is given.
 """
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -37,10 +38,17 @@ _DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "baseli
 class DeviceProfile:
     """One per-device behavioral profile row.
 
-    Phase 1 populates ``key``, ``first_seen``, ``last_seen``,
-    ``observation_count`` and the lightweight identity fields. The dwell /
-    time-histogram / signal columns are reserved in the schema for later phases
-    and are not populated here.
+    Phase 1 populated the identity/recency fields. Phase 2 adds the baseline
+    behavioral statistics accumulated during the learning window:
+
+    - ``hour_mask`` — 24-bit mask of hours-of-day the device was seen during
+      baseline (bit ``h`` set => seen in hour ``h``). Used for off-schedule.
+    - ``signal_mean`` / ``signal_var`` — running mean/population variance of
+      ``last_signal`` (RSSI) over baseline (``None`` until a non-None sample is
+      seen). Populated for Phase 2.5; no trigger uses them yet.
+    - ``signal_count`` — number of non-None RSSI samples behind the stats.
+
+    The ``dwell_seconds`` column remains reserved (Phase 2.5 abnormal-dwell).
     """
 
     key: str
@@ -50,6 +58,10 @@ class DeviceProfile:
     manufacturer: str = ""
     device_type: str = ""
     mac_type: str = "static"
+    hour_mask: int = 0
+    signal_mean: Optional[float] = None
+    signal_var: Optional[float] = None
+    signal_count: int = 0
 
 
 def _iso(dt: datetime) -> str:
@@ -179,6 +191,9 @@ class BaselineStore:
     # Profiles
     # ------------------------------------------------------------------
 
+    # Default baseline accumulator state (stored as JSON in time_histogram).
+    _EMPTY_STATE = {"hour_mask": 0, "sig_n": 0, "sig_mean": 0.0, "sig_m2": 0.0}
+
     def upsert(
         self,
         key: str,
@@ -186,43 +201,95 @@ class BaselineStore:
         manufacturer: str = "",
         device_type: str = "",
         mac_type: str = "static",
+        last_signal: Optional[float] = None,
+        accumulate_baseline: bool = True,
     ) -> DeviceProfile:
         """Insert or update the profile for ``key`` and return it.
 
         On first sight ``first_seen`` is set to ``now`` and never changed
         thereafter; ``last_seen`` and ``observation_count`` advance each call.
+
+        When ``accumulate_baseline`` is True (i.e. during the learning window)
+        the baseline behavioral stats are folded in: the hour-of-day bit for
+        ``now`` is set, and a non-``None`` ``last_signal`` updates the running
+        RSSI mean/variance (Welford). After freeze, callers pass
+        ``accumulate_baseline=False`` so post-freeze sightings never mutate the
+        frozen baseline — only recency (``last_seen`` / ``observation_count``)
+        advances. ``None`` RSSI samples are skipped and never counted.
         """
         existing = self.get_profile(key)
+        state = self._load_state(key) if existing is not None else dict(self._EMPTY_STATE)
+
+        if accumulate_baseline:
+            state["hour_mask"] |= (1 << now.hour)
+            if last_signal is not None:
+                n = state["sig_n"] + 1
+                delta = last_signal - state["sig_mean"]
+                mean = state["sig_mean"] + delta / n
+                state["sig_n"] = n
+                state["sig_mean"] = mean
+                state["sig_m2"] = state["sig_m2"] + delta * (last_signal - mean)
+
+        hist_json = json.dumps(state)
+        sig_n = state["sig_n"]
+        sig_mean = state["sig_mean"] if sig_n > 0 else None
+        sig_var = (state["sig_m2"] / sig_n) if sig_n > 0 else None
+
         if existing is None:
             self._conn.execute(
                 "INSERT INTO device_profiles "
                 "(key, first_seen, last_seen, observation_count, "
-                " manufacturer, device_type, mac_type) "
-                "VALUES (?, ?, ?, 1, ?, ?, ?)",
-                (key, _iso(now), _iso(now), manufacturer, device_type, mac_type),
+                " manufacturer, device_type, mac_type, "
+                " time_histogram, signal_mean, signal_var) "
+                "VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                (key, _iso(now), _iso(now), manufacturer, device_type, mac_type,
+                 hist_json, sig_mean, sig_var),
             )
-            self._conn.commit()
-            return DeviceProfile(
-                key=key, first_seen=now, last_seen=now, observation_count=1,
-                manufacturer=manufacturer, device_type=device_type, mac_type=mac_type,
+            first_seen, obs = now, 1
+            manuf_final, dtype_final = manufacturer, device_type
+        else:
+            self._conn.execute(
+                "UPDATE device_profiles SET last_seen = ?, "
+                "observation_count = observation_count + 1, "
+                "manufacturer = ?, device_type = ?, mac_type = ?, "
+                "time_histogram = ?, signal_mean = ?, signal_var = ? WHERE key = ?",
+                (_iso(now), manufacturer or existing.manufacturer,
+                 device_type or existing.device_type, mac_type,
+                 hist_json, sig_mean, sig_var, key),
             )
-        self._conn.execute(
-            "UPDATE device_profiles SET last_seen = ?, "
-            "observation_count = observation_count + 1, "
-            "manufacturer = ?, device_type = ?, mac_type = ? WHERE key = ?",
-            (_iso(now), manufacturer or existing.manufacturer,
-             device_type or existing.device_type, mac_type, key),
-        )
+            first_seen = existing.first_seen
+            obs = existing.observation_count + 1
+            manuf_final = manufacturer or existing.manufacturer
+            dtype_final = device_type or existing.device_type
         self._conn.commit()
         return DeviceProfile(
             key=key,
-            first_seen=existing.first_seen,
+            first_seen=first_seen,
             last_seen=now,
-            observation_count=existing.observation_count + 1,
-            manufacturer=manufacturer or existing.manufacturer,
-            device_type=device_type or existing.device_type,
+            observation_count=obs,
+            manufacturer=manuf_final,
+            device_type=dtype_final,
             mac_type=mac_type,
+            hour_mask=state["hour_mask"],
+            signal_mean=sig_mean,
+            signal_var=sig_var,
+            signal_count=sig_n,
         )
+
+    def _load_state(self, key: str) -> dict:
+        """Return the raw baseline accumulator dict for *key* (defaults if absent)."""
+        row = self._conn.execute(
+            "SELECT time_histogram FROM device_profiles WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None or row["time_histogram"] is None:
+            return dict(self._EMPTY_STATE)
+        try:
+            state = json.loads(row["time_histogram"])
+        except (ValueError, TypeError):
+            return dict(self._EMPTY_STATE)
+        for k, v in self._EMPTY_STATE.items():
+            state.setdefault(k, v)
+        return state
 
     def get_profile(self, key: str) -> Optional[DeviceProfile]:
         row = self._conn.execute(
@@ -230,6 +297,15 @@ class BaselineStore:
         ).fetchone()
         if row is None:
             return None
+        hour_mask, sig_count = 0, 0
+        raw = row["time_histogram"]
+        if raw:
+            try:
+                state = json.loads(raw)
+                hour_mask = int(state.get("hour_mask", 0))
+                sig_count = int(state.get("sig_n", 0))
+            except (ValueError, TypeError):
+                pass
         return DeviceProfile(
             key=row["key"],
             first_seen=_parse(row["first_seen"]),
@@ -238,6 +314,10 @@ class BaselineStore:
             manufacturer=row["manufacturer"] or "",
             device_type=row["device_type"] or "",
             mac_type=row["mac_type"] or "static",
+            hour_mask=hour_mask,
+            signal_mean=row["signal_mean"],
+            signal_var=row["signal_var"],
+            signal_count=sig_count,
         )
 
     def profile_count(self) -> int:
