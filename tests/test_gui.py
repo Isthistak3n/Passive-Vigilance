@@ -239,6 +239,8 @@ class TestModeEndpoint(unittest.TestCase):
         with patch.dict(os.environ, {"GUI_TOKEN": token}):
             from gui.server import GUIServer
             gui = GUIServer(env_path=env_path)
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping mode-endpoint tests")
         return gui.app.test_client()
 
     def _read(self, p):
