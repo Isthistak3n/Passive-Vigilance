@@ -16,6 +16,15 @@
       <span class="sensor" id="s-adsb" title="ADS-B">ADS-B</span>
       <span class="sensor" id="s-drone-rf" title="Drone RF">Drone</span>
       <span class="session-id" id="session-id">—</span>
+      <span class="node-mode" id="node-mode" title="Scoring mode (NODE_MODE)">
+        <label for="mode-select">Mode</label>
+        <select id="mode-select" disabled>
+          <option value="fixed">fixed</option>
+          <option value="mobile">mobile</option>
+        </select>
+        <button id="mode-save" type="button" disabled>Save</button>
+        <span class="mode-msg" id="mode-msg"></span>
+      </span>
     </div>
   </header>
 

@@ -54,6 +54,34 @@ header {
   font-family: monospace;
 }
 
+.node-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #8b949e;
+}
+.node-mode select,
+.node-mode button {
+  font-size: 11px;
+  background: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.node-mode button:not(:disabled) {
+  color: #58a6ff;
+  cursor: pointer;
+}
+.node-mode select:disabled,
+.node-mode button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.node-mode .mode-msg { color: #6e7681; }
+.node-mode .mode-msg.mode-restart { color: #d29922; }
+
 /* ── Nav ─────────────────────────────────────────────────── */
 nav {
   display: flex;
