@@ -70,6 +70,7 @@ def orch(tmp_path):
         patch("main.DroneRFModule") as mock_drone_cls,
         patch("main.PersistenceEngine") as mock_pe_cls,
         patch("main.ProbeAnalyzer") as mock_pa_cls,
+        patch("main.EntityStore") as mock_es_cls,
         patch("main.AlertFactory") as mock_af,
         patch("main.ShapefileWriter") as mock_shp_cls,
         patch("main.WiGLEUploader") as mock_wigle_cls,

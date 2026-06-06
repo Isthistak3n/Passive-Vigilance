@@ -47,6 +47,7 @@ class SensorOrchestrator:
         persistence,
         probe_analyzer,
         gui_server,
+        entity_store=None,
         remote_id=None,
         session_id: str,
         session_start: datetime,
@@ -73,6 +74,10 @@ class SensorOrchestrator:
         self.persistence = persistence
         self.probe_analyzer = probe_analyzer
         self.gui_server = gui_server
+        # Durable entity/observation store (Phase A). Recording is orthogonal to
+        # scoring strategy, so it runs here at the poll site for EVERY NODE_MODE,
+        # not inside any ScoringEngine. May be None (recording disabled).
+        self.entity_store = entity_store
         self.remote_id = remote_id
 
         self.session_id = session_id
@@ -298,6 +303,17 @@ class SensorOrchestrator:
             self._sensor_health["kismet"] = True
             self._degraded_log_counter["kismet"] = 0
         self._stats["kismet_devices_seen"] += len(devices)
+
+        # Durable entity/observation recording — runs for EVERY node mode,
+        # independent of which ScoringEngine processes the poll. Same device list
+        # and GPS fix the scorer sees. Guarded: a store failure must never affect
+        # capture or detection.
+        if self.entity_store is not None:
+            try:
+                self.entity_store.record_poll(devices, gps_fix=self._current_fix)
+            except Exception as exc:
+                logger.warning("EntityStore write failed (non-fatal): %s", exc)
+
         suspicious = self.probe_analyzer.analyze(devices)
         if suspicious:
             logger.info("ProbeAnalyzer: %d suspicious probe pattern(s) detected", len(suspicious))
