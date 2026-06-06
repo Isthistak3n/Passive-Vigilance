@@ -20,6 +20,7 @@ agnostic: it stores whatever string key it is given.
 
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
@@ -32,6 +33,11 @@ logger = logging.getLogger(__name__)
 # it resolves to the same absolute path whether run by systemd (with a
 # WorkingDirectory) or by hand from any CWD. Lives under the gitignored data/.
 _DEFAULT_DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "baseline.db")
+
+# Weight (0 < alpha <= 1) for the bounded post-freeze recent-signal EMA: higher
+# is more responsive to the latest readings. Env-overridable. The EMA is what the
+# Phase 2.5 approaching trigger compares against the frozen baseline mean.
+_RECENT_SIGNAL_EMA_ALPHA = float(os.getenv("APPROACHING_RECENT_EMA_ALPHA", "0.3"))
 
 
 @dataclass
@@ -46,9 +52,16 @@ class DeviceProfile:
     - ``signal_mean`` / ``signal_var`` — running mean/population variance of
       ``last_signal`` (RSSI) over baseline (``None`` until a non-None sample is
       seen). Populated for Phase 2.5; no trigger uses them yet.
-    - ``signal_count`` — number of non-None RSSI samples behind the stats.
+    - ``signal_count`` — number of non-None/non-zero RSSI samples behind them.
 
-    The ``dwell_seconds`` column remains reserved (Phase 2.5 abnormal-dwell).
+    Phase 2.5 adds a separate POST-FREEZE recent-signal accumulator (kept apart
+    from the frozen baseline stats above), used by the approaching trigger:
+
+    - ``recent_signal_mean`` — bounded EMA of recent post-freeze RSSI readings
+      (``None`` until a reading is folded in).
+    - ``recent_signal_count`` — number of post-freeze readings behind the EMA.
+
+    The ``dwell_seconds`` column remains reserved (later-phase abnormal-dwell).
     """
 
     key: str
@@ -62,6 +75,8 @@ class DeviceProfile:
     signal_mean: Optional[float] = None
     signal_var: Optional[float] = None
     signal_count: int = 0
+    recent_signal_mean: Optional[float] = None
+    recent_signal_count: int = 0
 
 
 def _iso(dt: datetime) -> str:
@@ -191,8 +206,12 @@ class BaselineStore:
     # Profiles
     # ------------------------------------------------------------------
 
-    # Default baseline accumulator state (stored as JSON in time_histogram).
-    _EMPTY_STATE = {"hour_mask": 0, "sig_n": 0, "sig_mean": 0.0, "sig_m2": 0.0}
+    # Default accumulator state (stored as JSON in time_histogram). The sig_*
+    # fields are the frozen baseline stats; rec_* are the post-freeze EMA.
+    _EMPTY_STATE = {
+        "hour_mask": 0, "sig_n": 0, "sig_mean": 0.0, "sig_m2": 0.0,
+        "rec_n": 0, "rec_ema": 0.0,
+    }
 
     def upsert(
         self,
@@ -220,20 +239,36 @@ class BaselineStore:
         existing = self.get_profile(key)
         state = self._load_state(key) if existing is not None else dict(self._EMPTY_STATE)
 
+        # A zero RSSI reading is Kismet's "no real sample" placeholder, so it is
+        # skipped exactly like a missing reading (never folded into any stat).
+        usable_signal = last_signal is not None and last_signal != 0
+
         if accumulate_baseline:
             state["hour_mask"] |= (1 << now.hour)
-            if last_signal is not None:
+            if usable_signal:
                 n = state["sig_n"] + 1
                 delta = last_signal - state["sig_mean"]
                 mean = state["sig_mean"] + delta / n
                 state["sig_n"] = n
                 state["sig_mean"] = mean
                 state["sig_m2"] = state["sig_m2"] + delta * (last_signal - mean)
+        else:
+            # Post-freeze: fold the reading into the bounded recent-signal EMA
+            # (seed with the first reading, then exponentially smooth).
+            if usable_signal:
+                if state["rec_n"] == 0:
+                    state["rec_ema"] = float(last_signal)
+                else:
+                    a = _RECENT_SIGNAL_EMA_ALPHA
+                    state["rec_ema"] = a * last_signal + (1 - a) * state["rec_ema"]
+                state["rec_n"] = state["rec_n"] + 1
 
         hist_json = json.dumps(state)
         sig_n = state["sig_n"]
         sig_mean = state["sig_mean"] if sig_n > 0 else None
         sig_var = (state["sig_m2"] / sig_n) if sig_n > 0 else None
+        rec_n = state["rec_n"]
+        rec_mean = state["rec_ema"] if rec_n > 0 else None
 
         if existing is None:
             self._conn.execute(
@@ -274,6 +309,8 @@ class BaselineStore:
             signal_mean=sig_mean,
             signal_var=sig_var,
             signal_count=sig_n,
+            recent_signal_mean=rec_mean,
+            recent_signal_count=rec_n,
         )
 
     def _load_state(self, key: str) -> dict:
@@ -298,12 +335,16 @@ class BaselineStore:
         if row is None:
             return None
         hour_mask, sig_count = 0, 0
+        rec_count, rec_mean = 0, None
         raw = row["time_histogram"]
         if raw:
             try:
                 state = json.loads(raw)
                 hour_mask = int(state.get("hour_mask", 0))
                 sig_count = int(state.get("sig_n", 0))
+                rec_count = int(state.get("rec_n", 0))
+                if rec_count > 0:
+                    rec_mean = float(state.get("rec_ema", 0.0))
             except (ValueError, TypeError):
                 pass
         return DeviceProfile(
@@ -318,6 +359,8 @@ class BaselineStore:
             signal_mean=row["signal_mean"],
             signal_var=row["signal_var"],
             signal_count=sig_count,
+            recent_signal_mean=rec_mean,
+            recent_signal_count=rec_count,
         )
 
     def profile_count(self) -> int:

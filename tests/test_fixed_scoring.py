@@ -342,3 +342,122 @@ def test_baseline_signal_stats_not_accumulated_after_freeze():
     p = engine._store.get_profile("mac:d8:96:85:11:22:33")
     assert p.signal_count == 1
     assert p.signal_mean == -50.0
+
+
+# ===========================================================================
+# Phase 2.5 — zero-signal filter + approaching trigger
+# ===========================================================================
+
+_AMAC = "d8:96:85:ab:cd:ef"
+
+
+def _seed_baseline_signal(engine, clock, n, dbm, mac=_AMAC, jitter=None):
+    """Fold n baseline RSSI samples (all in hour 0, during learning)."""
+    for i in range(n):
+        clock[0] = T0 + timedelta(minutes=i)
+        s = dbm if jitter is None else dbm + jitter[i % len(jitter)]
+        engine.update([{"macaddr": mac, "manuf": "Acme", "type": "AP", "last_signal": s}])
+
+
+def _feed_recent(engine, clock, n, dbm, mac=_AMAC, hour=1):
+    """Feed n post-freeze readings at a fixed (post-freeze) hour; return events."""
+    events = []
+    for i in range(n):
+        clock[0] = T0 + timedelta(hours=24 + hour, minutes=i)
+        events += engine.update([{"macaddr": mac, "last_signal": dbm}])
+    return events
+
+
+def test_coerce_signal_skips_zero():
+    assert _coerce_signal(0) is None
+    assert _coerce_signal(0.0) is None
+    assert _coerce_signal(-55) == -55.0
+    assert _coerce_signal(None) is None
+
+
+def test_approaching_fires_when_recent_meaningfully_stronger():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(engine, clock, 12, -70, jitter=[-1, 0, 1])   # ~-70, small std
+    events = _feed_recent(engine, clock, 6, -50)                       # +20 dB stronger
+    assert events, "expected an approaching flag"
+    ev = events[-1]
+    assert ev.score_breakdown["approaching"] == 1.0
+    assert ev.score_breakdown["novelty"] == 0.0
+    assert ev.alert_level == "suspicious"
+    assert ev.score == 0.5
+
+
+def test_approaching_quiet_when_recent_not_stronger():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(engine, clock, 12, -70, jitter=[-1, 0, 1])
+    assert _feed_recent(engine, clock, 6, -71) == []   # same/weaker -> no approach
+
+
+def test_approaching_respects_db_floor_for_steady_baseline():
+    # Steady baseline (std ~0): a small rise below the absolute dB floor (6) must
+    # not trip approaching, even though it exceeds 2*std.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(engine, clock, 12, -70)      # zero variance
+    assert _feed_recent(engine, clock, 6, -66) == []   # +4 dB < 6 dB floor -> quiet
+
+
+def test_approaching_quiet_below_min_recent_samples():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(engine, clock, 12, -70, jitter=[-1, 0, 1])
+    assert _feed_recent(engine, clock, 4, -50) == []   # only 4 recent (<5) -> quiet
+
+
+def test_approaching_quiet_below_min_baseline_samples():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(engine, clock, 6, -70, jitter=[-1, 0, 1])   # 6 baseline (<10)
+    assert _feed_recent(engine, clock, 6, -50) == []   # thin baseline -> quiet
+
+
+def test_approaching_not_for_novel_device():
+    # A novel device (no baseline) never gets approaching even with a strong,
+    # rising recent signal; it still flags on novelty alone.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)                 # frozen; device is novel
+    dev = lambda s: {"macaddr": "d8:96:85:00:00:99", "last_signal": s}
+    events = []
+    for i in range(6):
+        clock[0] = T0 + timedelta(hours=2, minutes=i)
+        events += engine.update([dev(-40)])            # strong, but no baseline
+    assert events
+    bd = events[-1].score_breakdown
+    assert bd["approaching"] == 0.0                    # known-device-only
+    assert bd["novelty"] == 1.0
+
+
+def test_off_schedule_plus_approaching_escalates_to_likely():
+    # A known device that is BOTH off-schedule and approaching -> two signals -> likely.
+    engine, clock = _clocked_engine(baseline_hours=12.0)
+    dev = lambda s, : {"macaddr": _AMAC, "manuf": "Acme", "type": "AP", "last_signal": s}
+    # Baseline across 12 distinct hours (satisfies off-schedule guard) with a
+    # weak, slightly-jittery signal.
+    for h in range(12):
+        clock[0] = T0 + timedelta(hours=h)
+        engine.update([dev(-70 + (h % 3 - 1))])
+    # Post-freeze in a never-baselined hour (13), with a much stronger signal.
+    events = []
+    for i in range(6):
+        clock[0] = T0 + timedelta(hours=37, minutes=i)
+        events += engine.update([dev(-50)])
+    ev = events[-1]
+    assert ev.score_breakdown["off_schedule"] == 1.0
+    assert ev.score_breakdown["approaching"] == 1.0
+    assert ev.alert_level == "likely"
+    assert ev.score == 0.7
+
+
+def test_approaching_threshold_env_overridable():
+    # Tighten the dB floor via env so a +4 dB rise (normally below the 6 dB
+    # default) now trips approaching.
+    holder = [T0]
+    store = BaselineStore(":memory:", baseline_hours=1.0, now=T0)
+    with patch.dict(os.environ, {"APPROACHING_MIN_DB_MARGIN": "3"}):
+        engine = FixedScoring(store=store, clock=lambda: holder[0])
+    _seed_baseline_signal(engine, holder, 12, -70)     # steady baseline
+    events = _feed_recent(engine, holder, 6, -66)      # +4 dB >= 3 dB floor now
+    assert events
+    assert events[-1].score_breakdown["approaching"] == 1.0

@@ -162,3 +162,51 @@ def test_phase2_stats_survive_reopen_and_keep_accumulating(tmp_path):
     assert p2.hour_mask == (1 << 0) | (1 << 3) | (1 << 7)
     assert p2.signal_count == 3
     s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.5 — zero-signal skip + post-freeze recent-signal EMA
+# ---------------------------------------------------------------------------
+
+
+def test_zero_signal_skipped_in_baseline_like_none(tmp_path):
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=72, now=T0)
+    store.upsert("mac:a", T0, last_signal=-50)
+    store.upsert("mac:a", T0, last_signal=0)      # placeholder -> skipped
+    store.upsert("mac:a", T0, last_signal=None)   # missing -> skipped
+    p = store.get_profile("mac:a")
+    assert p.signal_count == 1                    # only the -50 counted
+    assert p.signal_mean == -50.0
+    store.close()
+
+
+def test_recent_ema_accumulates_only_post_freeze(tmp_path):
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=10, now=T0)
+    store.upsert("mac:a", T0, last_signal=-70)    # learning -> baseline, not recent
+    p = store.get_profile("mac:a")
+    assert p.recent_signal_count == 0
+    assert p.recent_signal_mean is None
+    # Post-freeze: feeds the recent EMA; zeros/None skipped there too.
+    store.upsert("mac:a", T0 + timedelta(hours=20), last_signal=-50, accumulate_baseline=False)
+    store.upsert("mac:a", T0 + timedelta(hours=20), last_signal=0, accumulate_baseline=False)
+    store.upsert("mac:a", T0 + timedelta(hours=20), last_signal=-50, accumulate_baseline=False)
+    p = store.get_profile("mac:a")
+    assert p.recent_signal_count == 2             # two -50s; the 0 skipped
+    assert p.recent_signal_mean == -50.0          # EMA of identical values
+    assert p.signal_mean == -70.0                 # baseline untouched post-freeze
+    store.close()
+
+
+def test_recent_ema_survives_reopen(tmp_path):
+    db = str(tmp_path / "b.db")
+    s1 = BaselineStore(db, baseline_hours=10, now=T0)
+    s1.upsert("mac:a", T0, last_signal=-70)                                   # baseline
+    s1.upsert("mac:a", T0 + timedelta(hours=20), last_signal=-55, accumulate_baseline=False)
+    s1.close()
+    s2 = BaselineStore(db, baseline_hours=10, now=T0 + timedelta(hours=21))
+    p = s2.get_profile("mac:a")
+    assert p.recent_signal_count == 1
+    assert p.recent_signal_mean == -55.0
+    s2.upsert("mac:a", T0 + timedelta(hours=22), last_signal=-55, accumulate_baseline=False)
+    assert s2.get_profile("mac:a").recent_signal_count == 2
+    s2.close()
