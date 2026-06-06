@@ -6,7 +6,9 @@ device stays silent" tests therefore advance the clock by whole days (+24h) to
 stay in a baselined hour; off-schedule tests advance to a *different* hour.
 """
 
+import os
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from modules.baseline_store import BaselineStore
 from modules.fixed_scoring import FixedScoring, _coerce_signal
@@ -21,6 +23,14 @@ def _clocked_engine(baseline_hours=1.0, start=T0):
     store = BaselineStore(":memory:", baseline_hours=baseline_hours, now=start)
     engine = FixedScoring(store=store, clock=lambda: holder[0])
     return engine, holder
+
+
+def _seed_distinct_hours(engine, clock, dev, n_hours):
+    """Observe `dev` once in each of hours 0..n_hours-1 during learning, so its
+    baseline hour-mask ends up with n_hours distinct bits set."""
+    for h in range(n_hours):
+        clock[0] = T0 + timedelta(hours=h)
+        engine.update([dev])
 
 
 def _static_device(mac="d8:96:85:11:22:33", **extra):
@@ -194,10 +204,11 @@ def test_novelty_alone_flags_suspicious():
 
 
 def test_off_schedule_new_hour_flags():
-    engine, clock = _clocked_engine(baseline_hours=1.0)
+    # Rich baseline (>= default 12 distinct hours) seen in a never-baselined hour.
+    engine, clock = _clocked_engine(baseline_hours=24.0)
     dev = _static_device(mac="d8:96:85:aa:bb:cc")
-    engine.update([dev])                  # baseline at hour 0
-    clock[0] = T0 + timedelta(hours=2)    # frozen, hour 2 (never baselined)
+    _seed_distinct_hours(engine, clock, dev, 12)   # baseline spans hours 0..11
+    clock[0] = T0 + timedelta(hours=37)            # frozen; hour 13 never baselined
     events = engine.update([dev])
     assert len(events) == 1
     ev = events[0]
@@ -208,11 +219,72 @@ def test_off_schedule_new_hour_flags():
 
 
 def test_off_schedule_same_hour_no_flag():
-    engine, clock = _clocked_engine(baseline_hours=1.0)
+    # Rich baseline (guard active), device re-seen in a baselined hour -> silent.
+    engine, clock = _clocked_engine(baseline_hours=24.0)
     dev = _static_device(mac="d8:96:85:aa:bb:cc")
-    engine.update([dev])                   # baseline hour 0
-    clock[0] = T0 + timedelta(hours=24)    # frozen, hour 0 again (on-schedule)
+    _seed_distinct_hours(engine, clock, dev, 12)   # baseline hours 0..11
+    clock[0] = T0 + timedelta(hours=24 + 5)        # frozen, hour 5 (baselined)
     assert engine.update([dev]) == []
+
+
+# ---------------------------------------------------------------------------
+# Off-schedule activation guard (>= N distinct baseline hours)
+# ---------------------------------------------------------------------------
+
+
+def test_guard_suppresses_off_schedule_for_thin_baseline():
+    # Default guard is 12. A baseline of only a few distinct hours must NOT flag
+    # off-schedule even in a never-baselined hour — "insufficient baseline".
+    engine, clock = _clocked_engine(baseline_hours=24.0)
+    dev = _static_device(mac="d8:96:85:11:00:11")
+    _seed_distinct_hours(engine, clock, dev, 5)    # only 5 distinct hours < 12
+    clock[0] = T0 + timedelta(hours=37)            # frozen, hour 13 (unbaselined)
+    assert engine.update([dev]) == []              # guard suppresses off-schedule
+
+
+def test_guard_boundary_11_suppresses_12_activates():
+    # Exactly at the default threshold: 11 distinct hours -> suppressed,
+    # 12 distinct hours -> activates.
+    eng11, c11 = _clocked_engine(baseline_hours=24.0)
+    d11 = _static_device(mac="d8:96:85:00:00:11")
+    _seed_distinct_hours(eng11, c11, d11, 11)
+    c11[0] = T0 + timedelta(hours=37)              # hour 13, unbaselined
+    assert eng11.update([d11]) == []               # 11 < 12 -> no flag
+
+    eng12, c12 = _clocked_engine(baseline_hours=24.0)
+    d12 = _static_device(mac="d8:96:85:00:00:12")
+    _seed_distinct_hours(eng12, c12, d12, 12)
+    c12[0] = T0 + timedelta(hours=37)              # hour 13, unbaselined
+    events = eng12.update([d12])                   # 12 >= 12 -> flags
+    assert len(events) == 1
+    assert events[0].score_breakdown["off_schedule"] == 1.0
+
+
+def test_guard_threshold_env_overridable():
+    # OFF_SCHEDULE_MIN_BASELINE_HOURS=2 -> activation at 2 distinct hours.
+    holder = [T0]
+    store = BaselineStore(":memory:", baseline_hours=24.0, now=T0)
+    with patch.dict(os.environ, {"OFF_SCHEDULE_MIN_BASELINE_HOURS": "2"}):
+        engine = FixedScoring(store=store, clock=lambda: holder[0])
+    dev = _static_device(mac="d8:96:85:02:00:02")
+    _seed_distinct_hours(engine, holder, dev, 2)   # 2 distinct hours
+    holder[0] = T0 + timedelta(hours=37)           # frozen, hour 13 (unbaselined)
+    events = engine.update([dev])
+    assert len(events) == 1
+    assert events[0].score_breakdown["off_schedule"] == 1.0
+
+
+def test_novelty_unaffected_by_guard():
+    # No-regression: a novel device flags on novelty regardless of the guard
+    # (the guard only suppresses the off-schedule signal for known devices).
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)             # frozen immediately
+    dev = _static_device(mac="d8:96:85:ca:fe:02")
+    assert engine.update([dev]) == []              # 1 sighting
+    events = engine.update([dev])                  # novel-persistent
+    assert len(events) == 1
+    assert events[0].alert_level == "suspicious"
+    assert events[0].score_breakdown["novelty"] == 1.0
 
 
 def test_off_schedule_not_applied_to_novel():
