@@ -351,12 +351,16 @@ def test_baseline_signal_stats_not_accumulated_after_freeze():
 _AMAC = "d8:96:85:ab:cd:ef"
 
 
-def _seed_baseline_signal(engine, clock, n, dbm, mac=_AMAC, jitter=None):
-    """Fold n baseline RSSI samples (all in hour 0, during learning)."""
+def _seed_baseline_signal(engine, clock, n, dbm, mac=_AMAC, jitter=None, dtype="Wi-Fi Client"):
+    """Fold n baseline RSSI samples (all in hour 0, during learning).
+
+    Default device type is a mobile client (approaching-eligible). Pass
+    dtype="Wi-Fi AP" to exercise the access-point exclusion.
+    """
     for i in range(n):
         clock[0] = T0 + timedelta(minutes=i)
         s = dbm if jitter is None else dbm + jitter[i % len(jitter)]
-        engine.update([{"macaddr": mac, "manuf": "Acme", "type": "AP", "last_signal": s}])
+        engine.update([{"macaddr": mac, "manuf": "Acme", "type": dtype, "last_signal": s}])
 
 
 def _feed_recent(engine, clock, n, dbm, mac=_AMAC, hour=1):
@@ -432,7 +436,7 @@ def test_approaching_not_for_novel_device():
 def test_off_schedule_plus_approaching_escalates_to_likely():
     # A known device that is BOTH off-schedule and approaching -> two signals -> likely.
     engine, clock = _clocked_engine(baseline_hours=12.0)
-    dev = lambda s, : {"macaddr": _AMAC, "manuf": "Acme", "type": "AP", "last_signal": s}
+    dev = lambda s, : {"macaddr": _AMAC, "manuf": "Acme", "type": "Wi-Fi Client", "last_signal": s}
     # Baseline across 12 distinct hours (satisfies off-schedule guard) with a
     # weak, slightly-jittery signal.
     for h in range(12):
@@ -461,3 +465,74 @@ def test_approaching_threshold_env_overridable():
     events = _feed_recent(engine, holder, 6, -66)      # +4 dB >= 3 dB floor now
     assert events
     assert events[-1].score_breakdown["approaching"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# AP-exclusion from approaching (Wi-Fi APs don't physically move)
+# ---------------------------------------------------------------------------
+
+
+def test_approaching_excluded_for_wifi_ap():
+    # Same strong rise as the client case, but a Wi-Fi AP must NOT flag
+    # approaching — and the suppression is recorded for observability.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(engine, clock, 12, -70, jitter=[-1, 0, 1], dtype="Wi-Fi AP")
+    assert _feed_recent(engine, clock, 6, -50) == []          # suppressed
+    assert engine._store.get_profile("mac:" + _AMAC).device_type == "Wi-Fi AP"
+    assert ("mac:" + _AMAC) in engine._approaching_excluded_aps
+    assert engine.status()["approaching_excluded_aps"] == 1
+
+
+def test_approaching_client_fires_where_identical_ap_would_not():
+    # Direct contrast: identical baseline + rise; client fires, AP does not.
+    eng_c, c_c = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(eng_c, c_c, 12, -70, jitter=[-1, 0, 1],
+                          mac="d8:96:85:cc:cc:cc", dtype="Wi-Fi Client")
+    fired_client = _feed_recent(eng_c, c_c, 6, -50, mac="d8:96:85:cc:cc:cc")
+
+    eng_a, c_a = _clocked_engine(baseline_hours=1.0)
+    _seed_baseline_signal(eng_a, c_a, 12, -70, jitter=[-1, 0, 1],
+                          mac="d8:96:85:aa:aa:aa", dtype="Wi-Fi AP")
+    fired_ap = _feed_recent(eng_a, c_a, 6, -50, mac="d8:96:85:aa:aa:aa")
+
+    assert fired_client and fired_client[-1].score_breakdown["approaching"] == 1.0
+    assert fired_ap == []
+
+
+def test_wds_ap_excluded_but_plain_wds_and_bridged_eligible():
+    # 'Wi-Fi WDS AP' is infrastructure (excluded); 'Wi-Fi WDS' and 'Wi-Fi
+    # Bridged' stay eligible under the narrow filter.
+    from modules.fixed_scoring import _is_access_point
+    assert _is_access_point("Wi-Fi AP") is True
+    assert _is_access_point("Wi-Fi WDS AP") is True
+    assert _is_access_point("Wi-Fi WDS") is False
+    assert _is_access_point("Wi-Fi Bridged") is False
+    assert _is_access_point("Wi-Fi Client") is False
+    assert _is_access_point("Wi-Fi Ad-Hoc") is False
+    assert _is_access_point("") is False
+    assert _is_access_point(None) is False
+
+
+def test_ap_filter_does_not_affect_novelty():
+    # A novel Wi-Fi AP still flags on novelty exactly as before — the AP filter
+    # only touches the approaching signal.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)                 # frozen; device is novel
+    dev = {"macaddr": "d8:96:85:ap:00:01".replace("ap", "a0"),
+           "manuf": "Acme", "type": "Wi-Fi AP"}
+    assert engine.update([dev]) == []                  # 1 sighting
+    events = engine.update([dev])                      # novel-persistent AP
+    assert len(events) == 1
+    assert events[0].score_breakdown["novelty"] == 1.0
+
+
+def test_ap_filter_does_not_affect_off_schedule():
+    # A known Wi-Fi AP seen off-schedule still flags off-schedule (AP filter
+    # only touches approaching).
+    engine, clock = _clocked_engine(baseline_hours=24.0)
+    ap = _static_device(mac="d8:96:85:0a:0b:0c", type="Wi-Fi AP")
+    _seed_distinct_hours(engine, clock, ap, 12)        # 12 distinct baseline hours
+    clock[0] = T0 + timedelta(hours=37)                # frozen; hour 13 unbaselined
+    events = engine.update([ap])
+    assert len(events) == 1
+    assert events[0].score_breakdown["off_schedule"] == 1.0

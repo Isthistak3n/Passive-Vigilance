@@ -98,6 +98,18 @@ def _any_active(signals: dict) -> bool:
     return any(v > 0 for v in signals.values())
 
 
+def _is_access_point(device_type) -> bool:
+    """True if Kismet classifies the device as a Wi-Fi access point.
+
+    Matches the standalone ``AP`` token in the type string, so it catches
+    ``Wi-Fi AP`` and ``Wi-Fi WDS AP`` but deliberately NOT ``Wi-Fi Bridged``,
+    ``Wi-Fi WDS``, ``Wi-Fi Ad-Hoc`` or ``Wi-Fi Client`` — a narrow infrastructure
+    filter, used only to make access points ineligible for the approaching
+    signal (an AP does not move, so its signal variation is environmental).
+    """
+    return "ap" in (device_type or "").lower().split()
+
+
 class FixedScoring(ScoringEngine):
     """Baseline-deviation scorer (novelty only, Phase 1).
 
@@ -146,6 +158,9 @@ class FixedScoring(ScoringEngine):
         self._approaching_min_db_margin = float(
             os.getenv("APPROACHING_MIN_DB_MARGIN", str(APPROACHING_MIN_DB_MARGIN))
         )
+        # Distinct Wi-Fi APs suppressed from approaching that would otherwise have
+        # qualified — observable so a soak can show exactly what the filter caught.
+        self._approaching_excluded_aps: set = set()
         logger.info(
             "FixedScoring active — learning until %s (now %s)",
             self._store.freeze_time.isoformat(), self._clock().isoformat(),
@@ -285,7 +300,20 @@ class FixedScoring(ScoringEngine):
         margin = max(self._approaching_sigma_margin * baseline_std,
                      self._approaching_min_db_margin)
         rise = profile.recent_signal_mean - profile.signal_mean  # >0 => stronger
-        return 1.0 if rise >= margin else 0.0
+        if rise < margin:
+            return 0.0
+        # Qualifies as approaching — but a Wi-Fi AP does not physically move, so
+        # its apparent "approach" is environmental noise, not a closing device.
+        # Exclude infrastructure APs (narrow filter); record what was suppressed.
+        if _is_access_point(profile.device_type):
+            if profile.key not in self._approaching_excluded_aps:
+                self._approaching_excluded_aps.add(profile.key)
+                logger.info(
+                    "Approaching: suppressed Wi-Fi AP %s (type=%r) — APs are not "
+                    "approaching-eligible", profile.key, profile.device_type,
+                )
+            return 0.0
+        return 1.0
 
     @staticmethod
     def _combine(signals: dict) -> tuple:
@@ -310,6 +338,7 @@ class FixedScoring(ScoringEngine):
             "freeze_time": self._store.freeze_time.isoformat(),
             "baseline_devices": self._store.baseline_count(),
             "total_profiles": self._store.profile_count(),
+            "approaching_excluded_aps": len(self._approaching_excluded_aps),
         }
 
     # ------------------------------------------------------------------
