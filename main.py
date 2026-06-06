@@ -28,6 +28,7 @@ from modules.ignore_list import IgnoreList
 from modules.kismet import KismetModule
 from modules.fixed_scoring import FixedScoring
 from modules.orchestrator import SensorOrchestrator
+from modules.entity_store import EntityStore
 from modules.persistence import PersistenceEngine
 from modules.probe_analyzer import ProbeAnalyzer
 from modules.remote_id import RemoteIDModule
@@ -126,6 +127,9 @@ class PassiveVigilance:
             self.persistence = PersistenceEngine()
             logger.info("NODE_MODE=mobile — location-diversity scoring (PersistenceEngine)")
         self.probe_analyzer = ProbeAnalyzer()
+        # Durable entity/observation store — recording runs at the poll site for
+        # every NODE_MODE (orthogonal to scoring), injected into the orchestrator.
+        self.entity_store = EntityStore()
         self.remote_id = RemoteIDModule(gps_module=self.gps)
         self.alert_backend = AlertFactory.get_backend(persist_path=_RATE_LIMIT_PERSIST)
         self.rate_limiter = RateLimiter(persist_path=_RATE_LIMIT_PERSIST)
@@ -139,6 +143,7 @@ class PassiveVigilance:
             drone_rf=self.drone_rf, sdr_coordinator=self.sdr_coordinator,
             alert_backend=self.alert_backend, rate_limiter=self.rate_limiter,
             persistence=self.persistence, probe_analyzer=self.probe_analyzer,
+            entity_store=self.entity_store,
             gui_server=None, remote_id=self.remote_id,
             session_id=self.session_id, session_start=self.session_start,
             session_dir=self._session_dir, sdr_mode=self.sdr_mode,

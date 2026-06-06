@@ -69,7 +69,6 @@ class PersistenceEngine(ScoringEngine):
         min_locations: Optional[int] = None,
         poll_interval_seconds: Optional[int] = None,
         handle_randomized: Optional[bool] = None,
-        entity_store=None,
     ) -> None:
         self._windows = window_minutes if window_minutes is not None else [5, 10, 15, 20]
         self._threshold = float(
@@ -95,10 +94,6 @@ class PersistenceEngine(ScoringEngine):
         # {mac: [{"timestamp", "gps_lat", "gps_lon", "signal", "manuf", "type", "name"}]}
         self._observations: dict = {}
         self._purge_counter: int = 0
-        # Optional durable entity/observation store (Phase A). When present its
-        # writes run ALONGSIDE the in-memory path and never affect scoring; when
-        # None (the default) nothing changes. Always guarded in update().
-        self._entity_store = entity_store
 
     # ------------------------------------------------------------------
     # Main update cycle
@@ -144,14 +139,6 @@ class PersistenceEngine(ScoringEngine):
                 "type":      device.get("type", ""),
                 "name":      device.get("name", ""),
             })
-
-        # Durable entity/observation persistence (Phase A) — additive, never on
-        # the scoring path. Guarded so a store failure cannot affect detection.
-        if self._entity_store is not None:
-            try:
-                self._entity_store.record_poll(devices, gps_fix=gps_fix, now=now)
-            except Exception as exc:
-                logger.warning("EntityStore write failed (non-fatal): %s", exc)
 
         events = []
         for mac, observations in self._observations.items():

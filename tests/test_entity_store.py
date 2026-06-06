@@ -162,36 +162,87 @@ def test_blank_mac_skipped_entirely():
 
 
 # ---------------------------------------------------------------------------
-# PersistenceEngine integration — additive, default-off
+# Orchestrator integration — recording fires at the poll site for EVERY mode
+# (the gap this phase closes: a fixed node runs FixedScoring, not
+# PersistenceEngine, so the recording must not live inside either scorer).
 # ---------------------------------------------------------------------------
 
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
-def test_persistence_engine_writes_when_store_injected():
+
+def _make_orch(persistence, entity_store, devices, session_dir, current_fix=None):
+    from modules.orchestrator import SensorOrchestrator
+    km = MagicMock()
+    km.poll_devices = AsyncMock(return_value=devices)
+    pa = MagicMock(); pa.analyze = MagicMock(return_value=[])
+    orch = SensorOrchestrator(
+        gps=MagicMock(), kismet=km, adsb=MagicMock(), drone_rf=MagicMock(),
+        sdr_coordinator=MagicMock(), alert_backend=MagicMock(), rate_limiter=MagicMock(),
+        persistence=persistence, probe_analyzer=pa, gui_server=None,
+        entity_store=entity_store, remote_id=None,
+        session_id="test", session_start=T0, session_dir=Path(session_dir),
+        sdr_mode=MagicMock(), stop_event=asyncio.Event(),
+        gps_poll_interval=1, adsb_poll_interval=5, kismet_poll_interval=30,
+        drone_poll_interval=5, health_banner_interval=300,
+        max_reconnect_attempts=3, reconnect_interval=5,
+        modules_active={"kismet": True},
+    )
+    orch._current_fix = current_fix
+    return orch
+
+
+def test_records_in_fixed_mode(tmp_path):
+    # THE gap this phase closes: a fixed node (FixedScoring) now records.
+    from modules.fixed_scoring import FixedScoring
     s = _store()
-    eng = PersistenceEngine(entity_store=s)
-    dev = _device(probe_ssids=["HomeWiFi"])
-    for _ in range(3):
-        eng.update([dev], gps_fix={"lat": 1.0, "lon": 2.0})
+    eng = FixedScoring(db_path=":memory:", baseline_hours=72)   # learning -> [] events
+    orch = _make_orch(eng, s, [_device(probe_ssids=["HomeWiFi"])], tmp_path,
+                      current_fix={"lat": 21.4, "lon": -157.7})
+    asyncio.run(orch._poll_kismet())
     assert s.count("entities") == 1
-    assert s.entity_row("aa:bb:cc:dd:ee:ff")["obs_count"] == 3
-    assert s.probe_evidence_row("aa:bb:cc:dd:ee:ff", "HomeWiFi")["probe_count"] == 3
-    assert s.count("observations") == 3
+    assert s.probe_evidence_row("aa:bb:cc:dd:ee:ff", "HomeWiFi")["probe_count"] == 1
+    assert s.count("observations") == 1
     s.close()
 
 
-def test_persistence_engine_default_has_no_entity_store():
-    # No store injected -> the entity path is a no-op; scoring still works.
-    eng = PersistenceEngine()
-    assert eng._entity_store is None
-    events = eng.update([_device(probe_ssids=["X"])], gps_fix=None)
-    assert isinstance(events, list)   # update returns normally, no crash
+def test_records_in_mobile_mode(tmp_path):
+    s = _store()
+    eng = PersistenceEngine()                                   # below threshold -> []
+    orch = _make_orch(eng, s, [_device(probe_ssids=["HomeWiFi"])], tmp_path)
+    asyncio.run(orch._poll_kismet())
+    assert s.count("entities") == 1
+    assert s.probe_evidence_row("aa:bb:cc:dd:ee:ff", "HomeWiFi")["probe_count"] == 1
+    s.close()
 
 
-def test_persistence_engine_store_failure_is_non_fatal():
+def test_flat_line_property_at_poll_site_fixed_mode(tmp_path):
+    # 5 polls under fixed mode: upsert tables flat, observations grows.
+    from modules.fixed_scoring import FixedScoring
+    s = _store()
+    eng = FixedScoring(db_path=":memory:", baseline_hours=72)
+    orch = _make_orch(eng, s, [_device(probe_ssids=["HomeWiFi"])], tmp_path)
+    for _ in range(5):
+        asyncio.run(orch._poll_kismet())
+    assert s.count("probe_evidence") == 1
+    assert s.probe_evidence_row("aa:bb:cc:dd:ee:ff", "HomeWiFi")["probe_count"] == 5
+    assert s.count("device_fingerprint") == 1
+    assert s.count("entities") == 1
+    assert s.count("observations") == 5
+    s.close()
+
+
+def test_store_failure_at_poll_site_is_non_fatal(tmp_path):
     class _Boom:
         def record_poll(self, *a, **k):
             raise RuntimeError("disk gone")
-    eng = PersistenceEngine(entity_store=_Boom())
-    # update() must still return normally despite the store blowing up.
-    events = eng.update([_device()], gps_fix=None)
-    assert isinstance(events, list)
+    eng = PersistenceEngine()
+    orch = _make_orch(eng, _Boom(), [_device()], tmp_path)
+    asyncio.run(orch._poll_kismet())   # must not raise
+
+
+def test_no_store_is_a_clean_noop(tmp_path):
+    eng = PersistenceEngine()
+    orch = _make_orch(eng, None, [_device()], tmp_path)
+    asyncio.run(orch._poll_kismet())   # entity_store None -> skipped, no crash
