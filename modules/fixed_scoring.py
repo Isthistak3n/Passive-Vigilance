@@ -55,6 +55,15 @@ _MIN_NOVELTY_OBSERVATIONS = 2
 _BASE_SCORE = 0.5
 _SIGNAL_INCREMENT = 0.2
 
+# Off-schedule activation guard: a device's off-schedule signal does NOT activate
+# until that device's own hour-of-day mask spans at least this many DISTINCT
+# hours — i.e. the baseline is rich enough to define a schedule. Below it,
+# off-schedule contributes 0.0 ("insufficient baseline to judge", not "on
+# schedule"). Per-device, env-overridable. Live testing showed a 1-distinct-hour
+# baseline flags ~100% of known devices on any hour rollover; the default 12
+# requires roughly half a day of distinct hours before the signal is trusted.
+OFF_SCHEDULE_MIN_BASELINE_HOURS = 12
+
 
 def _coerce_signal(value) -> Optional[float]:
     """Return *value* as float, or None if missing/non-numeric (skip, don't crash)."""
@@ -101,6 +110,10 @@ class FixedScoring(ScoringEngine):
                 else float(os.getenv("FIXED_BASELINE_HOURS", "72"))
             )
             self._store = BaselineStore(path, hours, now=self._clock())
+        # Off-schedule activation guard (per-device distinct-hour threshold).
+        self._off_schedule_min_hours = int(
+            os.getenv("OFF_SCHEDULE_MIN_BASELINE_HOURS", str(OFF_SCHEDULE_MIN_BASELINE_HOURS))
+        )
         logger.info(
             "FixedScoring active — learning until %s (now %s)",
             self._store.freeze_time.isoformat(), self._clock().isoformat(),
@@ -197,11 +210,18 @@ class FixedScoring(ScoringEngine):
             else 0.0
         )
         # Off-schedule applies ONLY to known (baseline) devices — a novel device
-        # has no baseline schedule to deviate from. Flags when this hour-of-day
-        # was never seen during baseline.
+        # has no baseline schedule to deviate from. It also stays silent until the
+        # device's baseline spans enough DISTINCT hours to define a schedule
+        # (activation guard); below that it is "insufficient baseline to judge",
+        # not "on schedule". Flags when this hour-of-day was never seen in baseline.
         off_schedule = 0.0
-        if (not is_novel) and profile.hour_mask and not (profile.hour_mask & (1 << now.hour)):
-            off_schedule = 1.0
+        if not is_novel:
+            distinct_baseline_hours = bin(profile.hour_mask).count("1")
+            if (
+                distinct_baseline_hours >= self._off_schedule_min_hours
+                and not (profile.hour_mask & (1 << now.hour))
+            ):
+                off_schedule = 1.0
         return {
             "novelty": novelty,
             "off_schedule": off_schedule,
