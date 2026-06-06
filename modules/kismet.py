@@ -35,7 +35,36 @@ _DEVICE_FIELDS = [
     "kismet.device.base.first_time",
     "kismet.device.base.last_time",
     "kismet.device.base.signal/kismet.common.signal.last_signal",
+    "dot11.device/dot11.device.probed_ssid_map",
+    "dot11.device/dot11.device.probe_fingerprint",
+    "dot11.device/dot11.device.num_probed_ssids",
 ]
+
+
+def _extract_probe_ssids(probed_map) -> list:
+    """Return the unique, non-empty SSIDs a client is probing for.
+
+    ``probed_map`` is Kismet's ``dot11.device.probed_ssid_map`` value — a list of
+    records, each with the SSID string at ``dot11.probedssid.ssid``. The ""
+    (and whitespace-only) entry is the broadcast/wildcard probe and is excluded.
+    Order of first appearance is preserved; duplicates are dropped. A missing or
+    non-list value yields an empty list.
+    """
+    ssids: list = []
+    seen: set = set()
+    if not isinstance(probed_map, list):
+        return ssids
+    for rec in probed_map:
+        if not isinstance(rec, dict):
+            continue
+        ssid = rec.get("dot11.probedssid.ssid")
+        if not isinstance(ssid, str) or not ssid.strip():
+            continue
+        if ssid in seen:
+            continue
+        seen.add(ssid)
+        ssids.append(ssid)
+    return ssids
 
 
 class KismetModule:
@@ -188,6 +217,11 @@ class KismetModule:
                 # Kismet returns the simplified "a/b" field under its LEAF key,
                 # so read kismet.common.signal.last_signal (not the slash-path).
                 "last_signal":  entry.get("kismet.common.signal.last_signal", None),
+                # Probe behaviour (leaf keys, like last_signal above). The ""
+                # wildcard probe is excluded; absent map yields [].
+                "probe_ssids":   _extract_probe_ssids(entry.get("dot11.device.probed_ssid_map")),
+                "probe_fingerprint": entry.get("dot11.device.probe_fingerprint", None),
+                "num_probed_ssids":  entry.get("dot11.device.num_probed_ssids", 0),
                 "gps_lat":      gps_fix["lat"]  if gps_fix else None,
                 "gps_lon":      gps_fix["lon"]  if gps_fix else None,
                 "gps_utc":      gps_fix["utc"]  if gps_fix else None,

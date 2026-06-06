@@ -158,6 +158,7 @@ class TestKismetModulePollDevices(unittest.TestCase):
         device = result[0]
         for field in ("macaddr", "type", "name", "manuf", "phyname",
                       "first_time", "last_time", "last_signal",
+                      "probe_ssids", "probe_fingerprint", "num_probed_ssids",
                       "gps_lat", "gps_lon", "gps_utc"):
             self.assertIn(field, device, f"missing field: {field}")
         # Guard #51: signal must be read from the real nested leaf key,
@@ -204,6 +205,94 @@ class TestKismetModulePollDevices(unittest.TestCase):
         km = KismetModule()
         result = _run(km.poll_devices())
         self.assertEqual(result, [])
+
+
+# ---------------------------------------------------------------------------
+# Probe-SSID + fingerprint extraction
+# Mocks mirror the EXACT live Kismet nesting: probed_ssid_map is a LIST of
+# records, each SSID at dot11.probedssid.ssid; the "" entry is the wildcard.
+# ---------------------------------------------------------------------------
+
+
+def _probe_device(probed_map, fingerprint=None, num=None, mac="11:22:33:44:55:66"):
+    d = {
+        "kismet.device.base.macaddr": mac,
+        "kismet.device.base.type": "Wi-Fi Client",
+        "kismet.device.base.name": "",
+        "kismet.device.base.manuf": "Acme",
+        "kismet.device.base.phyname": "IEEE802.11",
+        "kismet.device.base.first_time": 1700000000,
+        "kismet.device.base.last_time": 1700000060,
+        "kismet.common.signal.last_signal": -55,
+    }
+    if probed_map is not None:
+        d["dot11.device.probed_ssid_map"] = probed_map
+    if fingerprint is not None:
+        d["dot11.device.probe_fingerprint"] = fingerprint
+    if num is not None:
+        d["dot11.device.num_probed_ssids"] = num
+    return d
+
+
+def _rec(ssid):
+    return {"dot11.probedssid.ssid": ssid, "dot11.probedssid.ssidlen": len(ssid),
+            "dot11.probedssid.first_time": 1700000000, "dot11.probedssid.last_time": 1700000060}
+
+
+class TestKismetProbeExtraction(unittest.TestCase):
+
+    def _poll(self, MockSession, devices):
+        from modules.kismet import KismetModule
+        gps = MagicMock(); gps.get_fix = MagicMock(return_value=None)
+        with patch("modules.kismet.KISMET_API_KEY", "valid-key"):
+            MockSession.return_value = _mock_session(get_status=200, post_status=200, post_json=devices)
+            km = KismetModule(gps_module=gps)
+            _run(km.connect())
+        result = _run(km.poll_devices())
+        _run(km.close())
+        return result
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_wildcard_excluded_named_preserved_in_order(self, MockSession):
+        dev = _probe_device([_rec(""), _rec("NETGEAR13"), _rec("HomeWiFi")],
+                            fingerprint=1585625513, num=3)
+        r = self._poll(MockSession, [dev])[0]
+        self.assertEqual(r["probe_ssids"], ["NETGEAR13", "HomeWiFi"])
+        self.assertEqual(r["probe_fingerprint"], 1585625513)
+        self.assertEqual(r["num_probed_ssids"], 3)
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_only_wildcard_yields_empty(self, MockSession):
+        r = self._poll(MockSession, [_probe_device([_rec("")], fingerprint=42, num=1)])[0]
+        self.assertEqual(r["probe_ssids"], [])
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_absent_map_yields_empty_none_zero(self, MockSession):
+        r = self._poll(MockSession, [_probe_device(None)])[0]
+        self.assertEqual(r["probe_ssids"], [])
+        self.assertIsNone(r["probe_fingerprint"])
+        self.assertEqual(r["num_probed_ssids"], 0)
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_duplicate_named_ssids_deduplicated(self, MockSession):
+        dev = _probe_device([_rec("HomeWiFi"), _rec("HomeWiFi"), _rec("Cafe")])
+        r = self._poll(MockSession, [dev])[0]
+        self.assertEqual(r["probe_ssids"], ["HomeWiFi", "Cafe"])
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_whitespace_only_ssids_excluded(self, MockSession):
+        dev = _probe_device([_rec(""), _rec("   "), _rec("\t"), _rec("Real")])
+        r = self._poll(MockSession, [dev])[0]
+        self.assertEqual(r["probe_ssids"], ["Real"])
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_fingerprint_and_count_read_as_integers(self, MockSession):
+        dev = _probe_device([_rec("X")], fingerprint=1585625513, num=2)
+        r = self._poll(MockSession, [dev])[0]
+        self.assertIsInstance(r["probe_fingerprint"], int)
+        self.assertEqual(r["probe_fingerprint"], 1585625513)
+        self.assertIsInstance(r["num_probed_ssids"], int)
+        self.assertEqual(r["num_probed_ssids"], 2)
 
 
 if __name__ == "__main__":
