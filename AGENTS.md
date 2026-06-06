@@ -46,6 +46,7 @@ When writing or testing code, always note which node it was validated on.
 - Pull latest branch and read `CONTEXT.md` at the start of every session
 - On session close: commit with full context, push, and update run notes in `CONTEXT.md`
 - Tag untested code clearly: `# UNTESTED — needs Pi validation`
+- Reports: lead with a findings table or bullet list; prose only where a finding needs explanation. No narrative paragraphs.
 
 ---
 
@@ -67,7 +68,7 @@ When writing or testing code, always note which node it was validated on.
 
 ---
 
-### Human (Cody)
+### Human 
 **Identity:** `[human]` in commit messages  
 **Role:** Final approver, hardware access, architectural decisions
 
@@ -121,7 +122,7 @@ This rule applies to all agents and all claims of completion. Vague or incomplet
 > This format governs **AI-agent commit subject lines** (machine-parseable, per-agent attribution). For PR titles, release notes, and human contributor commits, see `CLAUDE.md` → Commit & Release Standards.
 
 ``` 
-[agent] type(scope): short description
+[agent] type(scope): short, plain English description
 
 Body (optional): what changed and why
 Tested: Pi 1 / Pi 2 / untested
