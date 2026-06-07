@@ -536,3 +536,66 @@ def test_ap_filter_does_not_affect_off_schedule():
     events = engine.update([ap])
     assert len(events) == 1
     assert events[0].score_breakdown["off_schedule"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Egregious-during-baseline safety net (Phase 2.6, design 5.2)
+# ---------------------------------------------------------------------------
+
+
+def test_egregious_close_flags_during_learning():
+    # A very strong (close) non-AP device flags WHILE the baseline is learning,
+    # so an already-present device in the operator's space is not silently baked
+    # into "normal".
+    engine, clock = _clocked_engine(baseline_hours=1.0)   # clock at T0 -> learning
+    dev = _static_device(mac="d8:96:85:c1:05:e0", type="Wi-Fi Client", last_signal=-40)
+    events = engine.update([dev])
+    assert len(events) == 1
+    assert events[0].score_breakdown["egregious_close"] == 1.0
+    assert events[0].alert_level == "suspicious"
+
+
+def test_egregious_weak_device_silent_during_learning():
+    # Ordinary nearby traffic (well below the strength threshold) stays silent
+    # during learning — only the baseline is updated.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:c1:05:e1", type="Wi-Fi Client", last_signal=-70)
+    assert engine.update([dev]) == []
+
+
+def test_egregious_excludes_access_points():
+    # A nearby strong Wi-Fi AP (a router) is fixed infrastructure, not a device
+    # in the operator's space — excluded from the egregious signal.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    ap = _static_device(mac="d8:96:85:c1:05:e2", type="Wi-Fi AP", last_signal=-40)
+    assert engine.update([ap]) == []
+
+
+def test_egregious_skips_placeholder_and_missing_signal():
+    # The Kismet 0-dBm placeholder is not a real reading, and a missing reading
+    # cannot be egregious.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    assert engine.update([_static_device(mac="d8:96:85:c1:05:e3",
+                                         type="Wi-Fi Client", last_signal=0)]) == []
+    assert engine.update([_static_device(mac="d8:96:85:c1:05:e4",
+                                         type="Wi-Fi Client")]) == []
+
+
+def test_egregious_not_applied_after_freeze():
+    # Egregious strength is a learning-window safety net only. Post-freeze the
+    # node judges by deviation: a known, on-schedule, non-approaching device that
+    # is merely strong does not flag.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:c1:05:e5", type="Wi-Fi Client", last_signal=-40)
+    engine.update([dev])                              # learning sighting
+    clock[0] = T0 + timedelta(hours=24)               # frozen, baselined hour 0
+    assert engine.update([dev]) == []
+
+
+def test_egregious_device_is_still_learned_into_baseline():
+    # The alert is a safety net, not a substitute for a clean baseline — the
+    # egregious device is still profiled into the baseline.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:c1:05:e6", type="Wi-Fi Client", last_signal=-40)
+    engine.update([dev])
+    assert engine._store.get_profile("mac:d8:96:85:c1:05:e6") is not None
