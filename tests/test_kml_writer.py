@@ -206,6 +206,55 @@ class TestKMLWriterAircraftPlacemark(unittest.TestCase):
             f"aircraft-emergency found in styleUrls for non-emergency: {style_urls}",
         )
 
+    def test_aircraft_track_linestring_added_for_multi_position_flight(self):
+        """An aircraft with 2+ positions must get a LineString flight path."""
+        event = _aircraft_event()
+        event["positions"] = [
+            {"lat": 51.50, "lon": -0.10, "altitude": 10000, "timestamp": "2024-01-01T12:00:00+00:00"},
+            {"lat": 51.52, "lon": -0.12, "altitude": 11000, "timestamp": "2024-01-01T12:00:30+00:00"},
+            {"lat": 51.54, "lon": -0.14, "altitude": 12000, "timestamp": "2024-01-01T12:01:00+00:00"},
+        ]
+        path = self.kw.write_session(self.session_id, [], [event], [])
+        content = open(path).read()
+        self.assertIn("LineString", content)
+        self.assertIn("aircraft-track", content)
+        # All three points must appear in the LineString coordinates.
+        self.assertIn("51.54", content)
+
+    def test_aircraft_track_not_added_for_single_position(self):
+        """No flight-path LineString for an aircraft seen at one position."""
+        event = _aircraft_event()
+        event["positions"] = [
+            {"lat": 51.5, "lon": -0.1, "altitude": 10000, "timestamp": "2024-01-01T12:00:00+00:00"},
+        ]
+        path = self.kw.write_session(self.session_id, [], [event], [])
+        content = open(path).read()
+        self.assertNotIn("LineString", content)
+
+    def test_aircraft_track_uses_emergency_style_for_emergencies(self):
+        """An emergency aircraft's flight path must use the emergency track style."""
+        event = _aircraft_event(emergency=True)
+        event["positions"] = [
+            {"lat": 51.50, "lon": -0.10, "altitude": 10000, "timestamp": "2024-01-01T12:00:00+00:00"},
+            {"lat": 51.52, "lon": -0.12, "altitude": 11000, "timestamp": "2024-01-01T12:00:30+00:00"},
+        ]
+        path = self.kw.write_session(self.session_id, [], [event], [])
+        content = open(path).read()
+        self.assertIn("aircraft-track-emergency", content)
+
+    def test_aircraft_track_kml_is_valid_xml(self):
+        """KML with an aircraft flight path must still parse as valid XML."""
+        event = _aircraft_event()
+        event["positions"] = [
+            {"lat": 51.50, "lon": -0.10, "altitude": 10000, "timestamp": "2024-01-01T12:00:00+00:00"},
+            {"lat": 51.52, "lon": -0.12, "altitude": 11000, "timestamp": "2024-01-01T12:00:30+00:00"},
+        ]
+        path = self.kw.write_session(self.session_id, [], [event], [])
+        try:
+            ET.parse(path)
+        except ET.ParseError as exc:
+            self.fail(f"KML with aircraft track is not valid XML: {exc}")
+
 
 class TestKMLWriterDronePlacemark(unittest.TestCase):
 
