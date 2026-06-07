@@ -11,8 +11,18 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Optional
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    '''Great-circle distance in metres between two GPS coordinates.'''
+    R = 6_371_000.0
+    p1, p2 = radians(lat1), radians(lat2)
+    dphi, dlmb = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlmb / 2) ** 2
+    return R * 2 * atan2(sqrt(a), sqrt(1.0 - a))
 
 
 @dataclass
@@ -114,9 +124,32 @@ class SensorOrchestrator:
         }
 
         self.all_events: list[dict] = []
+        # Index mac -> the event_dict already in all_events, so a device that
+        # re-flags every poll updates one ongoing detection in place instead of
+        # appending a new row. Bounds all_events / events.jsonl to distinct
+        # devices (the post-freeze growth fix); the dict values ARE the list
+        # elements, so all_events stays a plain list for the shutdown writers.
+        self._wifi_event_index: dict[str, dict] = {}
         self.aircraft_detections: list[dict] = []
+        # Index icao -> the aircraft event already in aircraft_detections, so a
+        # plane re-seen every poll becomes ONE event accumulating a positions[]
+        # track instead of hundreds of rows. Track points are distance/time
+        # thinned so a slow/hovering target doesn't bloat the list.
+        self._aircraft_index: dict[str, dict] = {}
+        self._aircraft_track_min_m = float(os.getenv("AIRCRAFT_TRACK_MIN_METERS", "250"))
+        self._aircraft_track_min_s = float(os.getenv("AIRCRAFT_TRACK_MIN_SECONDS", "15"))
         self.drone_detections: list[dict] = []
+        # Index freq-band -> the drone event already in drone_detections, so a
+        # persistent emitter heard on every sweep becomes ONE event (refreshed
+        # in place with the latest/peak power and a running count) instead of a
+        # row per sweep. A fixed node doesn't move, so no geographic track.
+        self._drone_index: dict[str, dict] = {}
         self.remote_id_detections: list[dict] = []
+        # Index UAS ID -> the Remote ID event already in remote_id_detections, so
+        # a drone broadcasting every frame becomes ONE event accumulating a
+        # positions[] flight path (the drone's own reported position, thinned)
+        # instead of a row per frame.
+        self._remote_id_index: dict[str, dict] = {}
         self._current_fix: Optional[dict] = None
         self._gps_fix_count: int = 0
 
@@ -262,13 +295,26 @@ class SensorOrchestrator:
             logger.info("Sensor adsb recovered")
             self._sensor_health["adsb"] = True
             self._degraded_log_counter["adsb"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
         for aircraft in aircraft_list:
             self._stats["aircraft_seen"] += 1
-            event = {**aircraft, "event_type": "aircraft", "timestamp": datetime.now(timezone.utc).isoformat()}
-            self.aircraft_detections.append(event)
-            self._append_jsonl(self._session_dir / "aircraft.jsonl", event)
-            if self.gui_server is not None:
-                self.gui_server.push_event("aircraft", event)
+            icao = aircraft.get("icao") or "unknown"
+            existing = self._aircraft_index.get(icao)
+            if existing is not None:
+                # Same plane — refresh current-state fields in place and extend
+                # its track (thinned). One event per ICAO, not one per sighting.
+                existing.update({**aircraft, "event_type": "aircraft", "timestamp": now_iso})
+                moved = self._extend_aircraft_track(existing, aircraft, now_iso)
+                if self.gui_server is not None and moved:
+                    self.gui_server.push_event("aircraft", existing)
+            else:
+                event = {**aircraft, "event_type": "aircraft", "timestamp": now_iso, "positions": []}
+                self._extend_aircraft_track(event, aircraft, now_iso)
+                self._aircraft_index[icao] = event
+                self.aircraft_detections.append(event)
+                self._append_jsonl(self._session_dir / "aircraft.jsonl", event)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("aircraft", event)
             emergency = aircraft.get("emergency", False)
             if emergency:
                 self.alert_backend.send_aircraft_alert(aircraft)
@@ -324,21 +370,40 @@ class SensorOrchestrator:
             return
         for event in detection_events:
             self._stats["persistent_detections"] += 1
-            event_dict = {
-                "event_type": "wifi", "mac": event.mac, "score": event.score,
-                "alert_level": event.alert_level, "manufacturer": event.manufacturer,
-                "device_type": event.device_type, "mac_type": event.mac_type,
-                "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
-                "observation_count": event.observation_count,
-                "lat": event.locations[0]["lat"] if event.locations else None,
-                "lon": event.locations[0]["lon"] if event.locations else None,
-                "locations": event.locations,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            self.all_events.append(event_dict)
-            self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
-            if self.gui_server is not None:
-                self.gui_server.push_event("wifi", event_dict)
+            existing = self._wifi_event_index.get(event.mac)
+            if existing is not None:
+                # Same device flagged again — update the ongoing detection in
+                # place (no new list row, no new JSONL line). Push to the GUI
+                # only on an alert-level change to keep the live feed bounded.
+                prev_level = existing["alert_level"]
+                existing.update({
+                    "score": event.score, "alert_level": event.alert_level,
+                    "last_seen": event.last_seen.isoformat(),
+                    "observation_count": event.observation_count,
+                    "lat": event.locations[0]["lat"] if event.locations else None,
+                    "lon": event.locations[0]["lon"] if event.locations else None,
+                    "locations": event.locations,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                if self.gui_server is not None and event.alert_level != prev_level:
+                    self.gui_server.push_event("wifi", existing)
+            else:
+                event_dict = {
+                    "event_type": "wifi", "mac": event.mac, "score": event.score,
+                    "alert_level": event.alert_level, "manufacturer": event.manufacturer,
+                    "device_type": event.device_type, "mac_type": event.mac_type,
+                    "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
+                    "observation_count": event.observation_count,
+                    "lat": event.locations[0]["lat"] if event.locations else None,
+                    "lon": event.locations[0]["lon"] if event.locations else None,
+                    "locations": event.locations,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                self._wifi_event_index[event.mac] = event_dict
+                self.all_events.append(event_dict)
+                self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("wifi", event_dict)
             if await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self.alert_backend.send_persistence_alert(event)
                 self._stats["alerts_sent"] += 1
@@ -364,21 +429,44 @@ class SensorOrchestrator:
             logger.info("Sensor drone_rf recovered")
             self._sensor_health["drone_rf"] = True
             self._degraded_log_counter["drone_rf"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
         for detection in pending:
             freq = detection.get("freq_mhz", 0)
+            power = detection.get("power_db", 0.0)
+            ts = detection.get("timestamp", now_iso)
             self._stats["drone_detections"] += 1
-            event_dict = {
-                "event_type": "drone", "freq_mhz": freq,
-                "power_db": detection.get("power_db", 0.0),
+            # Full per-sweep forensic series stays on disk (append-only, bounded
+            # by the session); the in-memory list is deduped to one row per band.
+            self._append_jsonl(self._session_dir / "drone.jsonl", {
+                "event_type": "drone", "freq_mhz": freq, "power_db": power,
                 "lat": detection.get("gps_lat"), "lon": detection.get("gps_lon"),
-                "timestamp": detection.get("timestamp", datetime.now(timezone.utc).isoformat()),
-            }
-            self.drone_detections.append(event_dict)
-            self._append_jsonl(self._session_dir / "drone.jsonl", event_dict)
-            if self.gui_server is not None:
-                self.gui_server.push_event("drone", event_dict)
+                "timestamp": ts,
+            })
+            band = str(int(freq))
+            existing = self._drone_index.get(band)
+            if existing is not None:
+                # Same band still hot — refresh in place; don't grow the list.
+                existing["power_db"] = power
+                existing["peak_power_db"] = max(existing.get("peak_power_db", power), power)
+                existing["lat"] = detection.get("gps_lat")
+                existing["lon"] = detection.get("gps_lon")
+                existing["last_seen"] = ts
+                existing["timestamp"] = ts
+                existing["observation_count"] = existing.get("observation_count", 1) + 1
+            else:
+                event_dict = {
+                    "event_type": "drone", "freq_mhz": freq, "power_db": power,
+                    "peak_power_db": power,
+                    "lat": detection.get("gps_lat"), "lon": detection.get("gps_lon"),
+                    "first_seen": ts, "last_seen": ts, "timestamp": ts,
+                    "observation_count": 1,
+                }
+                self._drone_index[band] = event_dict
+                self.drone_detections.append(event_dict)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("drone", event_dict)
             alert_detection = {
-                "freq_mhz": freq, "power_db": detection.get("power_db", 0.0),
+                "freq_mhz": freq, "power_db": power,
                 "lat": detection.get("gps_lat") or 0.0, "lon": detection.get("gps_lon") or 0.0,
             }
             if await self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
@@ -410,11 +498,30 @@ class SensorOrchestrator:
             logger.info("Sensor remote_id recovered")
             self._sensor_health["remote_id"] = True
             self._degraded_log_counter["remote_id"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
         for detection in detections:
             self._stats["remote_id_detections"] += 1
-            self.remote_id_detections.append(detection)
+            # Full per-frame forensic log stays on disk; the in-memory list is
+            # deduped to one event per UAS ID with a thinned drone flight path.
             self._append_jsonl(self._session_dir / "remote_id.jsonl", detection)
             uas_id = detection.get("uas_id") or "unknown"
+            existing = self._remote_id_index.get(uas_id)
+            if existing is not None:
+                # Same drone still broadcasting — refresh state and extend its
+                # flight path in place instead of appending a row per frame.
+                existing.update(detection)
+                self._extend_track(
+                    existing, detection.get("drone_lat"),
+                    detection.get("drone_lon"), detection.get("drone_alt_m"), now_iso,
+                )
+            else:
+                event = {**detection, "positions": []}
+                self._extend_track(
+                    event, detection.get("drone_lat"),
+                    detection.get("drone_lon"), detection.get("drone_alt_m"), now_iso,
+                )
+                self._remote_id_index[uas_id] = event
+                self.remote_id_detections.append(event)
             if await self.rate_limiter.is_allowed(f"remote_id:{uas_id}"):
                 self.alert_backend.send_remote_id_alert(detection)
                 self._stats["alerts_sent"] += 1
@@ -517,6 +624,43 @@ class SensorOrchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _extend_track(self, event: dict, lat, lon, alt, ts_iso: str) -> bool:
+        '''Append a thinned ``{lat, lon, altitude, timestamp}`` point to
+        ``event['positions']``.
+
+        Adds a point only if there is a position AND the target has moved at
+        least ``AIRCRAFT_TRACK_MIN_METERS`` or ``AIRCRAFT_TRACK_MIN_SECONDS`` have
+        passed since the last point — so a slow/hovering target doesn't bloat the
+        track. Positionless sightings add no point. Returns True if a point was
+        added. Shared by the aircraft (ADS-B) and Remote ID flight-path tracks.
+        '''
+        if lat is None or lon is None:
+            return False
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return False
+        pts = event.setdefault("positions", [])
+        if pts:
+            last = pts[-1]
+            dist = _haversine_m(last["lat"], last["lon"], lat, lon)
+            try:
+                dt = (datetime.fromisoformat(ts_iso)
+                      - datetime.fromisoformat(last["timestamp"])).total_seconds()
+            except Exception:
+                dt = self._aircraft_track_min_s + 1.0
+            if dist < self._aircraft_track_min_m and dt < self._aircraft_track_min_s:
+                return False
+        pts.append({"lat": lat, "lon": lon, "altitude": alt, "timestamp": ts_iso})
+        return True
+
+    def _extend_aircraft_track(self, event: dict, aircraft: dict, ts_iso: str) -> bool:
+        '''Extend an aircraft event's flight-path track from an ADS-B sighting.'''
+        return self._extend_track(
+            event, aircraft.get("lat"), aircraft.get("lon"),
+            aircraft.get("altitude"), ts_iso,
+        )
 
     def _console_alert(self, message: str) -> None:
         '''Send an alert to the console backend (used for sensor health degradation).'''

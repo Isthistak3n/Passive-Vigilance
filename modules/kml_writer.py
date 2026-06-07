@@ -4,7 +4,8 @@ Writes a single richly-styled KML file per session alongside the existing
 shapefiles.  Three folders are created: WiFi/BT Detections, Aircraft, and
 Drone RF.  WiFi devices are color-coded by alert level; devices seen at
 two or more GPS locations get a LineString track showing their movement.
-Aircraft are placed at actual altitude (feet → metres).
+Aircraft are placed at actual altitude (feet → metres) and, when seen at
+two or more positions, get an absolute-altitude LineString flight path.
 
 Pure Python — no additional dependencies beyond the standard library.
 """
@@ -42,6 +43,8 @@ _LINE_STYLE_DEFS: dict[str, tuple[str, int]] = {
     "wifi-track-suspicious": ("ff00ffff", 2),
     "wifi-track-likely":     ("ff00a5ff", 2),
     "wifi-track-high":       ("ff0000ff", 3),
+    "aircraft-track":           ("ffff8800", 2),
+    "aircraft-track-emergency": ("ff0000ff", 3),
 }
 
 
@@ -233,8 +236,13 @@ class KMLWriter:
         alt: float,
         style_id: str,
         timestamp: str = "",
+        altitude_mode: str = "",
     ) -> list[str]:
-        """Return KML lines for a single Point Placemark."""
+        """Return KML lines for a single Point Placemark.
+
+        ``altitude_mode`` (e.g. ``"absolute"``) makes the marker float at *alt*;
+        when empty the point clamps to the ground (KML default).
+        """
         lines: list[str] = [
             "    <Placemark>",
             f"      <name>{_xe(name)}</name>",
@@ -252,6 +260,10 @@ class KMLWriter:
         lines += [
             f"      <styleUrl>#{style_id}</styleUrl>",
             "      <Point>",
+        ]
+        if altitude_mode:
+            lines.append(f"        <altitudeMode>{altitude_mode}</altitudeMode>")
+        lines += [
             f"        <coordinates>{lon},{lat},{alt}</coordinates>",
             "      </Point>",
             "    </Placemark>",
@@ -350,7 +362,53 @@ class KMLWriter:
         except (TypeError, ValueError):
             alt_m = 0.0
         ts = event.get("timestamp", "")
-        return self._build_placemark(name, desc, lat, lon, alt_m, style_id, ts)
+        lines = self._build_placemark(
+            name, desc, lat, lon, alt_m, style_id, ts, altitude_mode="absolute"
+        )
+
+        # Flight-path track for aircraft seen at 2+ positions over the session.
+        positions = event.get("positions") or []
+        if len(positions) >= 2:
+            lines += self._aircraft_track_linestring(name, emergency, positions)
+
+        return lines
+
+    def _aircraft_track_linestring(
+        self,
+        name: str,
+        emergency: bool,
+        positions: list,
+    ) -> list[str]:
+        """Return KML lines for an absolute-altitude LineString flight path.
+
+        Each entry in *positions* is a ``{lat, lon, altitude, timestamp}`` dict
+        accumulated by the orchestrator (altitude in feet).  Points without a
+        coordinate are skipped; fewer than two usable points yields no track.
+        """
+        coord_parts: list[str] = []
+        for pos in positions:
+            lat, lon = pos.get("lat"), pos.get("lon")
+            if lat is None or lon is None:
+                continue
+            try:
+                alt_m = float(pos.get("altitude") or 0) * 0.3048
+            except (TypeError, ValueError):
+                alt_m = 0.0
+            coord_parts.append(f"{lon},{lat},{alt_m}")
+        if len(coord_parts) < 2:
+            return []
+        coords = " ".join(coord_parts)
+        style_id = "aircraft-track-emergency" if emergency else "aircraft-track"
+        return [
+            "    <Placemark>",
+            f"      <name>Track — {_xe(name)}</name>",
+            f"      <styleUrl>#{style_id}</styleUrl>",
+            "      <LineString>",
+            "        <altitudeMode>absolute</altitudeMode>",
+            f"        <coordinates>{coords}</coordinates>",
+            "      </LineString>",
+            "    </Placemark>",
+        ]
 
     def _drone_placemark(self, event: dict) -> list[str]:
         freq = event.get("freq_mhz", 0)

@@ -11,12 +11,14 @@ except the observation history is a real UPSERT (``INSERT ... ON CONFLICT ... DO
 UPDATE``). A miskeyed upsert that inserts a fresh row every poll would recreate
 the in-memory growth problem on disk; the row counts for a stable device set
 must level off, not climb per poll. Only the ``observations`` table grows by
-design (history; pruning is a later phase).
+design (history); it is bounded by a time-based retention window — see
+``prune_observations`` — so an always-on node does not fill the disk.
 """
 
 import logging
+import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +27,12 @@ logger = logging.getLogger(__name__)
 # Default DB path derived from this file's location (modules/ -> repo root), so
 # it resolves identically under systemd or by hand; lives under gitignored data/.
 _DEFAULT_ENTITY_DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / "entities.db")
+
+# Observation history retention. Generous by default so cross-session entity
+# resolution has plenty to work with; set the days to 0 (or negative) to keep
+# history forever. Both are read once at construction.
+_DEFAULT_RETENTION_DAYS = int(os.getenv("ENTITY_OBSERVATION_RETENTION_DAYS", "30"))
+_DEFAULT_PRUNE_INTERVAL_S = int(os.getenv("ENTITY_PRUNE_INTERVAL_SECONDS", "3600"))
 
 
 def _iso(dt: datetime) -> str:
@@ -35,8 +43,17 @@ class EntityStore:
     """SQLite-backed durable store for probe evidence, fingerprints, entities,
     and observation history. All writes are additive; none affect scoring."""
 
-    def __init__(self, db_path: Optional[str] = None) -> None:
+    def __init__(self, db_path: Optional[str] = None,
+                 retention_days: Optional[int] = None,
+                 prune_interval_s: Optional[int] = None) -> None:
         self._db_path = db_path or _DEFAULT_ENTITY_DB_PATH
+        self._retention_days = (
+            _DEFAULT_RETENTION_DAYS if retention_days is None else retention_days
+        )
+        self._prune_interval_s = (
+            _DEFAULT_PRUNE_INTERVAL_S if prune_interval_s is None else prune_interval_s
+        )
+        self._last_prune: Optional[datetime] = None
         if self._db_path != ":memory:":
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path)
@@ -101,6 +118,11 @@ class EntityStore:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_obs_entity ON observations(entity_id, timestamp)"
+        )
+        # Plain timestamp index for the retention sweep, which deletes across all
+        # entities by age rather than per-entity.
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_obs_timestamp ON observations(timestamp)"
         )
         self._conn.commit()
 
@@ -180,6 +202,44 @@ class EntityStore:
             )
 
         self._conn.commit()
+        self._maybe_prune(now)
+
+    # ------------------------------------------------------------------
+    # Observation history retention
+    # ------------------------------------------------------------------
+
+    def prune_observations(self, now: Optional[datetime] = None) -> int:
+        """Delete observation rows older than the retention window and return the
+        number removed. A retention of 0 or fewer days disables pruning (keeps
+        history forever). Timestamps are uniform UTC ISO strings, so a string
+        comparison against the cutoff is correct."""
+        if self._retention_days <= 0:
+            return 0
+        now = now or datetime.now(timezone.utc)
+        cutoff = _iso(now - timedelta(days=self._retention_days))
+        cur = self._conn.execute(
+            "DELETE FROM observations WHERE timestamp < ?", (cutoff,)
+        )
+        self._conn.commit()
+        deleted = cur.rowcount or 0
+        if deleted:
+            logger.info("EntityStore pruned %d observation(s) older than %d day(s)",
+                        deleted, self._retention_days)
+        return deleted
+
+    def _maybe_prune(self, now: datetime) -> None:
+        """Run the retention sweep at most once per prune interval. Guarded so a
+        prune failure never disturbs the write path that just committed."""
+        if self._retention_days <= 0:
+            return
+        if (self._last_prune is not None
+                and (now - self._last_prune).total_seconds() < self._prune_interval_s):
+            return
+        self._last_prune = now
+        try:
+            self.prune_observations(now)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("EntityStore prune error: %s", exc)
 
     # ------------------------------------------------------------------
     # Read helpers (tests / inspection)

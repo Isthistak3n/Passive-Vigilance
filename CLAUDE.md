@@ -197,7 +197,10 @@ Re-run the monitor mode commands after any NM restart.
   via `record_poll()` at the **poll site** in `SensorOrchestrator._poll_kismet`,
   so it records for **both** node modes (orthogonal to scoring). Per-device rows
   are real upserts (flat for a stable device set); only `observations` grows by
-  design. Guarded — a store failure never affects capture or detection.
+  design and is bounded by a time-based retention sweep
+  (`ENTITY_OBSERVATION_RETENTION_DAYS`, default 30; 0 = keep forever; swept at
+  most every `ENTITY_PRUNE_INTERVAL_SECONDS`, default 3600). Guarded — a store
+  failure never affects capture or detection.
 - GUI mode toggle: `POST /api/mode` (requires `GUI_TOKEN`) writes `NODE_MODE` to
   `.env` surgically/atomically; mode is read only at startup, so the change needs
   a restart.
