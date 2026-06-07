@@ -95,6 +95,8 @@ feat|fix|docs|hotfix|refactor/<name>  →  main   (via PR)
 - At least one confirmed Pi validation recorded in the PR
 - Cody approval
 - PR required (ruleset-enforced — direct pushes to `main` are blocked)
+- Commits must be **signed** — the ruleset requires verified signatures; an
+  unsigned commit shows the PR as BLOCKED until signing is resolved
 
 - Claude Code opens its own PRs; Grok reviews all PRs for cross-module impact before Cody approval
 - There is no docs-only exception — all changes go through the normal PR path

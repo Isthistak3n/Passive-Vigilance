@@ -1,8 +1,25 @@
 # Detection Modes: Fixed vs. Mobile Nodes
 
-**Status:** Design specification (pre-implementation)
+**Status:** Partially implemented — see the phase status below.
 **Tracks:** Issue #50 (stationary scoring), supersedes the mobile-only scoring assumption
 **Audience:** Implementers (Claude Code), reviewers, operators
+
+> **Implementation status (as of 2026-06).** This document is the full phased
+> design; not all of it has shipped. Merged to `main`:
+> - Mode selector + strategy fork (`NODE_MODE`, `ScoringEngine`, `MobileScoring`
+>   vs `FixedScoring`) — Phase 1, #66.
+> - GUI mode toggle — Phase 1.5, #67.
+> - Fixed-mode baseline + novelty, durable crash-safe baseline — Phase 1, #66.
+> - Off-schedule detection + graduated severity + baseline RSSI stats — Phase 2,
+>   #68; with the per-device activation guard — #69.
+> - Probe-SSID / fingerprint capture feeding the randomized-MAC key — #70.
+> - Entity/observation store (recorded at the capture layer for both modes) — #71.
+>
+> Not yet shipped (genuinely future): the approaching-signal (rising-RSSI)
+> trigger and zero-RSSI handling (Phase 2.5, in review), abnormal-dwell,
+> egregious-during-baseline alerting (5.2), the GPS-movement sanity check (2.2),
+> baseline adaptation (5.5), WiGLE enrichment (§9), watchboxes (§10), and
+> multi-node correlation (§11.8).
 
 ---
 

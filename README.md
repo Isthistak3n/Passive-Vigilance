@@ -1,9 +1,9 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-331%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-368%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.4.3--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
+[![Release](https://img.shields.io/badge/release-v0.5.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
 
 > A passive RF/WiFi/BT/ADS-B sensor platform for counter-surveillance,
@@ -130,19 +130,34 @@ A fixed node run under mobile scoring never alerts — a stationary sensor only
 ever produces one location cluster, so every device forfeits the location signal.
 That is exactly why mode is an explicit, fail-loud deployment choice.
 
-**Fixed mode — pattern of life (Phase 1):**
+**Fixed mode — pattern of life:**
 
 - On first start the node enters a **baseline learning window**
   (`FIXED_BASELINE_HOURS`, default 72h), characterising the environment's normal
   RF devices before it begins flagging.
-- After the window freezes, **novel-persistent** devices — never seen during
-  baseline, now present and lingering — are flagged.
+- After the window freezes, deviations from the baseline are flagged with
+  **graduated severity** (suspicious → likely → high): **novelty** (a device
+  never seen during baseline that appears and lingers) and **off-schedule** (a
+  known baseline device seen in an hour-of-day it was never seen in during
+  baseline). Off-schedule only activates once a device's baseline spans enough
+  distinct hours to define a schedule (`OFF_SCHEDULE_MIN_BASELINE_HOURS`,
+  default 12), which avoids false alarms from thin baselines.
 - Devices are keyed by MAC (stable) or by **probe-SSID fingerprint** (randomized
-  MACs), so one logical device's rotating MACs map to a single profile.
+  MACs), so one logical device's rotating MACs map to a single profile. Each
+  poll's probed SSIDs and Kismet probe fingerprint are pulled from Kismet for
+  this purpose.
 - The baseline persists to **SQLite** and survives restarts and reboots — a
   crash loop resumes the existing learning window instead of resetting it, so the
   node still eventually alerts. The learning start time is durable and never
-  recomputed on boot.
+  recomputed on boot. Per-device RSSI statistics are also banked during learning
+  for future approaching-signal work.
+
+**Entity / observation foundation:** independently of scoring, every poll is
+recorded into a durable SQLite store (what each device probes for, a per-device
+fingerprint, one entity per device, and a growing observation history). This runs
+at the capture layer for **both** node modes and is the substrate for
+cross-session device identity. It uses real upserts, so a stable device set
+produces a fixed number of rows rather than growing per poll.
 
 **Switching modes from the dashboard:** when the optional web GUI is enabled with
 a `GUI_TOKEN` set, the dashboard header has a small **Mode** control to write
@@ -150,10 +165,11 @@ a `GUI_TOKEN` set, the dashboard header has a small **Mode** control to write
 **restart requirement explicit** — the running node keeps its current mode until
 it is restarted.
 
-> Roadmap: later phases add egregious-during-baseline alerting, off-schedule /
-> abnormal-dwell / approaching-signal detection, slow baseline adaptation, and
-> WiGLE resident-vs-visitor enrichment. See
-> [docs/design-detection-modes.md](docs/design-detection-modes.md).
+> Roadmap: still ahead are the approaching-signal (rising-RSSI) trigger,
+> abnormal-dwell detection, egregious-during-baseline alerting, slow baseline
+> adaptation, and WiGLE resident-vs-visitor enrichment. See
+> [docs/design-detection-modes.md](docs/design-detection-modes.md) for the full
+> phased plan and what has shipped so far.
 
 ---
 
@@ -169,7 +185,8 @@ it is restarted.
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
 | MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
 | Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 27 tests |
-| Detection modes | ✅ Phase 1 | `NODE_MODE` selector, ScoringEngine interface, FixedScoring novelty, durable SQLite baseline — 33 tests |
+| Detection modes | ✅ Phase 2 | `NODE_MODE` selector, ScoringEngine fork, FixedScoring (novelty + off-schedule + graduated severity), durable crash-safe SQLite baseline |
+| Entity/observation store | ✅ Complete | Durable SQLite (probe evidence, fingerprint, entities, observation history); recorded at the poll site for both modes |
 | Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 24 tests |
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
 | KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
@@ -177,7 +194,7 @@ it is restarted.
 | Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle — 34 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown — 28 tests |
 
-**331 tests passing** across all modules.
+**368 tests passing** across all modules.
 
 ---
 
@@ -250,7 +267,7 @@ Passive-Vigilance/
 │   └── logging.py                    # Structured logger factory — consistent log format across modules
 ├── modules/
 │   ├── gps.py                        # GPSModule — gpsd streaming client; position/time backbone
-│   ├── kismet.py                     # KismetModule — Kismet REST API; async WiFi + BT polling
+│   ├── kismet.py                     # KismetModule — Kismet REST API; async WiFi + BT polling; probe-SSID + fingerprint extraction
 │   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
 │   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures + drain_detections()
 │   ├── remote_id.py                  # RemoteIDModule — FAA Remote ID (ASTM F3411-22a) via Kismet 802.11 vendor IE
@@ -264,8 +281,9 @@ Passive-Vigilance/
 │   ├── kml_writer.py                 # KMLWriter — Google Earth KML with color-coded placemarks and track lines
 │   ├── persistence.py                # PersistenceEngine — mobile (location-diversity) scoring; DetectionEvent dataclass
 │   ├── scoring_engine.py             # ScoringEngine ABC — strategy interface (update + status) selected by NODE_MODE
-│   ├── fixed_scoring.py              # FixedScoring — fixed-node baseline-deviation (novelty) scoring
-│   ├── baseline_store.py             # BaselineStore — durable SQLite baseline; crash-safe learning window
+│   ├── fixed_scoring.py              # FixedScoring — fixed-node baseline-deviation (novelty + off-schedule) scoring
+│   ├── baseline_store.py             # BaselineStore — durable SQLite baseline; crash-safe learning window; hour-mask + RSSI stats
+│   ├── entity_store.py               # EntityStore — durable SQLite (probe evidence, fingerprint, entities, observation history)
 │   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
 │   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
 │   ├── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
@@ -287,10 +305,11 @@ Passive-Vigilance/
 │   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
 │   ├── test_persistence.py           # 27 tests — PersistenceEngine
 │   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
-│   ├── test_node_mode.py             # 10 tests — NODE_MODE resolution + fail-loud
-│   ├── test_scoring_engine.py        # 6 tests — ScoringEngine interface conformance
-│   ├── test_fixed_scoring.py         # 10 tests — FixedScoring novelty detection
-│   ├── test_baseline_store.py        # 7 tests — durable SQLite baseline + crash-loop regression
+│   ├── test_node_mode.py             # NODE_MODE resolution + fail-loud
+│   ├── test_scoring_engine.py        # ScoringEngine interface conformance
+│   ├── test_fixed_scoring.py         # FixedScoring — novelty, off-schedule, graduated severity, activation guard
+│   ├── test_baseline_store.py        # durable SQLite baseline + crash-loop regression + hour-mask/signal stats
+│   ├── test_entity_store.py          # EntityStore upserts (flat-line) + poll-site recording in both modes
 │   ├── test_kml_writer.py            # 14 tests — KMLWriter
 │   ├── test_shapefile.py             # 7 tests — ShapefileWriter
 │   ├── test_wigle.py                 # 7 tests — WiGLEUploader

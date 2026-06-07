@@ -10,6 +10,11 @@ Allowed prefixes: `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`. Cut all bran
 
 Gate for work branch → `main`: CI green + at least one Pi validation recorded in the PR + Cody approval.
 
+**Commits must be signed.** The `main` ruleset requires verified signatures, so an
+unsigned commit shows the PR as BLOCKED regardless of review. Configure commit
+signing (GPG or SSH) before opening a PR — see GitHub's "About commit signature
+verification".
+
 ## Getting started
 
 ```bash
