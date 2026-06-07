@@ -139,7 +139,17 @@ class SensorOrchestrator:
         self._aircraft_track_min_m = float(os.getenv("AIRCRAFT_TRACK_MIN_METERS", "250"))
         self._aircraft_track_min_s = float(os.getenv("AIRCRAFT_TRACK_MIN_SECONDS", "15"))
         self.drone_detections: list[dict] = []
+        # Index freq-band -> the drone event already in drone_detections, so a
+        # persistent emitter heard on every sweep becomes ONE event (refreshed
+        # in place with the latest/peak power and a running count) instead of a
+        # row per sweep. A fixed node doesn't move, so no geographic track.
+        self._drone_index: dict[str, dict] = {}
         self.remote_id_detections: list[dict] = []
+        # Index UAS ID -> the Remote ID event already in remote_id_detections, so
+        # a drone broadcasting every frame becomes ONE event accumulating a
+        # positions[] flight path (the drone's own reported position, thinned)
+        # instead of a row per frame.
+        self._remote_id_index: dict[str, dict] = {}
         self._current_fix: Optional[dict] = None
         self._gps_fix_count: int = 0
 
@@ -419,21 +429,44 @@ class SensorOrchestrator:
             logger.info("Sensor drone_rf recovered")
             self._sensor_health["drone_rf"] = True
             self._degraded_log_counter["drone_rf"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
         for detection in pending:
             freq = detection.get("freq_mhz", 0)
+            power = detection.get("power_db", 0.0)
+            ts = detection.get("timestamp", now_iso)
             self._stats["drone_detections"] += 1
-            event_dict = {
-                "event_type": "drone", "freq_mhz": freq,
-                "power_db": detection.get("power_db", 0.0),
+            # Full per-sweep forensic series stays on disk (append-only, bounded
+            # by the session); the in-memory list is deduped to one row per band.
+            self._append_jsonl(self._session_dir / "drone.jsonl", {
+                "event_type": "drone", "freq_mhz": freq, "power_db": power,
                 "lat": detection.get("gps_lat"), "lon": detection.get("gps_lon"),
-                "timestamp": detection.get("timestamp", datetime.now(timezone.utc).isoformat()),
-            }
-            self.drone_detections.append(event_dict)
-            self._append_jsonl(self._session_dir / "drone.jsonl", event_dict)
-            if self.gui_server is not None:
-                self.gui_server.push_event("drone", event_dict)
+                "timestamp": ts,
+            })
+            band = str(int(freq))
+            existing = self._drone_index.get(band)
+            if existing is not None:
+                # Same band still hot — refresh in place; don't grow the list.
+                existing["power_db"] = power
+                existing["peak_power_db"] = max(existing.get("peak_power_db", power), power)
+                existing["lat"] = detection.get("gps_lat")
+                existing["lon"] = detection.get("gps_lon")
+                existing["last_seen"] = ts
+                existing["timestamp"] = ts
+                existing["observation_count"] = existing.get("observation_count", 1) + 1
+            else:
+                event_dict = {
+                    "event_type": "drone", "freq_mhz": freq, "power_db": power,
+                    "peak_power_db": power,
+                    "lat": detection.get("gps_lat"), "lon": detection.get("gps_lon"),
+                    "first_seen": ts, "last_seen": ts, "timestamp": ts,
+                    "observation_count": 1,
+                }
+                self._drone_index[band] = event_dict
+                self.drone_detections.append(event_dict)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("drone", event_dict)
             alert_detection = {
-                "freq_mhz": freq, "power_db": detection.get("power_db", 0.0),
+                "freq_mhz": freq, "power_db": power,
                 "lat": detection.get("gps_lat") or 0.0, "lon": detection.get("gps_lon") or 0.0,
             }
             if await self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
@@ -465,11 +498,30 @@ class SensorOrchestrator:
             logger.info("Sensor remote_id recovered")
             self._sensor_health["remote_id"] = True
             self._degraded_log_counter["remote_id"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
         for detection in detections:
             self._stats["remote_id_detections"] += 1
-            self.remote_id_detections.append(detection)
+            # Full per-frame forensic log stays on disk; the in-memory list is
+            # deduped to one event per UAS ID with a thinned drone flight path.
             self._append_jsonl(self._session_dir / "remote_id.jsonl", detection)
             uas_id = detection.get("uas_id") or "unknown"
+            existing = self._remote_id_index.get(uas_id)
+            if existing is not None:
+                # Same drone still broadcasting — refresh state and extend its
+                # flight path in place instead of appending a row per frame.
+                existing.update(detection)
+                self._extend_track(
+                    existing, detection.get("drone_lat"),
+                    detection.get("drone_lon"), detection.get("drone_alt_m"), now_iso,
+                )
+            else:
+                event = {**detection, "positions": []}
+                self._extend_track(
+                    event, detection.get("drone_lat"),
+                    detection.get("drone_lon"), detection.get("drone_alt_m"), now_iso,
+                )
+                self._remote_id_index[uas_id] = event
+                self.remote_id_detections.append(event)
             if await self.rate_limiter.is_allowed(f"remote_id:{uas_id}"):
                 self.alert_backend.send_remote_id_alert(detection)
                 self._stats["alerts_sent"] += 1
@@ -573,16 +625,16 @@ class SensorOrchestrator:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _extend_aircraft_track(self, event: dict, aircraft: dict, ts_iso: str) -> bool:
-        '''Append a thinned track point to ``event['positions']``.
+    def _extend_track(self, event: dict, lat, lon, alt, ts_iso: str) -> bool:
+        '''Append a thinned ``{lat, lon, altitude, timestamp}`` point to
+        ``event['positions']``.
 
-        Adds a point only if the aircraft has a position AND has moved at least
-        ``AIRCRAFT_TRACK_MIN_METERS`` or ``AIRCRAFT_TRACK_MIN_SECONDS`` have passed
-        since the last point — so a slow/hovering target doesn't bloat the track.
-        Positionless sightings update current state but add no point. Returns True
-        if a point was added.
+        Adds a point only if there is a position AND the target has moved at
+        least ``AIRCRAFT_TRACK_MIN_METERS`` or ``AIRCRAFT_TRACK_MIN_SECONDS`` have
+        passed since the last point — so a slow/hovering target doesn't bloat the
+        track. Positionless sightings add no point. Returns True if a point was
+        added. Shared by the aircraft (ADS-B) and Remote ID flight-path tracks.
         '''
-        lat, lon = aircraft.get("lat"), aircraft.get("lon")
         if lat is None or lon is None:
             return False
         try:
@@ -600,9 +652,15 @@ class SensorOrchestrator:
                 dt = self._aircraft_track_min_s + 1.0
             if dist < self._aircraft_track_min_m and dt < self._aircraft_track_min_s:
                 return False
-        pts.append({"lat": lat, "lon": lon,
-                    "altitude": aircraft.get("altitude"), "timestamp": ts_iso})
+        pts.append({"lat": lat, "lon": lon, "altitude": alt, "timestamp": ts_iso})
         return True
+
+    def _extend_aircraft_track(self, event: dict, aircraft: dict, ts_iso: str) -> bool:
+        '''Extend an aircraft event's flight-path track from an ADS-B sighting.'''
+        return self._extend_track(
+            event, aircraft.get("lat"), aircraft.get("lon"),
+            aircraft.get("altitude"), ts_iso,
+        )
 
     def _console_alert(self, message: str) -> None:
         '''Send an alert to the console backend (used for sensor health degradation).'''

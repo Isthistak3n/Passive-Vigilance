@@ -50,6 +50,33 @@ def _make_aircraft(**overrides) -> dict:
     return a
 
 
+def _make_drone(**overrides) -> dict:
+    d = {
+        "freq_mhz": 2400.0,
+        "power_db": -30.0,
+        "gps_lat": 51.5, "gps_lon": -0.1,
+        "timestamp": "2026-01-01T12:00:00+00:00",
+    }
+    d.update(overrides)
+    return d
+
+
+def _make_remote_id(**overrides) -> dict:
+    r = {
+        "uas_id": "UAS-1",
+        "ua_type": "Multirotor",
+        "status": "Airborne",
+        "operator_id": "OP-1",
+        "operator_lat": 51.4, "operator_lon": -0.2,
+        "drone_lat": 51.5, "drone_lon": -0.1, "drone_alt_m": 100.0,
+        "source_phy": "IEEE802.11", "source_mac": "fa:0b:bc:11:22:33",
+        "rssi": -50,
+        "timestamp": "2026-01-01T12:00:00+00:00",
+    }
+    r.update(overrides)
+    return r
+
+
 @pytest.fixture()
 def orch(tmp_path):
     """PassiveVigilance instance with all modules mocked and output in tmp_path."""
@@ -474,6 +501,107 @@ async def test_aircraft_positionless_sighting_adds_no_track_point(orch):
     await so._poll_adsb()
     assert len(so.aircraft_detections) == 1
     assert so.aircraft_detections[0]["positions"] == []
+
+
+# ---------------------------------------------------------------------------
+# _poll_drone_rf() — dedup by frequency band
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_drone_dedups_by_band_into_one_event(orch):
+    """A band heard on every sweep becomes ONE event with a running count,
+    not a row per sweep."""
+    so = orch.sensor_orchestrator
+    for _ in range(4):
+        so.drone_rf.drain_detections = MagicMock(return_value=[_make_drone(freq_mhz=2400.0)])
+        await so._poll_drone_rf()
+    assert len(so.drone_detections) == 1
+    assert so.drone_detections[0]["observation_count"] == 4
+    assert "2400" in so._drone_index
+
+
+@pytest.mark.asyncio
+async def test_drone_distinct_bands_get_separate_events(orch):
+    so = orch.sensor_orchestrator
+    so.drone_rf.drain_detections = MagicMock(return_value=[
+        _make_drone(freq_mhz=2400.0),
+        _make_drone(freq_mhz=5800.0),
+    ])
+    await so._poll_drone_rf()
+    assert len(so.drone_detections) == 2
+    assert {str(int(e["freq_mhz"])) for e in so.drone_detections} == {"2400", "5800"}
+
+
+@pytest.mark.asyncio
+async def test_drone_tracks_peak_and_latest_power(orch):
+    """The deduped event keeps the latest power and the peak seen on the band."""
+    so = orch.sensor_orchestrator
+    for p in (-40.0, -20.0, -35.0):
+        so.drone_rf.drain_detections = MagicMock(return_value=[_make_drone(freq_mhz=2400.0, power_db=p)])
+        await so._poll_drone_rf()
+    event = so.drone_detections[0]
+    assert event["power_db"] == -35.0      # latest
+    assert event["peak_power_db"] == -20.0  # strongest
+
+
+@pytest.mark.asyncio
+async def test_poll_drone_appends_every_sweep_to_jsonl(orch, tmp_path):
+    """Every sweep is logged to drone.jsonl (forensic) even though the in-memory
+    list holds one row per band."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    for _ in range(3):
+        so.drone_rf.drain_detections = MagicMock(return_value=[_make_drone(freq_mhz=2400.0)])
+        await so._poll_drone_rf()
+    jsonl_path = so._session_dir / "drone.jsonl"
+    assert len(jsonl_path.read_text().strip().splitlines()) == 3
+    assert len(so.drone_detections) == 1
+
+
+# ---------------------------------------------------------------------------
+# _poll_remote_id() — dedup by UAS ID
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_remote_id_dedups_by_uas_into_one_track(orch):
+    """A drone broadcasting every frame becomes ONE event accumulating a
+    positions[] flight path, not a row per frame."""
+    so = orch.sensor_orchestrator
+    for la in (51.50, 51.52, 51.54):   # ~2 km apart -> each is a track point
+        so.remote_id.poll = AsyncMock(return_value=[_make_remote_id(uas_id="UAS-1", drone_lat=la)])
+        await so._poll_remote_id()
+    assert len(so.remote_id_detections) == 1
+    assert so.remote_id_detections[0]["uas_id"] == "UAS-1"
+    assert len(so.remote_id_detections[0]["positions"]) == 3
+    assert "UAS-1" in so._remote_id_index
+
+
+@pytest.mark.asyncio
+async def test_remote_id_distinct_uas_get_separate_events(orch):
+    so = orch.sensor_orchestrator
+    so.remote_id.poll = AsyncMock(return_value=[
+        _make_remote_id(uas_id="UAS-1", drone_lat=51.5),
+        _make_remote_id(uas_id="UAS-2", drone_lat=52.0),
+    ])
+    await so._poll_remote_id()
+    assert len(so.remote_id_detections) == 2
+    assert {e["uas_id"] for e in so.remote_id_detections} == {"UAS-1", "UAS-2"}
+
+
+@pytest.mark.asyncio
+async def test_poll_remote_id_appends_every_frame_to_jsonl(orch, tmp_path):
+    """Every frame is logged to remote_id.jsonl even though the in-memory list
+    holds one event per UAS ID."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    for la in (51.50, 51.52, 51.54):
+        so.remote_id.poll = AsyncMock(return_value=[_make_remote_id(uas_id="UAS-1", drone_lat=la)])
+        await so._poll_remote_id()
+    jsonl_path = so._session_dir / "remote_id.jsonl"
+    assert len(jsonl_path.read_text().strip().splitlines()) == 3
+    assert len(so.remote_id_detections) == 1
 
 
 # ---------------------------------------------------------------------------
