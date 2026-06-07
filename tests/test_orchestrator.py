@@ -269,6 +269,49 @@ async def test_poll_kismet_sends_alert_for_high_score_event(orch):
     assert orch.sensor_orchestrator.all_events[0]["mac"] == "aa:bb:cc:dd:ee:ff"
 
 
+@pytest.mark.asyncio
+async def test_poll_kismet_dedups_repeated_device_into_one_event(orch):
+    """A device that re-flags every poll updates ONE ongoing detection in place,
+    not a new row each poll — the post-freeze memory-bound fix."""
+    so = orch.sensor_orchestrator
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
+    orch._kismet_active = True
+    for i in range(5):
+        ev = _make_detection_event(alert_level="suspicious", score=0.5, observation_count=i + 2)
+        orch.persistence.update.return_value = [ev]
+        await so._poll_kismet()
+    assert len(so.all_events) == 1                         # bounded, not 5
+    assert so.all_events[0]["observation_count"] == 6      # updated in place (last i=4)
+    assert "aa:bb:cc:dd:ee:ff" in so._wifi_event_index
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_distinct_devices_each_get_a_row(orch):
+    """Distinct devices each get their own event; a repeat does not add a row."""
+    so = orch.sensor_orchestrator
+    orch._kismet_active = True
+    for mac in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02", "aa:bb:cc:dd:ee:01"):
+        orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": mac}])
+        orch.persistence.update.return_value = [_make_detection_event(mac=mac)]
+        await so._poll_kismet()
+    assert len(so.all_events) == 2                          # the repeat (01) deduped
+    assert {e["mac"] for e in so.all_events} == {"aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"}
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_dedup_writes_one_jsonl_line_per_device(orch, tmp_path):
+    """A re-flagging device appends ONE line to events.jsonl, not one per poll."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
+    orch._kismet_active = True
+    for _ in range(4):
+        orch.persistence.update.return_value = [_make_detection_event()]
+        await so._poll_kismet()
+    lines = (so._session_dir / "events.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1
+
+
 # ---------------------------------------------------------------------------
 # shutdown()
 # ---------------------------------------------------------------------------

@@ -114,6 +114,12 @@ class SensorOrchestrator:
         }
 
         self.all_events: list[dict] = []
+        # Index mac -> the event_dict already in all_events, so a device that
+        # re-flags every poll updates one ongoing detection in place instead of
+        # appending a new row. Bounds all_events / events.jsonl to distinct
+        # devices (the post-freeze growth fix); the dict values ARE the list
+        # elements, so all_events stays a plain list for the shutdown writers.
+        self._wifi_event_index: dict[str, dict] = {}
         self.aircraft_detections: list[dict] = []
         self.drone_detections: list[dict] = []
         self.remote_id_detections: list[dict] = []
@@ -324,21 +330,40 @@ class SensorOrchestrator:
             return
         for event in detection_events:
             self._stats["persistent_detections"] += 1
-            event_dict = {
-                "event_type": "wifi", "mac": event.mac, "score": event.score,
-                "alert_level": event.alert_level, "manufacturer": event.manufacturer,
-                "device_type": event.device_type, "mac_type": event.mac_type,
-                "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
-                "observation_count": event.observation_count,
-                "lat": event.locations[0]["lat"] if event.locations else None,
-                "lon": event.locations[0]["lon"] if event.locations else None,
-                "locations": event.locations,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            self.all_events.append(event_dict)
-            self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
-            if self.gui_server is not None:
-                self.gui_server.push_event("wifi", event_dict)
+            existing = self._wifi_event_index.get(event.mac)
+            if existing is not None:
+                # Same device flagged again — update the ongoing detection in
+                # place (no new list row, no new JSONL line). Push to the GUI
+                # only on an alert-level change to keep the live feed bounded.
+                prev_level = existing["alert_level"]
+                existing.update({
+                    "score": event.score, "alert_level": event.alert_level,
+                    "last_seen": event.last_seen.isoformat(),
+                    "observation_count": event.observation_count,
+                    "lat": event.locations[0]["lat"] if event.locations else None,
+                    "lon": event.locations[0]["lon"] if event.locations else None,
+                    "locations": event.locations,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+                if self.gui_server is not None and event.alert_level != prev_level:
+                    self.gui_server.push_event("wifi", existing)
+            else:
+                event_dict = {
+                    "event_type": "wifi", "mac": event.mac, "score": event.score,
+                    "alert_level": event.alert_level, "manufacturer": event.manufacturer,
+                    "device_type": event.device_type, "mac_type": event.mac_type,
+                    "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
+                    "observation_count": event.observation_count,
+                    "lat": event.locations[0]["lat"] if event.locations else None,
+                    "lon": event.locations[0]["lon"] if event.locations else None,
+                    "locations": event.locations,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                self._wifi_event_index[event.mac] = event_dict
+                self.all_events.append(event_dict)
+                self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("wifi", event_dict)
             if await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self.alert_backend.send_persistence_alert(event)
                 self._stats["alerts_sent"] += 1
