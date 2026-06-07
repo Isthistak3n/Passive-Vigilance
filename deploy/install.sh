@@ -123,6 +123,17 @@ fi
 udevadm control --reload-rules
 systemctl restart NetworkManager
 
+# ── 3c. Bluetooth controller auto-up ───────────────────────────────────────
+# Kismet's linuxbluetooth source needs hci0 up, but nothing raises it (Kismet
+# runs no bluetoothd) and the USB BT dongle can enumerate after Kismet starts.
+# Install a helper + udev rule so hci0 comes up on boot and hot-plug; the
+# kismet unit also calls it via ExecStartPre.
+echo "$LOG Configuring Bluetooth controller auto-up..."
+cp "$REPO_DIR/deploy/set-bt-up.sh" /usr/local/bin/set-bt-up.sh
+chmod +x /usr/local/bin/set-bt-up.sh
+cp "$REPO_DIR/deploy/99-bt-hci-up.rules" /etc/udev/rules.d/99-bt-hci-up.rules
+udevadm control --reload-rules
+
 # ── 3d. RTL-SDR kernel module blacklist ────────────────────────────────────
 # Prevent DVB-T drivers from claiming the dongle before rtlsdr can.
 # IMPORTANT: must be a .conf file — update-initramfs ignores .rules files

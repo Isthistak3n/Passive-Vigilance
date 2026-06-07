@@ -24,8 +24,19 @@ Merged on `main`: the `NODE_MODE` fork and `ScoringEngine` strategy, `FixedScori
 (novelty + off-schedule + graduated severity + activation guard), the crash-safe
 `BaselineStore`, the GUI mode toggle, probe-SSID/fingerprint capture, and the
 entity/observation store recorded at the poll site for both modes. Bluetooth is
-capturing via the USB dongle. Built but **not merged**: the approaching-signal
-trigger (Phase 2.5) — it still owes a positive walk-test.
+capturing via the USB dongle, and its boot/hot-plug durability is now wired in
+(the controller is raised before Kismet reads its sources). Built but **not
+merged**: the approaching-signal trigger (Phase 2.5) — it still owes a positive
+walk-test.
+
+**Update (2026-06-07).** P0 is **done and merged** (#74), with its forced-freeze
+validation run on chase against copies of the live databases. The P1
+approaching-signal branch is rebased onto the post-P0 `main` and green, awaiting
+only the walk-test. The node was found mis-configured (no `NODE_MODE`, which
+crash-looped the service) and silently stalled; it has been restarted clean on
+`main` with a wiped baseline, so a fresh 72h learning window is banking RSSI and
+hour-of-day data and **freezes 2026-06-10 21:42 UTC** — the earliest the P1
+walk-test can run.
 
 ## The one finding that drives the sequencing
 
@@ -45,8 +56,8 @@ new detection features.
 
 | Phase | Goal | Status | Blocking for first multi-day soak? |
 |---|---|---|---|
-| **P0** | Endurance hardening (post-freeze memory + disk) | ☐ Not started | **Yes** |
-| **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ☐ Built, unmerged | No (recommended) |
+| **P0** | Endurance hardening (post-freeze memory + disk) | ✅ Done — merged #74, forced-freeze validated on chase | **Yes** |
+| **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Rebased on `main`, green; walk-test gated on 2026-06-10 freeze | No (recommended) |
 | **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
 | **P4** | Cross-session entity resolution (Phase F) | ☐ Not started | No |
@@ -73,6 +84,14 @@ budget (chase has ~38 GB free, so a 72h run fits, but make it a decision).
   stays flat across that boundary — the test the 4h soak could not do.
 
 **Exit gate.** RSS flat across a multi-hour post-freeze run; observations bounded.
+
+**Status (2026-06-07): DONE, merged #74.** All four per-poll streams (WiFi,
+aircraft, drone, Remote ID) now collapse repeated flags of one entity into a
+single ongoing detection, and the observation history is bounded by a retention
+sweep. The forced-freeze test was run on chase against copies of the live
+baseline and observation databases: the freeze engaged, the frozen RSSI stats
+were immutable to post-freeze traffic, and a 472k-row history pruned by age in
+seconds. The remaining whole-system proof is the multi-day soak below.
 
 ### P1 — Approaching trigger merged + walk-tested (Phase 2.5)
 
