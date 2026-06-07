@@ -17,6 +17,37 @@ gpsd and Kismet as systemd services, and prints next-step instructions when done
 
 ---
 
+## Detection mode (`NODE_MODE` — REQUIRED)
+
+The node **will not start scoring without `NODE_MODE`** — there is deliberately no
+default, because guessing wrong is dangerous in both directions (a fixed node run
+as mobile never alerts; a mobile node run as fixed flags every new environment).
+Set it in `.env`:
+
+```bash
+# In .env — one of:
+NODE_MODE=fixed     # stationary base station / leave-behind (pattern-of-life)
+NODE_MODE=mobile    # wardriving / on-person / vehicle (location-diversity)
+```
+
+If `NODE_MODE` is unset or invalid, the node logs a prominent error and refuses to
+enter scoring (you can also pass `--mode fixed|mobile`; `.env` wins over the flag).
+
+**Fixed mode tunables (optional):**
+
+```bash
+FIXED_BASELINE_HOURS=72              # learning window before the baseline freezes
+BASELINE_DB_PATH=                    # blank = <repo>/data/baseline.db (gitignored)
+OFF_SCHEDULE_MIN_BASELINE_HOURS=12   # distinct hours before off-schedule activates
+```
+
+**Switching modes later:** enable the web GUI with a `GUI_TOKEN` set and use the
+dashboard's **Mode** toggle, or edit `NODE_MODE` in `.env`. Either way the node
+must be **restarted** for a mode change to take effect (mode is read once at
+startup).
+
+---
+
 ## Boot Sequence
 
 ```
@@ -302,6 +333,37 @@ If `wlan1` reverts to managed mode after reboot:
 2. Check script exists and is executable: `ls -la /usr/local/bin/set-monitor-mode.sh`
 3. Check NM unmanaged config: `cat /etc/NetworkManager/conf.d/99-unmanaged-wlan1.conf`
 4. Check logs: `journalctl | grep "Passive Vigilance"`
+
+---
+
+## Bluetooth (USB dongle — optional)
+
+Bluetooth/BLE capture uses a **USB Bluetooth dongle** as a Kismet
+`linuxbluetooth` source. On a node with a GPS HAT, prefer a USB dongle over the
+onboard Bluetooth — the onboard radio shares the GPS-HAT UART and can't be used
+for both (issue #48).
+
+A fresh dongle is usually **rfkill soft-blocked**, which Kismet (running as an
+unprivileged user) cannot clear itself. Unblock it, then make the source durable:
+
+```bash
+# 1. Confirm the controller is present and see the block state
+rfkill list bluetooth          # look for "Soft blocked: yes" on hciN
+hciconfig -a                   # the dongle appears as hci0
+
+# 2. Clear the block (persisted across reboots by systemd-rfkill)
+sudo rfkill unblock bluetooth
+
+# 3. Make the Kismet source survive restarts
+echo 'source=hci0:name=bluetooth,type=linuxbluetooth' | sudo tee -a /etc/kismet/kismet_site.conf
+# (already-running Kismet auto-detects/retries hci0 once unblocked; the config
+#  line guarantees it after the next restart)
+```
+
+Leave the `bluetooth` system service **disabled** — Kismet's BT capture talks to
+the controller directly and `bluetoothd` would compete with it. Verify capture
+with the Kismet REST API: the `hci0` source should report `running=1` and BT/BLE
+devices (phyname `Bluetooth`) should start appearing.
 
 ---
 

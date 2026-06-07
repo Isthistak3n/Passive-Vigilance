@@ -67,6 +67,11 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/sdr_coordinator.py` | `SDRCoordinator` | asyncio time-share scheduler for single-dongle setups — slices readsb and DroneRF |
 | `modules/remote_id.py` | `RemoteIDModule` | Kismet REST API; parses FAA Remote ID (ASTM F3411-22a) from 802.11 vendor IE (OUI FA:0B:BC) |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
+| `modules/scoring_engine.py` | `ScoringEngine` (ABC) | Strategy interface (`update`/`status`) selected at startup by `NODE_MODE` |
+| `modules/persistence.py` | `PersistenceEngine` | **Mobile** scoring (location-diversity); the `ScoringEngine` used when `NODE_MODE=mobile` |
+| `modules/fixed_scoring.py` | `FixedScoring` | **Fixed** scoring (baseline-deviation): novelty + off-schedule + graduated severity |
+| `modules/baseline_store.py` | `BaselineStore` | Durable SQLite baseline; crash-safe learning window; per-device hour-mask + RSSI stats |
+| `modules/entity_store.py` | `EntityStore` | Durable SQLite entity/observation store; recorded at the poll site for both modes |
 | `gui/__init__.py` | — | Empty package marker |
 | `gui/server.py` | `GUIServer` | Flask in daemon thread; SSE `/stream`; REST `/api/*` |
 | `gui/templates/index.html` | — | Dark-theme SPA; 5 tabs; Leaflet map |
@@ -159,9 +164,48 @@ Re-run the monitor mode commands after any NM restart.
 - `KismetModule` accepts an optional `IgnoreList` instance; ignored devices are silently
   filtered in `poll_devices()` before the list is returned
 
-## Persistence Engine
+## Detection Modes (NODE_MODE) — fixed vs. mobile scoring
 
-- `modules/persistence.py` — `PersistenceEngine` class + `DetectionEvent` dataclass
+- `NODE_MODE` is **required** (no default): `fixed` or `mobile`. Resolved in
+  `main.resolve_node_mode()` — `.env` wins, then a `--mode` CLI flag, else the
+  node logs a prominent error and **refuses to enter scoring** (it may still
+  capture). Resolved at `PassiveVigilance.__init__` before the engine is built.
+- One capture pipeline feeds one `ScoringEngine` (`modules/scoring_engine.py`,
+  ABC with `update(devices, *, gps_fix=None)` + `status()`). `PersistenceEngine`
+  (mobile, location-diversity) and `FixedScoring` (fixed, baseline-deviation)
+  both implement it; `main.py` injects the chosen one as `self.persistence`.
+- **FixedScoring** (`modules/fixed_scoring.py`): learns a baseline for
+  `FIXED_BASELINE_HOURS` (default 72) then flags deviations with graduated
+  severity (`suspicious`→`likely`→`high`). Signals: **novelty** (device not in
+  the frozen baseline that persists) and **off-schedule** (known device seen in
+  an hour-of-day not in its baseline). Off-schedule is gated by
+  `OFF_SCHEDULE_MIN_BASELINE_HOURS` (default 12 distinct hours) to avoid
+  thin-baseline false alarms. Per-device RSSI `signal_mean`/`signal_var` are
+  banked during learning (no trigger yet — the approaching signal is Phase 2.5,
+  unmerged). Emits the same `DetectionEvent` shape as the mobile path; **no
+  location gate** (that gate is the #50 bug for fixed nodes).
+- **Keying** (`FixedScoring._device_key`): stable MACs → `mac:<mac>`; randomized
+  MACs → `fp:<probe-ssid fingerprint>` via `mac_utils.group_by_fingerprint`, so
+  a logical device's rotating MACs map to one profile.
+- **BaselineStore** (`modules/baseline_store.py`): durable SQLite. The
+  learning-window **start time is persisted on first init and never recomputed**
+  on reopen — a crash loop resumes the existing window instead of relearning
+  forever (the critical correctness property; default path `data/baseline.db`,
+  override `BASELINE_DB_PATH`).
+- **EntityStore** (`modules/entity_store.py`): durable SQLite, four tables
+  (`probe_evidence`, `device_fingerprint`, `entities`, `observations`). Written
+  via `record_poll()` at the **poll site** in `SensorOrchestrator._poll_kismet`,
+  so it records for **both** node modes (orthogonal to scoring). Per-device rows
+  are real upserts (flat for a stable device set); only `observations` grows by
+  design. Guarded — a store failure never affects capture or detection.
+- GUI mode toggle: `POST /api/mode` (requires `GUI_TOKEN`) writes `NODE_MODE` to
+  `.env` surgically/atomically; mode is read only at startup, so the change needs
+  a restart.
+
+## Persistence Engine (mobile scoring)
+
+- `modules/persistence.py` — `PersistenceEngine` class + `DetectionEvent` dataclass.
+  This is the **mobile** `ScoringEngine` (`NODE_MODE=mobile`), unchanged in behaviour.
 - `modules/probe_analyzer.py` — `ProbeAnalyzer` class (WiFi probe pattern analysis)
 - Four time windows: 5 / 10 / 15 / 20 minutes (configurable via `window_minutes`)
 - Scoring weights: temporal 35%, location 35%, frequency 20%, signal 10%
@@ -332,6 +376,30 @@ If `.env` does not exist or `GPS_DEVICE` is unset, it defaults to `/dev/ttyUSB0`
 
 ## Known Issues / Gotchas
 
+- **Kismet field leaf-key gotcha (recurring):** for the slash-path "a/b" fields,
+  Kismet returns the value under the *leaf* key, not the slash path. Confirmed
+  live for `last_signal` (read `kismet.common.signal.last_signal`) and for probe
+  data: request `dot11.device/dot11.device.probed_ssid_map` but read it back under
+  `dot11.device.probed_ssid_map` — a **list** of records, each SSID at
+  `dot11.probedssid.ssid`. The `""` entry is the broadcast/wildcard probe and is
+  excluded. Fingerprint/count: `dot11.device.probe_fingerprint` /
+  `dot11.device.num_probed_ssids`. Always verify a new field path against the live
+  daemon before building on it.
+- **Zero RSSI is a placeholder, not a measurement:** Kismet reports
+  `last_signal == 0` for a device it tracked without a real signal sample (~15–18%
+  of readings on chase). Treat `0` like a missing reading wherever signal is
+  consumed; fixed-mode baseline RSSI stats skip both `None` and `0`.
+- **Randomized-MAC keying:** "new MAC" is the default for modern devices, so
+  fixed-mode profiling keys randomized MACs by probe-SSID fingerprint, not MAC.
+  Named probe-SSIDs are sparse (~26% of WiFi clients); BT/BLE addresses mostly
+  randomize too and are an even sparser correlator (~7% expose a stable anchor).
+- **Bluetooth capture (USB dongle):** BT/BLE is captured via a USB dongle as a
+  Kismet `linuxbluetooth` source on `hci0`, not the onboard Bluetooth (which
+  shares the GPS-HAT UART, issue #48). The dongle is rfkill-**soft-blocked** by
+  default — `sudo rfkill unblock bluetooth` (persisted by systemd-rfkill), and the
+  source is made durable with `source=hci0:name=bluetooth,type=linuxbluetooth` in
+  `/etc/kismet/kismet_site.conf`. Kismet's BT capture talks to the controller
+  directly and does **not** want `bluetoothd` running.
 - **Kismet apt install debconf hang:** `apt install kismet` may hang on a debconf dialog
   asking about suid-root helpers. Fix: `echo "kismet-capture-common kismet-common/suid-root boolean true" | sudo debconf-set-selections` then `sudo kill $(pgrep apt) && sudo dpkg --configure -a`
 - **Debian Trixie vs Bookworm:** The Kismet repo URL must match the OS codename exactly.

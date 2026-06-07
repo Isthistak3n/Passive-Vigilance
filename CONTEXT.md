@@ -81,14 +81,25 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 
 > **GPS device path note:** Native-USB GNSS receivers (u-blox, like this one) enumerate as `ttyACM*` via cdc_acm. USB-serial-bridge dongles enumerate as `ttyUSB*`. HAT-over-UART uses `ttyAMA*` or `ttyS*`. The code default `GPS_DEVICE=/dev/ttyUSB0` does NOT match this Pi — set `GPS_DEVICE=/dev/ttyACM0` in `.env` (already set on survkis).
 
-### chase (Pi 4B+) — pending bring-up, all hardware unverified
+### chase (Pi 4B+) — active, verified 2026-06-06
 
 | Component | Detail | Interface / Path | Status |
 |-----------|--------|-----------------|--------|
-| LoRaWAN/GNSS HAT | Waveshare SX126X, L76K GNSS | likely `ttyAMA0` or `ttyS0` — TBD | ⏸ Pending |
+| RTL8811CU WiFi adapter | Realtek (0bda:c811), driver rtw88_8821cu | `wlan1` — monitor mode (Kismet) | ✅ Active |
+| USB Bluetooth dongle | BD_ADDR 08:BE:AC:4D:3A:5B, USB | `hci0` — Kismet `linuxbluetooth` source | ✅ Active (rfkill unblocked) |
+| GNSS (LoRaWAN/GNSS HAT) | L76K GNSS over UART | `/dev/ttyAMA0` (`GPS_DEVICE` in `.env`) | ✅ Active (3D fix) |
+| RTL-SDR | RTL2838 (0bda:2838) | readsb (ADS-B), port 8080 | ✅ Active |
 | DSI touchscreen | — | — | ⏸ Non-functional, blocking field readiness |
-| RTL-SDR | — | — | ⏸ Pending install |
-| WiFi / BT | — | — | ⏸ Pending |
+
+> **Bluetooth note:** onboard Pi Bluetooth shares the GPS-HAT UART (issue #48), so
+> BT/BLE is captured via a **USB dongle** as a Kismet `linuxbluetooth` source on
+> `hci0`. The dongle ships rfkill soft-blocked; `sudo rfkill unblock bluetooth`
+> (persisted by systemd-rfkill) plus
+> `source=hci0:name=bluetooth,type=linuxbluetooth` in `/etc/kismet/kismet_site.conf`
+> makes it durable. Leave `bluetoothd` off.
+>
+> **Node mode:** chase runs `NODE_MODE=fixed` (set in `.env`) — fixed-node
+> baseline-deviation scoring.
 
 ---
 
@@ -96,12 +107,14 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 
 | Capability | Code status | Deployed on survkis | Deployed on chase |
 |---|---|---|---|
-| WiFi/BT scan (Kismet) | ✅ Complete | ✅ Hardware present | ⏸ Pending |
-| GPS stamping | ✅ Complete | ✅ u-blox 8 on ttyACM0 | ⏸ Pending (LoRa HAT) |
-| ADS-B (readsb) | ✅ Complete | ❌ No SDR dongle | ⏸ Pending |
-| Drone RF | ✅ Complete | ❌ No SDR dongle | ⏸ Pending |
-| FAA Remote ID | ✅ Complete | ⚠️ Requires Kismet (API key not set) | ⏸ Pending |
-| Persistence scoring | ✅ Complete | ✅ (runs in orchestrator) | ⏸ Pending |
+| WiFi/BT scan (Kismet) | ✅ Complete | ✅ Hardware present | ✅ wlan1 + hci0 (BT dongle) active |
+| GPS stamping | ✅ Complete | ✅ u-blox 8 on ttyACM0 | ✅ L76K on ttyAMA0 (3D fix) |
+| ADS-B (readsb) | ✅ Complete | ❌ No SDR dongle | ✅ RTL-SDR present, ADS-B flowing |
+| Drone RF | ✅ Complete | ❌ No SDR dongle | ⚠️ Disabled (`DRONE_RF_ENABLED=false`, SDR segfault #63) |
+| FAA Remote ID | ✅ Complete | ⚠️ Requires Kismet (API key not set) | ✅ Active |
+| Fixed/mobile detection modes | ✅ Phase 2 (main) | — | ✅ `NODE_MODE=fixed` |
+| Entity/observation store | ✅ Complete | — | ✅ Recorded at poll site |
+| Persistence scoring | ✅ Complete | ✅ (runs in orchestrator) | ✅ (fixed-mode FixedScoring) |
 | Alert engine | ✅ Complete | ⚠️ Console only (no backend configured) | ⏸ Pending |
 | Web GUI | ✅ Complete | ❌ Disabled (GUI_ENABLED=false) | ⏸ Pending |
 

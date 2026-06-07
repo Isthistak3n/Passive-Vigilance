@@ -5,6 +5,48 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ---
 
+## [v0.5.0-alpha] — 2026-06
+
+### What's better now
+
+The node now understands whether it is moving or stationary and scores threats
+accordingly, and it has begun building a durable memory of the devices around it.
+
+- **Fixed vs. mobile detection modes** — a required `NODE_MODE` (`fixed` or
+  `mobile`, no silent default) forks the scoring strategy. Mobile keeps the
+  existing location-diversity model; fixed learns the location's normal RF
+  "pattern of life" over a configurable window and then flags deviations. This
+  resolves the long-standing issue where a stationary node never alerted
+  (#50, #66).
+- **Fixed-mode pattern-of-life** — flags novel devices that appear and linger,
+  and known baseline devices seen off their usual hour-of-day, with graduated
+  severity (suspicious → likely → high). Off-schedule only activates once a
+  device's baseline is rich enough to define a schedule, so thin baselines don't
+  false-alarm (#68, #69).
+- **Durable, crash-safe baseline** — the learned baseline lives in SQLite and
+  survives restarts and reboots; a crash loop resumes the existing learning
+  window instead of starting over.
+- **In-dashboard mode toggle** — switch a node between fixed and mobile from the
+  web GUI (requires `GUI_TOKEN`); the control makes the restart requirement
+  explicit (#67).
+- **Probe-SSID and fingerprint capture** — each device record now carries the
+  networks it is probing for and Kismet's own probe fingerprint, the basis for
+  recognising a device across sessions despite MAC randomization (#70).
+- **Entity/observation store** — every poll is recorded into durable SQLite
+  (probe evidence, per-device fingerprint, one entity per device, and a growing
+  observation history), recorded at the capture layer for both modes (#71).
+- **Bluetooth capture enabled** — a USB Bluetooth dongle is supported as a Kismet
+  source for BT/BLE devices, sidestepping the onboard-Bluetooth/GPS-HAT UART
+  conflict (#48).
+
+### Under the hood
+
+- New modules: `scoring_engine.py` (strategy interface), `fixed_scoring.py`,
+  `baseline_store.py`, `entity_store.py`.
+- Test suite grew to 368 passing.
+
+---
+
 ## [v0.4.3-alpha] — 2026-05-17
 
 ### What's better now
