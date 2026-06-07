@@ -425,6 +425,57 @@ async def test_poll_adsb_appends_to_jsonl(orch, tmp_path):
     assert line["icao"] == "TEST01"
 
 
+@pytest.mark.asyncio
+async def test_poll_adsb_dedups_by_icao_into_one_track(orch):
+    """One plane re-seen over many polls becomes ONE event with a positions[]
+    track, not a row per sighting."""
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    for la in (51.50, 51.52, 51.54, 51.56):   # ~2 km apart -> each is a track point
+        orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="ABC123", lat=la, lon=-0.1)])
+        await so._poll_adsb()
+    assert len(so.aircraft_detections) == 1
+    assert so.aircraft_detections[0]["icao"] == "ABC123"
+    assert len(so.aircraft_detections[0]["positions"]) == 4
+    assert "ABC123" in so._aircraft_index
+
+
+@pytest.mark.asyncio
+async def test_aircraft_track_thinned_for_stationary_target(orch):
+    """A target reporting the same position each poll adds ONE point, not N."""
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    for _ in range(5):
+        orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="STILL1", lat=51.5, lon=-0.1)])
+        await so._poll_adsb()
+    assert len(so.aircraft_detections) == 1
+    assert len(so.aircraft_detections[0]["positions"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_aircraft_distinct_icao_get_separate_events(orch):
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[
+        _make_aircraft(icao="AAA111", lat=51.5, lon=-0.1),
+        _make_aircraft(icao="BBB222", lat=52.0, lon=-1.0),
+    ])
+    await so._poll_adsb()
+    assert len(so.aircraft_detections) == 2
+    assert {e["icao"] for e in so.aircraft_detections} == {"AAA111", "BBB222"}
+
+
+@pytest.mark.asyncio
+async def test_aircraft_positionless_sighting_adds_no_track_point(orch):
+    """A sighting with no lat/lon updates state but contributes no track point."""
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="NOPOS", lat=None, lon=None)])
+    await so._poll_adsb()
+    assert len(so.aircraft_detections) == 1
+    assert so.aircraft_detections[0]["positions"] == []
+
+
 # ---------------------------------------------------------------------------
 # _log_health_banner()
 # ---------------------------------------------------------------------------

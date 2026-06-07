@@ -11,8 +11,18 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Optional
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    '''Great-circle distance in metres between two GPS coordinates.'''
+    R = 6_371_000.0
+    p1, p2 = radians(lat1), radians(lat2)
+    dphi, dlmb = radians(lat2 - lat1), radians(lon2 - lon1)
+    a = sin(dphi / 2) ** 2 + cos(p1) * cos(p2) * sin(dlmb / 2) ** 2
+    return R * 2 * atan2(sqrt(a), sqrt(1.0 - a))
 
 
 @dataclass
@@ -121,6 +131,13 @@ class SensorOrchestrator:
         # elements, so all_events stays a plain list for the shutdown writers.
         self._wifi_event_index: dict[str, dict] = {}
         self.aircraft_detections: list[dict] = []
+        # Index icao -> the aircraft event already in aircraft_detections, so a
+        # plane re-seen every poll becomes ONE event accumulating a positions[]
+        # track instead of hundreds of rows. Track points are distance/time
+        # thinned so a slow/hovering target doesn't bloat the list.
+        self._aircraft_index: dict[str, dict] = {}
+        self._aircraft_track_min_m = float(os.getenv("AIRCRAFT_TRACK_MIN_METERS", "250"))
+        self._aircraft_track_min_s = float(os.getenv("AIRCRAFT_TRACK_MIN_SECONDS", "15"))
         self.drone_detections: list[dict] = []
         self.remote_id_detections: list[dict] = []
         self._current_fix: Optional[dict] = None
@@ -268,13 +285,26 @@ class SensorOrchestrator:
             logger.info("Sensor adsb recovered")
             self._sensor_health["adsb"] = True
             self._degraded_log_counter["adsb"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
         for aircraft in aircraft_list:
             self._stats["aircraft_seen"] += 1
-            event = {**aircraft, "event_type": "aircraft", "timestamp": datetime.now(timezone.utc).isoformat()}
-            self.aircraft_detections.append(event)
-            self._append_jsonl(self._session_dir / "aircraft.jsonl", event)
-            if self.gui_server is not None:
-                self.gui_server.push_event("aircraft", event)
+            icao = aircraft.get("icao") or "unknown"
+            existing = self._aircraft_index.get(icao)
+            if existing is not None:
+                # Same plane — refresh current-state fields in place and extend
+                # its track (thinned). One event per ICAO, not one per sighting.
+                existing.update({**aircraft, "event_type": "aircraft", "timestamp": now_iso})
+                moved = self._extend_aircraft_track(existing, aircraft, now_iso)
+                if self.gui_server is not None and moved:
+                    self.gui_server.push_event("aircraft", existing)
+            else:
+                event = {**aircraft, "event_type": "aircraft", "timestamp": now_iso, "positions": []}
+                self._extend_aircraft_track(event, aircraft, now_iso)
+                self._aircraft_index[icao] = event
+                self.aircraft_detections.append(event)
+                self._append_jsonl(self._session_dir / "aircraft.jsonl", event)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("aircraft", event)
             emergency = aircraft.get("emergency", False)
             if emergency:
                 self.alert_backend.send_aircraft_alert(aircraft)
@@ -542,6 +572,37 @@ class SensorOrchestrator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _extend_aircraft_track(self, event: dict, aircraft: dict, ts_iso: str) -> bool:
+        '''Append a thinned track point to ``event['positions']``.
+
+        Adds a point only if the aircraft has a position AND has moved at least
+        ``AIRCRAFT_TRACK_MIN_METERS`` or ``AIRCRAFT_TRACK_MIN_SECONDS`` have passed
+        since the last point — so a slow/hovering target doesn't bloat the track.
+        Positionless sightings update current state but add no point. Returns True
+        if a point was added.
+        '''
+        lat, lon = aircraft.get("lat"), aircraft.get("lon")
+        if lat is None or lon is None:
+            return False
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return False
+        pts = event.setdefault("positions", [])
+        if pts:
+            last = pts[-1]
+            dist = _haversine_m(last["lat"], last["lon"], lat, lon)
+            try:
+                dt = (datetime.fromisoformat(ts_iso)
+                      - datetime.fromisoformat(last["timestamp"])).total_seconds()
+            except Exception:
+                dt = self._aircraft_track_min_s + 1.0
+            if dist < self._aircraft_track_min_m and dt < self._aircraft_track_min_s:
+                return False
+        pts.append({"lat": lat, "lon": lon,
+                    "altitude": aircraft.get("altitude"), "timestamp": ts_iso})
+        return True
 
     def _console_alert(self, message: str) -> None:
         '''Send an alert to the console backend (used for sensor health degradation).'''
