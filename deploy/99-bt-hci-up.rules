@@ -1,0 +1,5 @@
+# Bring the Bluetooth controller up whenever the kernel registers it, so a USB
+# BT dongle that enumerates late at boot (or is hot-plugged) still gets hci0
+# raised for Kismet's linuxbluetooth source. Mirrors 99-wlan1-monitor.rules.
+ACTION=="add", SUBSYSTEM=="bluetooth", KERNEL=="hci[0-9]*", \
+  RUN+="/usr/local/bin/set-bt-up.sh"

@@ -9,6 +9,10 @@ Group=kismet
 Environment=KISMET_CAPTURE_INTERFACE=wlan1
 Environment=HOME=/var/lib/kismet
 WorkingDirectory=/var/lib/kismet
+# Raise the USB Bluetooth controller (hci0) before Kismet reads its sources, so
+# the linuxbluetooth source in kismet_site.conf opens reliably at boot. Runs as
+# root (the leading +) regardless of User=kismet; best-effort, never blocks.
+ExecStartPre=+/usr/local/bin/set-bt-up.sh
 ExecStart=/usr/bin/kismet --no-ncurses-wrapper -c wlan1
 Restart=on-failure
 RestartSec=5
