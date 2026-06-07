@@ -64,19 +64,50 @@ _SIGNAL_INCREMENT = 0.2
 # requires roughly half a day of distinct hours before the signal is trusted.
 OFF_SCHEDULE_MIN_BASELINE_HOURS = 12
 
+# Approaching trigger (Phase 2.5): a KNOWN device whose smoothed recent signal is
+# meaningfully STRONGER (numerically higher dBm — less negative) than its frozen
+# baseline mean is physically closing distance. RSSI is jittery, so three guards
+# (each env-overridable, like the off-schedule guard above) keep it from firing
+# on noise or thin data. Defaults below; calibrate against real RSSI on chase.
+APPROACHING_MIN_BASELINE_SAMPLES = 10   # trust the baseline mean only past this
+APPROACHING_MIN_RECENT_SAMPLES = 5      # trust the recent average only past this
+APPROACHING_SIGMA_MARGIN = 2.0          # rise must exceed this many baseline std devs
+APPROACHING_MIN_DB_MARGIN = 6.0         # ...and at least this many dB (absolute floor)
+
 
 def _coerce_signal(value) -> Optional[float]:
-    """Return *value* as float, or None if missing/non-numeric (skip, don't crash)."""
+    """Return *value* as float, or None if it should be skipped.
+
+    Skipped: a missing reading, a non-numeric reading, OR a zero. Kismet reports
+    0 when it tracked a device but never got a real signal sample, so 0 is a
+    placeholder, not a measurement — it is treated identically to a missing
+    reading everywhere signal is consumed (never counted into any statistic).
+    """
     if value is None:
         return None
     try:
-        return float(value)
+        f = float(value)
     except (TypeError, ValueError):
         return None
+    if f == 0.0:
+        return None
+    return f
 
 
 def _any_active(signals: dict) -> bool:
     return any(v > 0 for v in signals.values())
+
+
+def _is_access_point(device_type) -> bool:
+    """True if Kismet classifies the device as a Wi-Fi access point.
+
+    Matches the standalone ``AP`` token in the type string, so it catches
+    ``Wi-Fi AP`` and ``Wi-Fi WDS AP`` but deliberately NOT ``Wi-Fi Bridged``,
+    ``Wi-Fi WDS``, ``Wi-Fi Ad-Hoc`` or ``Wi-Fi Client`` — a narrow infrastructure
+    filter, used only to make access points ineligible for the approaching
+    signal (an AP does not move, so its signal variation is environmental).
+    """
+    return "ap" in (device_type or "").lower().split()
 
 
 class FixedScoring(ScoringEngine):
@@ -114,6 +145,22 @@ class FixedScoring(ScoringEngine):
         self._off_schedule_min_hours = int(
             os.getenv("OFF_SCHEDULE_MIN_BASELINE_HOURS", str(OFF_SCHEDULE_MIN_BASELINE_HOURS))
         )
+        # Approaching trigger guards (per-device).
+        self._approaching_min_baseline_samples = int(
+            os.getenv("APPROACHING_MIN_BASELINE_SAMPLES", str(APPROACHING_MIN_BASELINE_SAMPLES))
+        )
+        self._approaching_min_recent_samples = int(
+            os.getenv("APPROACHING_MIN_RECENT_SAMPLES", str(APPROACHING_MIN_RECENT_SAMPLES))
+        )
+        self._approaching_sigma_margin = float(
+            os.getenv("APPROACHING_SIGMA_MARGIN", str(APPROACHING_SIGMA_MARGIN))
+        )
+        self._approaching_min_db_margin = float(
+            os.getenv("APPROACHING_MIN_DB_MARGIN", str(APPROACHING_MIN_DB_MARGIN))
+        )
+        # Distinct Wi-Fi APs suppressed from approaching that would otherwise have
+        # qualified — observable so a soak can show exactly what the filter caught.
+        self._approaching_excluded_aps: set = set()
         logger.info(
             "FixedScoring active — learning until %s (now %s)",
             self._store.freeze_time.isoformat(), self._clock().isoformat(),
@@ -226,8 +273,47 @@ class FixedScoring(ScoringEngine):
             "novelty": novelty,
             "off_schedule": off_schedule,
             "abnormal_dwell": 0.0,
-            "approaching": 0.0,
+            "approaching": self._approaching(profile, is_novel),
         }
+
+    def _approaching(self, profile: DeviceProfile, is_novel: bool) -> float:
+        """1.0 if a KNOWN device's recent signal is meaningfully STRONGER than its
+        baseline, else 0.0.
+
+        Direction matters and is made explicit here: RSSI is negative dBm, and
+        "stronger" means physically closer, i.e. a LESS negative reading, i.e. a
+        numerically HIGHER value. So approaching means the recent average sits
+        ABOVE (greater than) the frozen baseline mean by the margin.
+
+        Known-device-only: a device first seen after freeze has no baseline
+        signal to compare against, so it never receives an approaching
+        escalation (it still flags on novelty as before).
+        """
+        if is_novel or profile.signal_mean is None:
+            return 0.0
+        if profile.signal_count < self._approaching_min_baseline_samples:
+            return 0.0
+        if (profile.recent_signal_mean is None
+                or profile.recent_signal_count < self._approaching_min_recent_samples):
+            return 0.0
+        baseline_std = (profile.signal_var ** 0.5) if profile.signal_var else 0.0
+        margin = max(self._approaching_sigma_margin * baseline_std,
+                     self._approaching_min_db_margin)
+        rise = profile.recent_signal_mean - profile.signal_mean  # >0 => stronger
+        if rise < margin:
+            return 0.0
+        # Qualifies as approaching — but a Wi-Fi AP does not physically move, so
+        # its apparent "approach" is environmental noise, not a closing device.
+        # Exclude infrastructure APs (narrow filter); record what was suppressed.
+        if _is_access_point(profile.device_type):
+            if profile.key not in self._approaching_excluded_aps:
+                self._approaching_excluded_aps.add(profile.key)
+                logger.info(
+                    "Approaching: suppressed Wi-Fi AP %s (type=%r) — APs are not "
+                    "approaching-eligible", profile.key, profile.device_type,
+                )
+            return 0.0
+        return 1.0
 
     @staticmethod
     def _combine(signals: dict) -> tuple:
@@ -252,6 +338,7 @@ class FixedScoring(ScoringEngine):
             "freeze_time": self._store.freeze_time.isoformat(),
             "baseline_devices": self._store.baseline_count(),
             "total_profiles": self._store.profile_count(),
+            "approaching_excluded_aps": len(self._approaching_excluded_aps),
         }
 
     # ------------------------------------------------------------------
