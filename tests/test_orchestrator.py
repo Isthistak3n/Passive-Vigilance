@@ -7,6 +7,7 @@ access required.
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -792,3 +793,57 @@ async def test_emergency_flush_writes_jsonl_without_geopandas(orch, tmp_path):
     assert len(lines) == 2
     assert any(line["event_type"] == "wifi" for line in lines)
     assert any(line["event_type"] == "aircraft" for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# Sensor stall watchdog — catch a silently-hung poll loop
+# ---------------------------------------------------------------------------
+
+
+def test_mark_poll_records_timestamp(orch):
+    so = orch.sensor_orchestrator
+    assert so._last_poll_ts.get("kismet") is None
+    so._mark_poll("kismet")
+    assert so._last_poll_ts.get("kismet") is not None
+
+
+def test_watchdog_flags_stalled_active_sensor(orch):
+    # A sensor that has not completed a poll in longer than the stall threshold,
+    # while still showing healthy, is flipped to degraded and alerted.
+    so = orch.sensor_orchestrator
+    so._modules_active["kismet"] = True
+    so._sensor_health["kismet"] = True
+    so._console_alert = MagicMock()
+    so._last_poll_ts["kismet"] = time.monotonic() - (so._watchdog_stall_s + 60)
+    so._check_watchdog()
+    assert so._sensor_health["kismet"] is False
+    so._console_alert.assert_called_once()
+
+
+def test_watchdog_ignores_recently_polled_sensor(orch):
+    so = orch.sensor_orchestrator
+    so._modules_active["adsb"] = True
+    so._sensor_health["adsb"] = True
+    so._last_poll_ts["adsb"] = time.monotonic()        # just polled
+    so._check_watchdog()
+    assert so._sensor_health["adsb"] is True
+
+
+def test_watchdog_skips_inactive_sensor(orch):
+    # A disabled sensor (e.g. DroneRF off) is never flagged stalled.
+    so = orch.sensor_orchestrator
+    so._modules_active["drone_rf"] = False
+    so._sensor_health["drone_rf"] = True
+    so._last_poll_ts["drone_rf"] = time.monotonic() - 10_000
+    so._check_watchdog()
+    assert so._sensor_health["drone_rf"] is True
+
+
+def test_watchdog_startup_grace_before_first_poll(orch):
+    # No timestamp yet (never polled) -> not flagged during startup.
+    so = orch.sensor_orchestrator
+    so._modules_active["kismet"] = True
+    so._sensor_health["kismet"] = True
+    so._last_poll_ts.pop("kismet", None)
+    so._check_watchdog()
+    assert so._sensor_health["kismet"] is True
