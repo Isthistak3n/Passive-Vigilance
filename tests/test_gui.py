@@ -464,3 +464,38 @@ class TestOrchestratorDegradedCounter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGUIServerBindRetry(unittest.TestCase):
+    """The Flask bind retries so a fast restart doesn't leave the GUI silently dead."""
+
+    def _server(self):
+        from gui.server import GUIServer
+        return GUIServer(host="127.0.0.1", port=9999)
+
+    def test_bind_retries_then_succeeds(self):
+        gui = self._server()
+        gui._app = MagicMock()
+        # First bind fails (port still held), second returns (clean shutdown).
+        gui._app.run.side_effect = [OSError("address in use"), None]
+        with patch.dict(os.environ, {"GUI_BIND_RETRIES": "5", "GUI_BIND_RETRY_SECONDS": "0"}):
+            gui._serve_with_retry()
+        self.assertEqual(gui._app.run.call_count, 2)
+
+    def test_bind_gives_up_after_attempts_without_raising(self):
+        gui = self._server()
+        gui._app = MagicMock()
+        gui._app.run.side_effect = OSError("address in use")
+        with patch.dict(os.environ, {"GUI_BIND_RETRIES": "3", "GUI_BIND_RETRY_SECONDS": "0"}):
+            with self.assertLogs("gui.server", level="ERROR") as cm:
+                gui._serve_with_retry()   # must NOT raise out of the daemon thread
+        self.assertEqual(gui._app.run.call_count, 3)
+        self.assertTrue(any("could not bind" in m for m in cm.output))
+
+    def test_bind_succeeds_first_try(self):
+        gui = self._server()
+        gui._app = MagicMock()
+        gui._app.run.return_value = None
+        with patch.dict(os.environ, {"GUI_BIND_RETRIES": "5", "GUI_BIND_RETRY_SECONDS": "0"}):
+            gui._serve_with_retry()
+        self.assertEqual(gui._app.run.call_count, 1)

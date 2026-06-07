@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from math import atan2, cos, radians, sin, sqrt
@@ -113,6 +114,14 @@ class SensorOrchestrator:
         self._degraded_log_counter: dict[str, int] = {
             "gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0, "sdr": 0, "remote_id": 0,
         }
+        # Watchdog: monotonic timestamp of each sensor's last COMPLETED poll. The
+        # exception-based health flips above only catch a poll that *raises*; a
+        # poll loop that goes silent (a hung await, a dead task) leaves health
+        # showing ✓ while nothing is captured. The watchdog flips a sensor
+        # degraded when its loop stops completing — liveness is the loop running,
+        # not data volume, so an idle-but-healthy sensor is never flagged.
+        self._last_poll_ts: dict[str, float] = {}
+        self._watchdog_stall_s = float(os.getenv("SENSOR_STALL_SECONDS", "180"))
         self._stats: dict[str, int] = {
             "kismet_devices_seen": 0,
             "aircraft_seen": 0,
@@ -172,6 +181,7 @@ class SensorOrchestrator:
         while not self._stop_event.is_set():
             if self._modules_active.get("gps", False):
                 await self._poll_gps()
+                self._mark_poll("gps")
             try:
                 await asyncio.sleep(self._gps_poll_interval)
             except asyncio.CancelledError:
@@ -184,6 +194,7 @@ class SensorOrchestrator:
         while not self._stop_event.is_set():
             if self._modules_active.get("adsb", False):
                 await self._poll_adsb()
+                self._mark_poll("adsb")
             try:
                 await asyncio.sleep(self._adsb_poll_interval)
             except asyncio.CancelledError:
@@ -196,6 +207,7 @@ class SensorOrchestrator:
         while not self._stop_event.is_set():
             if self._modules_active.get("kismet", False):
                 await self._poll_kismet()
+                self._mark_poll("kismet")
             try:
                 await asyncio.sleep(self._kismet_poll_interval)
             except asyncio.CancelledError:
@@ -208,6 +220,7 @@ class SensorOrchestrator:
         while not self._stop_event.is_set():
             if self._modules_active.get("drone_rf", False):
                 await self._poll_drone_rf()
+                self._mark_poll("drone_rf")
             try:
                 await asyncio.sleep(self._drone_poll_interval)
             except asyncio.CancelledError:
@@ -220,6 +233,7 @@ class SensorOrchestrator:
         while not self._stop_event.is_set():
             if self._modules_active.get("remote_id", False):
                 await self._poll_remote_id()
+                self._mark_poll("remote_id")
             try:
                 await asyncio.sleep(self._remote_id_poll_interval)
             except asyncio.CancelledError:
@@ -237,6 +251,7 @@ class SensorOrchestrator:
             except Exception as exc:
                 logger.error("Health banner loop sleep error: %s", exc)
             if not self._stop_event.is_set():
+                self._check_watchdog()
                 self._log_health_banner()
 
     # ------------------------------------------------------------------
@@ -527,6 +542,44 @@ class SensorOrchestrator:
                 self._stats["alerts_sent"] += 1
             else:
                 self._stats["alerts_rate_limited"] += 1
+
+    # ------------------------------------------------------------------
+    # Watchdog
+    # ------------------------------------------------------------------
+
+    def _mark_poll(self, name: str) -> None:
+        '''Record that sensor *name* just completed a poll cycle (liveness).'''
+        self._last_poll_ts[name] = time.monotonic()
+
+    def _check_watchdog(self) -> None:
+        '''Flip a sensor to degraded if its poll loop has gone silent.
+
+        Catches the failure the exception-based health flips miss: a loop that
+        stops completing without raising (a hung await or a dead task) — the node
+        keeps reporting ✓ while nothing is captured. Liveness is the poll cycle
+        completing, not data volume, so an idle-but-healthy sensor (e.g. no
+        aircraft overhead) is never flagged. A sensor that has not polled yet
+        (startup) is skipped until its first completed cycle.
+        '''
+        now = time.monotonic()
+        for name in ("gps", "kismet", "adsb", "drone_rf", "remote_id"):
+            if not self._modules_active.get(name, False):
+                continue
+            last = self._last_poll_ts.get(name)
+            if last is None:
+                continue
+            idle = now - last
+            if idle > self._watchdog_stall_s and self._sensor_health.get(name, False):
+                logger.warning(
+                    "Watchdog: sensor %s has not completed a poll in %.0fs "
+                    "(threshold %.0fs) — marking degraded",
+                    name, idle, self._watchdog_stall_s,
+                )
+                self._console_alert(
+                    f"Sensor {name} stalled — no successful poll in {int(idle)}s "
+                    f"(was reporting healthy)"
+                )
+                self._sensor_health[name] = False
 
     # ------------------------------------------------------------------
     # Health banner
