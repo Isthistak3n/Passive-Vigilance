@@ -130,6 +130,49 @@ def test_observations_grow_one_row_per_poll():
     s.close()
 
 
+# ---------------------------------------------------------------------------
+# Observation history retention — bound the only table that grows by design
+# ---------------------------------------------------------------------------
+
+
+def test_prune_removes_observations_older_than_retention():
+    # Large interval so the auto-sweep inside record_poll doesn't fire early.
+    s = EntityStore(":memory:", retention_days=7, prune_interval_s=10 ** 9)
+    s.record_poll([_device()], now=T0)
+    recent = T0 + timedelta(days=10)
+    s.record_poll([_device()], now=recent)
+    assert s.count("observations") == 2
+    removed = s.prune_observations(now=recent)
+    assert removed == 1                              # the T0 row aged out
+    assert s.count("observations") == 1
+    s.close()
+
+
+def test_prune_disabled_keeps_history_forever():
+    s = EntityStore(":memory:", retention_days=0)
+    s.record_poll([_device()], now=T0)
+    s.record_poll([_device()], now=T0 + timedelta(days=365))
+    assert s.prune_observations(now=T0 + timedelta(days=365)) == 0
+    assert s.count("observations") == 2
+    s.close()
+
+
+def test_record_poll_auto_prunes_old_history():
+    # prune_interval_s=0 makes every poll eligible for the sweep.
+    s = EntityStore(":memory:", retention_days=7, prune_interval_s=0)
+    s.record_poll([_device()], now=T0)
+    s.record_poll([_device()], now=T0 + timedelta(days=30))
+    assert s.count("observations") == 1              # T0 row swept on the second poll
+    s.close()
+
+
+def test_observation_timestamp_index_created():
+    s = _store()
+    names = {r["name"] for r in s._conn.execute("PRAGMA index_list('observations')")}
+    assert "idx_obs_timestamp" in names
+    s.close()
+
+
 def test_observation_position_null_without_fix():
     s = _store()
     s.record_poll([_device()], gps_fix=None, now=T0)
