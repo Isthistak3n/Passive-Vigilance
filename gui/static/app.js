@@ -171,14 +171,19 @@ document.getElementById('alerts-clear').addEventListener('click', () => {
 });
 
 // ── Status polling ───────────────────────────────────────────────────────────
-function applyHealth(health) {
+function applyHealth(health, active) {
   const map_ = { gps: 's-gps', kismet: 's-kismet', adsb: 's-adsb', 'drone_rf': 's-drone-rf' };
+  active = active || {};
   Object.entries(map_).forEach(([key, id]) => {
     const el = document.getElementById(id);
     if (!el) return;
+    // A sensor that isn't running (e.g. DroneRF disabled) shows as "off", not
+    // healthy. A missing modules_active key is treated as active (back-compat).
+    const isActive = active[key] !== false;
     const ok = health[key];
-    el.classList.toggle('ok', !!ok);
-    el.classList.toggle('err', !ok);
+    el.classList.toggle('disabled', !isActive);
+    el.classList.toggle('ok', isActive && !!ok);
+    el.classList.toggle('err', isActive && !ok);
   });
 }
 
@@ -190,7 +195,7 @@ async function pollStatus() {
     if (d.session_id) {
       document.getElementById('session-id').textContent = d.session_id;
     }
-    if (d.sensor_health) applyHealth(d.sensor_health);
+    if (d.sensor_health) applyHealth(d.sensor_health, d.modules_active);
     renderBaseline(d.scoring);
   } catch { /* network error — ignore */ }
 }
