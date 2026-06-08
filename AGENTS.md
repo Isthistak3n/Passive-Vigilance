@@ -210,7 +210,9 @@ If two agents have modified the same file on different branches:
 
 ## Security Rules for All Agents
 
+Deployment hardening and vulnerability reporting live in **`SECURITY.md`**.
+Commit-time hygiene every agent must follow:
+
 - Never commit secrets, API keys, WiGLE credentials, or SSH keys
-- Never expose sensor service ports beyond `tailscale0` interface
-- GPS data and MAC address logs are sensitive — no sample data in commits
-- `.gitignore` must cover: `*.log`, `*.gpx`, `*.shp`, `data/`, `captures/`
+- GPS data and MAC-address logs are sensitive — no sample data in commits
+- `.gitignore` must cover `*.log`, `*.gpx`, `*.shp`, `data/`, `captures/`
