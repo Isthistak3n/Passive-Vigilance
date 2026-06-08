@@ -26,7 +26,7 @@ function wifiColor(level) {
 }
 
 function addWifiMarker(ev) {
-  if (!ev.lat || !ev.lon) return;
+  if (ev.lat == null || ev.lon == null) return;
   L.circleMarker([ev.lat, ev.lon], {
     radius: 7, color: wifiColor(ev.alert_level), fillOpacity: 0.8,
   }).bindPopup(
@@ -35,7 +35,7 @@ function addWifiMarker(ev) {
 }
 
 function addAircraftMarker(ev) {
-  if (!ev.lat || !ev.lon) return;
+  if (ev.lat == null || ev.lon == null) return;
   L.circleMarker([ev.lat, ev.lon], {
     radius: 6, color: ev.emergency ? '#f85149' : '#58a6ff', fillOpacity: 0.85,
   }).bindPopup(
@@ -44,7 +44,7 @@ function addAircraftMarker(ev) {
 }
 
 function addDroneMarker(ev) {
-  if (!ev.lat || !ev.lon) return;
+  if (ev.lat == null || ev.lon == null) return;
   L.circleMarker([ev.lat, ev.lon], {
     radius: 8, color: '#bc8cff', fillOpacity: 0.9,
   }).bindPopup(
@@ -100,16 +100,27 @@ function renderAircraft() {
     .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
     .slice(-200)
     .reverse();
-  document.getElementById('aircraft-tbody').innerHTML = rows.map(e => `
+  document.getElementById('aircraft-tbody').innerHTML = rows.map(e => {
+    const pos = (e.lat != null && e.lon != null)
+      ? `${(+e.lat).toFixed(3)}, ${(+e.lon).toFixed(3)}`
+      : '<span class="no-pos">no position</span>';
+    return `
     <tr>
       <td>${e.callsign || '—'}</td>
       <td><code>${e.icao || '—'}</code></td>
       <td>${e.registration || '—'}</td>
       <td>${e.altitude ?? '—'}</td>
       <td>${e.speed ?? '—'}</td>
+      <td>${pos}</td>
       <td class="${e.emergency ? 'emergency-yes' : ''}">${e.emergency ? '🚨 YES' : 'No'}</td>
       <td>${fmtTime(e.timestamp)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
+  // Rebuild the aircraft map layer from the (deduped) state so a moving plane
+  // does not pile up duplicate markers; position-less aircraft are omitted from
+  // the map but remain listed in the table above.
+  layers.aircraft.clearLayers();
+  state.aircraft.forEach(addAircraftMarker);
 }
 
 function renderDrone() {
@@ -180,6 +191,7 @@ async function pollStatus() {
       document.getElementById('session-id').textContent = d.session_id;
     }
     if (d.sensor_health) applyHealth(d.sensor_health);
+    renderBaseline(d.scoring);
   } catch { /* network error — ignore */ }
 }
 
@@ -249,7 +261,7 @@ initModeControl();
 async function seedFromRest() {
   const endpoints = [
     { url: '/api/wifi',     key: 'wifi',     render: renderWifi,     badge: 'badge-wifi',     marker: addWifiMarker },
-    { url: '/api/aircraft', key: 'aircraft', render: renderAircraft, badge: 'badge-aircraft', marker: addAircraftMarker },
+    { url: '/api/aircraft', key: 'aircraft', render: renderAircraft, badge: 'badge-aircraft', marker: null },
     { url: '/api/drone',    key: 'drone',    render: renderDrone,    badge: 'badge-drone',    marker: addDroneMarker },
     { url: '/api/alerts',   key: 'alerts',   render: renderAlerts,   badge: 'badge-alerts',   marker: null },
   ];
@@ -287,10 +299,11 @@ function connectSSE() {
       addWifiMarker(data);
       renderWifi();
     } else if (type === 'aircraft') {
-      state.aircraft.push(data);
+      // Deduplicate by ICAO — a moving plane is re-pushed as its track advances.
+      const idx = state.aircraft.findIndex(e => e.icao === data.icao);
+      if (idx >= 0) state.aircraft[idx] = data; else state.aircraft.push(data);
       setBadge('badge-aircraft', state.aircraft.length);
-      addAircraftMarker(data);
-      renderAircraft();
+      renderAircraft();   // rebuilds the table and the map markers from state
     } else if (type === 'drone') {
       state.drone.push(data);
       setBadge('badge-drone', state.drone.length);
@@ -311,3 +324,46 @@ function connectSSE() {
 }
 
 connectSSE();
+
+// ── Baseline-state header ─────────────────────────────────────────────────────
+function fmtDuration(secs) {
+  secs = Math.max(0, Math.floor(secs));
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function renderBaseline(scoring) {
+  const bar = document.getElementById('baseline-bar');
+  const label = document.getElementById('baseline-state');
+  const detail = document.getElementById('baseline-detail');
+  bar.classList.remove('baseline-learning', 'baseline-frozen', 'baseline-mobile', 'baseline-unknown');
+  if (!scoring) {
+    bar.classList.add('baseline-unknown');
+    label.textContent = 'Baseline: —';
+    detail.textContent = 'scoring not active';
+    return;
+  }
+  if (scoring.mode === 'fixed') {
+    if (scoring.learning) {
+      bar.classList.add('baseline-learning');
+      const remain = (new Date(scoring.freeze_time).getTime() - Date.now()) / 1000;
+      label.textContent = 'Baseline: LEARNING';
+      detail.textContent =
+        `freezes in ${fmtDuration(remain)} · ${scoring.baseline_devices ?? 0} devices learned`;
+    } else {
+      bar.classList.add('baseline-frozen');
+      label.textContent = 'Baseline: FROZEN';
+      detail.textContent =
+        `${scoring.baseline_devices ?? 0} baseline devices · flagging deviations`;
+    }
+  } else {
+    bar.classList.add('baseline-mobile');
+    label.textContent = 'Mode: MOBILE';
+    detail.textContent = `${scoring.total_devices_tracked ?? 0} devices tracked`;
+  }
+}
+
