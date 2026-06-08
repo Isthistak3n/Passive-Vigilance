@@ -17,12 +17,14 @@ any action on the codebase.
 
 ## Node Roles
 
-| Node   | Hostname   | Logical Alias | Primary Responsibilities                                        |
-|--------|------------|---------------|-----------------------------------------------------------------|
-| Pi 3B+ | `survkis`  | `pv-node-1`   | Active dev + WiFi/GPS spoke (Kismet, GPS, persistence)          |
-| Pi 4B+ | `chase`    | `pv-node-2`   | Intended base station — SDR/ADS-B/Drone RF (unpowered)          |
+| Node   | Hostname   | Logical Alias | Role                                                                 |
+|--------|------------|---------------|---------------------------------------------------------------------|
+| Pi 3B+ | `survkis`  | `pv-node-1`   | Active dev + WiFi/GPS spoke (Kismet, GPS, persistence)              |
+| Pi 4B+ | `chase`    | `pv-node-2`   | Active fixed base station — WiFi/BT + ADS-B + Remote ID, fixed-mode scoring |
 
-When writing or testing code, always note which node it was validated on.
+Live per-node hardware, adapters, and verified status are in **`CONTEXT.md` →
+Hardware & Adapter Map** — the authority for what is actually present on each
+node. When writing or testing code, always note which node it was validated on.
 
 ---
 
@@ -119,31 +121,51 @@ This rule applies to all agents and all claims of completion. Vague or incomplet
 
 ---
 
-## Commit Message Format
+## Commit, PR & Release Standards
 
-> This format governs **AI-agent commit subject lines** (machine-parseable, per-agent attribution). For PR titles, release notes, and human contributor commits, see `CLAUDE.md` → Commit & Release Standards.
+The single source of truth for how commits, PR titles, and release notes are
+written — for every agent and human contributor.
 
-``` 
+### Agent commit subject lines (machine-parseable, per-agent attribution)
+
+```
 [agent] type(scope): short, plain English description
 
 Body (optional): what changed and why
-Tested: Pi 1 / Pi 2 / untested
+Tested: <node> / untested        (e.g. Tested: chase, Tested: survkis)
 Refs: #issue-number
 ```
 
 **Examples:**
-``` 
+```
 [claude-code] feat(sdr): harden SHARED mode with lock + handshake (P1)
-Tested: Pi 1
+Tested: chase
 Refs: #22
 
 [grok] refactor(main): integrate SDR health into orchestrator
 Tested: untested — needs Claude Code validation on Pi
 Refs: #23
-
-[human] fix(wlan0): manual patch for monitor mode bind on Pi 2
-Tested: Pi 2
 ```
+
+### Human-readable first (PR titles, release notes, human commits)
+
+Every commit, PR, and release must be human-readable first, technical second.
+
+**PR titles / human commit subjects** — plain English, outcome-focused, ≤72 chars.
+Use "Add", "Fix", "Improve", "Extend" — not scope tags.
+- Bad:  `fix/operational-resilience` · `fix(review): version string, tunable poll intervals`
+- Good: `Health banner, auto-reconnect, and sensor resilience`
+
+**Body** — a bullet list of what got better for the operator, not implementation
+details. Group related changes. No "FIX 1… FIX 10" numbering; technical detail
+goes in the body, never the subject.
+
+**Release notes** — always: (1) one sentence on what the release means,
+(2) a "What's better now" plain-English bullet list, (3) the test count,
+(4) optional "Under the hood" technical section.
+
+Never: number fixes, lead with a scope tag as the summary, write release notes
+that read like a debug log, or bury the user benefit in implementation detail.
 
 ---
 
@@ -163,9 +185,9 @@ Tested: Pi 2
 ## Merge Checklist (Grok enforces on every PR)
 
 - [ ] Commit messages follow `[agent] type(scope):` format
-- [ ] At least one `Tested: Pi 1` or `Tested: Pi 2` in commit history (required on every PR to `main`)
+- [ ] At least one `Tested: <node>` (e.g. `Tested: chase`) in commit history (required on every PR to `main`)
 - [ ] No hardcoded credentials, API keys, or local paths
-- [ ] New modules registered in `CONTEXT.md` module table
+- [ ] New modules added to `CLAUDE.md` → Module Map
 - [ ] systemd unit file included if module runs as a service
 - [ ] No x86-only dependencies (check against `requirements.txt`)
 - [ ] `CONTEXT.md` updated to reflect new state post-merge

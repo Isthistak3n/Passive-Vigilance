@@ -83,14 +83,9 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 
 ## Branch Strategy
 
-```
-feat|fix|docs|hotfix|refactor/<name> → main
-```
-
-- **`main`** — single protected branch. All PRs merge here directly (ruleset-enforced, no direct pushes).
-- **Allowed prefixes:** `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/` — cut from `main`.
-- Gate: CI green + Pi validation recorded in the PR + Cody approval.
-- See `AGENTS.md` for the full gate rules and merge checklist.
+Work branches (`feat|fix|docs|hotfix|refactor/<name>`) are cut from `main` and
+merge back via PR. **`AGENTS.md` is the single source for the branch strategy,
+merge gate, and checklist** — see it for the full rules.
 
 ---
 
@@ -422,49 +417,7 @@ If `.env` does not exist or `GPS_DEVICE` is unset, it defaults to `/dev/ttyUSB0`
 
 ## Commit & Release Standards
 
-Every commit, PR, and release must be human-readable first,
-technical second. Follow these rules on every branch.
-
-### Commit message format
-
-> This style governs **PR titles, release notes, and human contributor commits**. AI-agent commit subject lines use `[agent] type(scope):` format — see `AGENTS.md` → Commit Message Format.
-
-First line: plain English summary of what improved (max 72 chars)
-- Use "Add", "Fix", "Improve", "Extend" not "feat(scope):"
-- Write for a contributor reading git log, not a ticket system
-- Bad:  "fix(review): version string, tunable poll intervals, GPS timeout 120s"
-- Good: "Tunable poll intervals, GPS resilience, sensor health alerts"
-
-Body: bullet list of user-facing improvements
-- Lead with what got better for the operator, not implementation details
-- Group related changes together
-- No "FIX 1... FIX 10" numbering
-- Technical details belong here, not in the subject line
-
-Example:
-  Tunable poll intervals, GPS resilience, sensor health alerts
-
-  What's better now:
-  - Poll intervals (GPS/Kismet/ADS-B/DroneRF) now tunable via .env
-  - GPS startup timeout extended to 120s for real-world dongles
-  - Sensor health dict emits WARNING on degradation, INFO on recovery
-  - Rate limiter writes are now atomic with file locking
-  - Alert backends retry with exponential backoff on network failure
-
-### PR titles
-- Plain English, outcome-focused
-- Bad:  "fix/operational-resilience"
-- Good: "Health banner, auto-reconnect, and sensor resilience"
-
-### Release notes
-Always use this structure:
-1. One-sentence summary of what this release means
-2. "What's better now" bullet list in plain English
-3. Test count
-4. Optional: "Under the hood" section for technical details
-
-### What NOT to do
-- Never number fixes "FIX 1, FIX 2..."
-- Never lead with scope tags as the human-readable summary
-- Never write release notes that read like a debug log
-- Never bury the user benefit inside implementation details
+Commit subject lines, PR titles, and release-note structure — for both agents and
+human contributors — are governed by **`AGENTS.md` → Commit, PR & Release
+Standards**. That is the single home; read it before writing commits or release
+notes.
