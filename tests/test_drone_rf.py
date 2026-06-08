@@ -1,15 +1,17 @@
-"""Unit tests for modules/drone_rf.py — pyrtlsdr and subprocess mocked."""
+"""Unit tests for modules/drone_rf.py — SDR sampling is isolated in a child
+process (#63); the subprocess and pyrtlsdr are mocked here."""
 
 import asyncio
-import os
+import queue
+import time
 import unittest
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 import modules.drone_rf  # noqa: F401 — load before @patch resolves targets
 
 try:
-    import numpy
+    import numpy  # noqa: F401
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
@@ -17,6 +19,11 @@ except ImportError:
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _mod():
+    from modules.drone_rf import DroneRFModule
+    return DroneRFModule()
 
 
 # ---------------------------------------------------------------------------
@@ -27,248 +34,186 @@ class TestDroneRFHardwareDetection(unittest.TestCase):
 
     @patch("modules.drone_rf.subprocess.run")
     def test_hardware_present_with_known_usb_id(self, mock_run):
-        """is_hardware_present() should return True when RTL-SDR ID in lsusb."""
-        from modules.drone_rf import DroneRFModule
-
         mock_run.return_value = MagicMock(
-            stdout="Bus 001 Device 003: ID 0bda:2832 Realtek Semiconductor Corp.\n",
-            returncode=0,
-        )
-        m = DroneRFModule()
-        self.assertTrue(m.is_hardware_present())
+            stdout="Bus 001 Device 003: ID 0bda:2832 Realtek Semiconductor Corp.\n", returncode=0)
+        self.assertTrue(_mod().is_hardware_present())
 
     @patch("modules.drone_rf.subprocess.run")
     def test_hardware_not_present_without_rtlsdr(self, mock_run):
-        """is_hardware_present() should return False when no RTL-SDR in lsusb."""
-        from modules.drone_rf import DroneRFModule
-
         mock_run.return_value = MagicMock(
-            stdout="Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub\n",
-            returncode=0,
-        )
-        m = DroneRFModule()
-        self.assertFalse(m.is_hardware_present())
+            stdout="Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub\n", returncode=0)
+        self.assertFalse(_mod().is_hardware_present())
 
     @patch("modules.drone_rf.subprocess.run")
     def test_hardware_present_0bda_2813(self, mock_run):
-        """is_hardware_present() should recognise the 0bda:2813 variant."""
-        from modules.drone_rf import DroneRFModule
-
         mock_run.return_value = MagicMock(
-            stdout="Bus 001 Device 004: ID 0bda:2813 Realtek RTL2813U\n",
-            returncode=0,
-        )
-        m = DroneRFModule()
-        self.assertTrue(m.is_hardware_present())
+            stdout="Bus 001 Device 004: ID 0bda:2813 Realtek RTL2813U\n", returncode=0)
+        self.assertTrue(_mod().is_hardware_present())
 
 
 # ---------------------------------------------------------------------------
-# start_scan() — graceful degradation
+# Lifecycle — start/stop manage the worker subprocess + monitor task
 # ---------------------------------------------------------------------------
 
-class TestDroneRFStartScan(unittest.TestCase):
+class TestDroneRFLifecycle(unittest.TestCase):
 
-    @patch("modules.drone_rf.subprocess.run")
-    def test_start_scan_graceful_when_no_hardware(self, mock_run):
-        """start_scan() should return without raising when no RTL-SDR present."""
-        from modules.drone_rf import DroneRFModule
-
-        mock_run.return_value = MagicMock(
-            stdout="Bus 001 Device 001: ID 1d6b:0002 Linux Foundation\n",
-            returncode=0,
-        )
-        m = DroneRFModule()
+    @patch("modules.drone_rf.subprocess.run",
+           return_value=MagicMock(stdout="ID 1d6b:0002 Linux Foundation\n", returncode=0))
+    def test_start_scan_graceful_when_no_hardware(self, _run_mock):
+        m = _mod()
         _run(m.start_scan())  # must not raise
         self.assertIsNone(m._scan_task)
 
-    @patch("modules.drone_rf.subprocess.run")
-    def test_start_scan_creates_task_when_hardware_present(self, mock_run):
-        """start_scan() should create a background asyncio.Task when hardware found."""
+    @patch("modules.drone_rf.subprocess.run",
+           return_value=MagicMock(stdout="ID 0bda:2838 Realtek\n", returncode=0))
+    def test_start_scan_skipped_when_crash_guard_disabled(self, _run_mock):
         from modules.drone_rf import DroneRFModule
-
-        mock_run.return_value = MagicMock(
-            stdout="Bus 001 Device 003: ID 0bda:2838 Realtek\n",
-            returncode=0,
-        )
-
-        # Patch _scan_loop to prevent it from actually sampling
-        async def _noop_loop(self_inner):
-            await asyncio.sleep(9999)
-
-        with patch.object(DroneRFModule, "_scan_loop", _noop_loop), \
-             patch.object(DroneRFModule, "_open_sdr", return_value=True):
-            m = DroneRFModule()
+        m = _mod()
+        m.can_scan = False
+        with patch.object(DroneRFModule, "_spawn_worker") as spawn:
             _run(m.start_scan())
-            self.assertIsNotNone(m._scan_task)
-            _run(m.stop_scan())
-
-
-# ---------------------------------------------------------------------------
-# stop_scan()
-# ---------------------------------------------------------------------------
-
-class TestDroneRFStopScan(unittest.TestCase):
-
-    @patch("modules.drone_rf.subprocess.run")
-    def test_stop_scan_no_error_when_not_started(self, mock_run):
-        """stop_scan() should complete without error if scan was never started."""
-        from modules.drone_rf import DroneRFModule
-
-        m = DroneRFModule()
-        _run(m.stop_scan())  # must not raise
-
-    @patch("modules.drone_rf.subprocess.run")
-    def test_stop_scan_cancels_task(self, mock_run):
-        """stop_scan() should cancel the background scan task."""
-        from modules.drone_rf import DroneRFModule
-
-        mock_run.return_value = MagicMock(
-            stdout="Bus 001 Device 003: ID 0bda:2838 Realtek\n",
-            returncode=0,
-        )
-
-        async def _noop_loop(self_inner):
-            await asyncio.sleep(9999)
-
-        with patch.object(DroneRFModule, "_scan_loop", _noop_loop), \
-             patch.object(DroneRFModule, "_open_sdr", return_value=True):
-            m = DroneRFModule()
-            _run(m.start_scan())
-            self.assertIsNotNone(m._scan_task)
-            _run(m.stop_scan())
+            spawn.assert_not_called()
             self.assertIsNone(m._scan_task)
 
-
-# ---------------------------------------------------------------------------
-# Detection dict structure
-# ---------------------------------------------------------------------------
-
-@pytest.mark.skipif(not HAS_NUMPY, reason="numpy not available")
-class TestDroneRFDetectionStructure(unittest.TestCase):
-
-    def test_detection_dict_has_required_fields(self):
-        """A detection dict returned by _sample_frequency must have all required fields."""
+    @patch("modules.drone_rf.subprocess.run",
+           return_value=MagicMock(stdout="ID 0bda:2838 Realtek\n", returncode=0))
+    def test_start_then_stop_manages_worker_and_task(self, _run_mock):
         from modules.drone_rf import DroneRFModule
 
+        def fake_spawn(self_inner):
+            self_inner._proc = MagicMock(pid=999)
+            self_inner._proc.is_alive.return_value = True
+            self_inner._stop_evt = MagicMock()
+            self_inner._stop_evt.is_set.return_value = False
+            self_inner._detections_q = queue.Queue()
+
+        async def go():
+            m = _mod()
+            with patch.object(DroneRFModule, "_spawn_worker", fake_spawn):
+                await m.start_scan()
+                self.assertIsNotNone(m._scan_task)
+                self.assertFalse(m._scan_task.done())
+                await m.stop_scan()
+                self.assertIsNone(m._scan_task)
+        _run(go())
+
+    def test_stop_scan_no_error_when_not_started(self):
+        _run(_mod().stop_scan())  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Crash-loop guard + monitor policy (the heart of #63)
+# ---------------------------------------------------------------------------
+
+class TestDroneRFCrashGuard(unittest.TestCase):
+
+    def test_crash_policy_disables_at_threshold(self):
+        m = _mod()
+        m._max_crashes = 3
+        self.assertEqual(m._register_crash_and_decide(), "respawn")
+        self.assertEqual(m._register_crash_and_decide(), "respawn")
+        self.assertEqual(m._register_crash_and_decide(), "disable")
+
+    def test_crash_policy_prunes_crashes_outside_window(self):
+        m = _mod()
+        m._max_crashes = 3
+        m._crash_window_s = 100
+        m._crash_times = [time.monotonic() - 250, time.monotonic() - 150]  # both stale
+        self.assertEqual(m._register_crash_and_decide(), "respawn")
+        self.assertEqual(len(m._crash_times), 1)  # stale ones pruned
+
+    def test_monitor_tick_running_when_worker_alive(self):
+        m = _mod()
+        m._proc = MagicMock()
+        m._proc.is_alive.return_value = True
+        self.assertEqual(m._monitor_tick(), "running")
+
+    def test_monitor_tick_stopped_when_intentional(self):
+        m = _mod()
+        m._proc = MagicMock()
+        m._proc.is_alive.return_value = False
+        m._stop_evt = MagicMock()
+        m._stop_evt.is_set.return_value = True
+        self.assertEqual(m._monitor_tick(), "stopped")
+
+    def test_monitor_tick_respawns_on_unexpected_death(self):
+        m = _mod()
+        m._max_crashes = 5
+        m._proc = MagicMock(exitcode=-11)        # SIGSEGV
+        m._proc.is_alive.return_value = False
+        m._stop_evt = MagicMock()
+        m._stop_evt.is_set.return_value = False
+        self.assertEqual(m._monitor_tick(), "respawn")
+        self.assertEqual(len(m._crash_times), 1)
+        self.assertTrue(m.can_scan)
+
+    def test_monitor_tick_disables_after_repeated_crashes(self):
+        m = _mod()
+        m._max_crashes = 3
+        m._proc = MagicMock(exitcode=-11)
+        m._proc.is_alive.return_value = False
+        m._stop_evt = MagicMock()
+        m._stop_evt.is_set.return_value = False
+        outcomes = [m._monitor_tick() for _ in range(3)]
+        self.assertEqual(outcomes, ["respawn", "respawn", "disabled"])
+        self.assertFalse(m.can_scan)  # crash loop broken — node stays up, scan off
+
+
+# ---------------------------------------------------------------------------
+# Queue drain + GPS enrichment (parent side)
+# ---------------------------------------------------------------------------
+
+class TestDroneRFDrainQueue(unittest.TestCase):
+
+    def test_drain_queue_enriches_with_gps_fix(self):
+        m = _mod()
+        m._gps = MagicMock()
+        m._gps.get_fix.return_value = {"lat": 51.5, "lon": -0.1}
+        m._detections_q = queue.Queue()
+        m._detections_q.put({"freq_mhz": 433.0, "power_db": -10.0, "timestamp": "t"})
+        m._drain_queue()
+        self.assertEqual(len(m._detections), 1)
+        self.assertEqual(m._detections[0]["gps_lat"], 51.5)
+        self.assertEqual(m._detections[0]["gps_lon"], -0.1)
+
+    def test_drain_queue_null_position_without_gps(self):
+        m = _mod()
+        m._gps = None
+        m._detections_q = queue.Queue()
+        m._detections_q.put({"freq_mhz": 868.0, "power_db": -5.0, "timestamp": "t"})
+        m._drain_queue()
+        self.assertIsNone(m._detections[0]["gps_lat"])
+        self.assertIsNone(m._detections[0]["gps_lon"])
+
+    def test_drain_queue_noop_when_empty(self):
+        m = _mod()
+        m._detections_q = queue.Queue()
+        m._drain_queue()
+        self.assertEqual(m._detections, [])
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+class TestDroneRFHelpers(unittest.TestCase):
+
+    @pytest.mark.skipif(not HAS_NUMPY, reason="numpy not available")
+    def test_power_db_computes_decibels(self):
         import numpy as np
+        from modules.drone_rf import _power_db
+        val = _power_db(np.ones(1024, dtype=complex) * 0.5)  # |0.5|^2 = 0.25
+        self.assertAlmostEqual(val, 10 * np.log10(0.25), places=1)
 
-        mock_sdr = MagicMock()
-        mock_sdr.read_samples.return_value = np.ones(256 * 1024, dtype=complex) * 0.5
-        mock_sdr.close = MagicMock()
-
-        gps = MagicMock()
-        gps.get_fix.return_value = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
-
-        with patch("modules.drone_rf.DroneRFModule.is_hardware_present", return_value=True), \
-             patch("modules.drone_rf.DRONE_POWER_THRESHOLD_DB", -999.0):
-            with patch.dict("sys.modules", {}):
-                with patch("builtins.__import__", side_effect=lambda name, *a, **kw: (
-                    mock_sdr if name == "rtlsdr.RtlSdr" else __import__(name, *a, **kw)
-                )):
-                    pass
-
-        # Direct construction test with all mocks in place
-        with patch("modules.drone_rf.DRONE_POWER_THRESHOLD_DB", -999.0):
-            mock_rtlsdr_module = MagicMock()
-            mock_rtlsdr_module.RtlSdr.return_value = mock_sdr
-
-            with patch.dict("sys.modules", {"rtlsdr": mock_rtlsdr_module}):
-                m = DroneRFModule(gps_module=gps)
-                m._sdr = mock_sdr  # simulate an opened SDR device
-                result = m._sample_frequency(433.0)
-
-        if result is not None:
-            for field in ("freq_mhz", "power_db", "timestamp", "gps_lat", "gps_lon"):
-                self.assertIn(field, result, f"missing field: {field}")
-            self.assertEqual(result["freq_mhz"], 433.0)
-            self.assertIsInstance(result["power_db"], float)
-
-
-# ---------------------------------------------------------------------------
-# Duty cycle
-# ---------------------------------------------------------------------------
-
-class TestDroneRFDutyCycle(unittest.TestCase):
-
-    def test_scan_loop_pauses_between_sweeps_when_rest_nonzero(self):
-        """_scan_loop() sleeps for REST_SECONDS after each complete sweep."""
-        from modules.drone_rf import DroneRFModule
-
-        sleep_calls = []
-        call_count = [0]
-
-        async def mock_sleep(duration):
-            sleep_calls.append(duration)
-            call_count[0] += 1
-            if call_count[0] >= 1:
-                raise asyncio.CancelledError()
-
-        async def run():
-            with patch.dict(os.environ, {"DRONE_RF_REST_SECONDS": "15", "DRONE_RF_MAX_TEMP_C": "75"}):
-                m = DroneRFModule()
-                m._sample_frequency = MagicMock(return_value=None)
-                with patch("asyncio.sleep", side_effect=mock_sleep):
-                    with patch.object(m, "_check_cpu_temp", return_value=None):
-                        try:
-                            await m._scan_loop()
-                        except asyncio.CancelledError:
-                            pass
-
-        asyncio.run(run())
-        self.assertTrue(
-            any(d == 15 for d in sleep_calls),
-            f"Expected rest sleep of 15s, got {sleep_calls}",
-        )
-
-    def test_scan_loop_no_rest_when_rest_seconds_zero(self):
-        """_scan_loop() uses only 0.1s yields when DRONE_RF_REST_SECONDS=0."""
-        from modules.drone_rf import DroneRFModule
-
-        sleep_calls = []
-        call_count = [0]
-
-        async def mock_sleep(duration):
-            sleep_calls.append(duration)
-            call_count[0] += 1
-            if call_count[0] >= 1:
-                raise asyncio.CancelledError()
-
-        async def run():
-            with patch.dict(os.environ, {"DRONE_RF_REST_SECONDS": "0"}):
-                m = DroneRFModule()
-                m._sample_frequency = MagicMock(return_value=None)
-                with patch("asyncio.sleep", side_effect=mock_sleep):
-                    try:
-                        await m._scan_loop()
-                    except asyncio.CancelledError:
-                        pass
-
-        asyncio.run(run())
-        self.assertTrue(
-            all(d == 0.1 for d in sleep_calls),
-            f"Expected only 0.1s yield sleeps, got {sleep_calls}",
-        )
-
-    def test_check_cpu_temp_returns_float_from_thermal_zone(self):
-        """_check_cpu_temp() parses the thermal zone file and returns Celsius."""
-        from modules.drone_rf import DroneRFModule
-
-        m = DroneRFModule()
+    def test_cpu_temp_parses_thermal_zone(self):
+        from modules.drone_rf import _cpu_temp
         with patch("builtins.open", mock_open(read_data="65000\n")):
-            temp = m._check_cpu_temp()
+            self.assertAlmostEqual(_cpu_temp(), 65.0)
 
-        self.assertIsNotNone(temp)
-        self.assertAlmostEqual(temp, 65.0)
-
-    def test_check_cpu_temp_returns_none_when_unavailable(self):
-        """_check_cpu_temp() returns None when the thermal zone file is missing."""
-        from modules.drone_rf import DroneRFModule
-
-        m = DroneRFModule()
+    def test_cpu_temp_none_when_unavailable(self):
+        from modules.drone_rf import _cpu_temp
         with patch("builtins.open", side_effect=FileNotFoundError):
-            temp = m._check_cpu_temp()
-
-        self.assertIsNone(temp)
+            self.assertIsNone(_cpu_temp())
 
 
 # ---------------------------------------------------------------------------
@@ -278,38 +223,25 @@ class TestDroneRFDutyCycle(unittest.TestCase):
 class TestDroneRFDrainDetections(unittest.TestCase):
 
     def test_drain_returns_events_and_clears_buffer(self):
-        """After appending events, drain_detections() returns them and empties the buffer."""
-        from modules.drone_rf import DroneRFModule
-
-        m = DroneRFModule()
+        m = _mod()
         fake_events = [{"freq_mhz": 433.0, "power_db": -15.0}]
         m._detections.extend(fake_events)
-
         result = m.drain_detections()
         self.assertEqual(result, fake_events)
         self.assertEqual(m._detections, [])
 
     def test_second_drain_returns_empty(self):
-        """After draining, a second drain returns an empty list."""
-        from modules.drone_rf import DroneRFModule
-
-        m = DroneRFModule()
+        m = _mod()
         m._detections.append({"freq_mhz": 868.0})
         m.drain_detections()
-
         self.assertEqual(m.drain_detections(), [])
 
     def test_returned_list_is_independent(self):
-        """Mutating the returned list does not affect the internal buffer."""
-        from modules.drone_rf import DroneRFModule
-
-        m = DroneRFModule()
+        m = _mod()
         m._detections.append({"freq_mhz": 915.0})
-
         result = m.drain_detections()
-        result.append({"freq_mhz": 999.0})  # mutate returned list
-
-        self.assertEqual(m._detections, [])  # internal buffer must remain clean
+        result.append({"freq_mhz": 999.0})
+        self.assertEqual(m._detections, [])
 
 
 if __name__ == "__main__":
