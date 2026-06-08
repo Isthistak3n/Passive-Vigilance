@@ -499,3 +499,39 @@ class TestGUIServerBindRetry(unittest.TestCase):
         with patch.dict(os.environ, {"GUI_BIND_RETRIES": "5", "GUI_BIND_RETRY_SECONDS": "0"}):
             gui._serve_with_retry()
         self.assertEqual(gui._app.run.call_count, 1)
+
+
+class TestGUIStatusScoring(unittest.TestCase):
+    """/api/status surfaces the scoring engine's baseline state for the header."""
+
+    def _client_with_scoring(self, status_value=None, status_error=None):
+        from gui.server import GUIServer
+        orch = MagicMock()
+        orch.session_id = "20260607_000000"
+        orch._sensor_health = {"gps": True, "kismet": True}
+        orch._stats = {}
+        orch._current_fix = None
+        if status_error is not None:
+            orch.persistence.status.side_effect = status_error
+        else:
+            orch.persistence.status.return_value = status_value
+        gui = GUIServer(orchestrator=orch)
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        return gui.app.test_client()
+
+    def test_status_includes_fixed_baseline(self):
+        client = self._client_with_scoring({
+            "mode": "fixed", "learning": True,
+            "freeze_time": "2026-06-09T22:55:03+00:00", "baseline_devices": 500,
+        })
+        body = client.get("/api/status").get_json()
+        self.assertEqual(body["scoring"]["mode"], "fixed")
+        self.assertTrue(body["scoring"]["learning"])
+        self.assertEqual(body["scoring"]["baseline_devices"], 500)
+
+    def test_status_guards_scoring_failure(self):
+        client = self._client_with_scoring(status_error=RuntimeError("boom"))
+        resp = client.get("/api/status")
+        self.assertEqual(resp.status_code, 200)        # never breaks /api/status
+        self.assertIsNone(resp.get_json()["scoring"])  # guarded -> null

@@ -174,11 +174,21 @@ class GUIServer:
             health = dict(getattr(orch, "_sensor_health", {}))
             stats = dict(getattr(orch, "_stats", {}))
             fix = getattr(orch, "_current_fix", None)
+            # Scoring/baseline state for the header — guarded so a status()
+            # failure never breaks /api/status.
+            scoring = None
+            engine = getattr(orch, "persistence", None)
+            if engine is not None:
+                try:
+                    scoring = engine.status()
+                except Exception:
+                    scoring = None
             return jsonify({
                 "session_id":   getattr(orch, "session_id", ""),
                 "sensor_health": health,
                 "stats":         stats,
                 "gps_fix":       fix,
+                "scoring":       scoring,
             })
 
         @app.route("/api/wifi")

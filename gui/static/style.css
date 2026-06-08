@@ -269,3 +269,24 @@ tr:hover td { background: #161b22; }
 /* ── Leaflet dark overrides ──────────────────────────────── */
 .leaflet-container { background: #0d1117 !important; }
 .leaflet-tile      { filter: invert(1) hue-rotate(180deg) brightness(0.85); }
+
+/* ── Baseline-state header ─────────────────────────────────────────────────── */
+.baseline-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 6px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid #21262d;
+}
+.baseline-label { font-weight: 600; letter-spacing: 0.02em; }
+.baseline-detail { color: #8b949e; }
+.baseline-learning { background: #16263a; }
+.baseline-learning .baseline-label { color: #58a6ff; }
+.baseline-frozen { background: #122017; }
+.baseline-frozen .baseline-label { color: #3fb950; }
+.baseline-mobile { background: #241f17; }
+.baseline-mobile .baseline-label { color: #d29922; }
+.baseline-unknown { background: #161b22; }
+.baseline-unknown .baseline-label { color: #8b949e; }
+.no-pos { color: #8b949e; font-style: italic; }
