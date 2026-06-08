@@ -3,7 +3,7 @@
 > **Maintained by:** Claude Code + Cody (updated at session close and on merges to `main`)
 > **Read by:** Claude Code at the start of every session
 > **Last updated:** 2026-06-07 HST
-> **Updated by:** [claude-code] — doc dedup: roles point to AGENTS.md, module list to CLAUDE.md, security to SECURITY.md
+> **Updated by:** [claude-code] — freshness pass: sprint, architecture status, branches, ports
 >
 > **Scope note:** this file holds *live state* only (hardware, ports, branches,
 > handoffs). How-the-code-works lives in `CLAUDE.md`; how-we-work (roles, branch
@@ -13,32 +13,31 @@
 
 ## Current Sprint Focus
 
-> ⚠️ **Stale:** this section, **Architectural Direction**, **Active Branches**, and
-> the dated session notes below pre-date the chase fixed-node bring-up and the
-> P0–P5 work. They need a freshness pass — tracked separately from this
-> doc-dedup change.
+**Active goal:** Validate the fixed-node prototype end to end. `chase` is up and
+running fixed-mode scoring; the gate is a multi-day soak that crosses the baseline
+freeze. See `docs/roadmap-fixed-node-prototype.md` and `docs/soak-plan-2026-06.md`.
 
-**Active goal:** Base-station bring-up (`chase`) — prerequisite for all multi-sensor and multi-node work
-**Near-term priorities (sequential):**
-1. ~~Update CONTEXT.md~~ ✅ (this file)
-2. ~~Implement `drain_detections()` on DroneRFModule + remove private attribute access~~ ✅ (PR #31, Step 2)
-3. ~~Create `core/exceptions.py` + `core/logging.py` + migrate `drone_rf.py`~~ ✅ (PR #31, Step 3)
-4. Add `ModuleHealth` dataclass to `SensorOrchestrator` — **NOT YET BUILT** (verified: no `ModuleHealth` in codebase as of 2026-05-30)
-5. Stand up `chase` (Pi 4B+) as base station — power on, OS install, SDR + LoRaWAN/GNSS HAT bring-up
-6. Migrate highest-risk modules to use `core/` contracts
-7. Expand error-path integration tests
-8. Produce final standardization checklist + PR template
+**In flight:**
+- **Multi-day soak on `chase`** — 48h learning window (freezes ~2026-06-09 22:55
+  UTC), DroneRF off, running the P0 + P1 + P2 stack. Watching memory/disk bounded
+  across the freeze, post-freeze false-positive rate, and multi-day stability.
+- **P1 approaching trigger** — merged (#75); its operator walk-test runs after the
+  soak's freeze.
+- **P2 egregious-during-baseline** — built and exercised in the soak (branch
+  `feat/egregious-during-baseline`); PR after the walk-test.
 
-**Blocking issues:** **Multi-node coordination** remains unbuilt — the key
-enabling work for the tiered architecture (see Architectural Direction below).
-(`chase` base station is up and running fixed-mode scoring; see Hardware &
-Adapter Map.)
+**Next (post-soak):** P3 rolling baseline (alert-fatigue), P4 cross-session entity
+resolution, P5 fixed-mode GUI framing — see the roadmap.
+
+**Blocking the broader vision:** multi-node coordination remains unbuilt — the key
+enabling work for the tiered base-station + spoke architecture below.
 
 ---
 
-## Architectural Direction (INTENDED — not yet built)
+## Architectural Direction (target — base station up, multi-node pending)
 
-> This section describes the target architecture. It is direction, not current state.
+> The target architecture. `chase` as a base station is now up and running; the
+> multi-node coordination layer below is still direction, not current state.
 
 **Tiered base-station + spoke model** (replaces the original single mega-node plan):
 
@@ -63,7 +62,9 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 - Spoke node registration and health reporting to base
 - Distributed session aggregation
 
-**Near-term focus:** Stand up a solid base station before adding spoke nodes. Single-node on `survkis` continues as the development and validation platform.
+**Near-term focus:** `chase` base station is up; the focus is validating fixed-node
+detection on it (the soak) before building the multi-node layer. `survkis` remains
+a development and validation platform.
 
 ---
 
@@ -127,8 +128,8 @@ authority for what is actually present and working on each node.
 | Fixed/mobile detection modes | ✅ Phase 2 (main) | — | ✅ `NODE_MODE=fixed` |
 | Entity/observation store | ✅ Complete | — | ✅ Recorded at poll site |
 | Persistence scoring | ✅ Complete | ✅ (runs in orchestrator) | ✅ (fixed-mode FixedScoring) |
-| Alert engine | ✅ Complete | ⚠️ Console only (no backend configured) | ⏸ Pending |
-| Web GUI | ✅ Complete | ❌ Disabled (GUI_ENABLED=false) | ⏸ Pending |
+| Alert engine | ✅ Complete | ⚠️ Console only (no backend configured) | ✅ Ntfy active |
+| Web GUI | ✅ Complete | ❌ Disabled (GUI_ENABLED=false) | ✅ Active (`GUI_PORT=8088`) |
 
 ---
 
@@ -142,14 +143,11 @@ per module are in **`CLAUDE.md` → Deploy Directory**.
 
 ## Active Branches
 
-Single-tier model: all work branches merge directly to `main` via PR. No integration branch.
-
-| Branch | Owner | Purpose | Protected | Pi-tested | Notes |
-|--------|-------|---------|-----------|-----------|-------|
-| `main` | — | Stable releases — single protected target | Yes | ✅ | All PRs base here |
-| `dev` | — | ~~Integration branch~~ | Yes | — | Retired 2026-05-30 — bypassed in practice; pending deletion after current PR cycle |
-| `fix/field-hardening` | — | Field hardening (stale) | Yes | — | 0 unique commits — **abandoned** |
-| `fix/orchestrator-gui-hardening` | — | GUI hardening (stale) | Yes | — | 0 unique commits — **abandoned** |
+Single-tier model: all work branches cut from `main` and merge back via PR — no
+integration branch. In-flight branches and their status are the **open PRs on
+GitHub**; this file no longer mirrors that list (it drifts). The one long-lived
+work branch worth noting here is `feat/egregious-during-baseline` — the P0+P1+P2
+stack currently deployed on `chase` for the soak; it PRs after the walk-test.
 
 ---
 
@@ -159,9 +157,12 @@ Single-tier model: all work branches merge directly to `main` via PR. No integra
 |---------|------|-----------|-------|
 | Kismet Web UI | 2501 | 0.0.0.0 | Auth via cookie token |
 | readsb / dump1090 | 8080 | localhost | JSON aircraft feed (`/data/aircraft.json`) |
-| Main orchestrator + Web GUI | **8080** | 0.0.0.0 | ⚠️ **PORT COLLISION** — GUI and readsb both default to 8080 |
+| Main orchestrator + Web GUI | 8088 | 0.0.0.0 | `GUI_PORT=8088` on chase — avoids the readsb :8080 collision |
 
-> **Port collision:** `modules/dump1090.py:18` defaults to `http://localhost:8080/data/aircraft.json`; `main.py:40` and `gui/server.py:36` both default `GUI_PORT=8080`. No conflict currently (GUI disabled, no SDR on survkis), but enabling both on the same node will fail. Resolution options: (a) set `GUI_PORT=8088` in `.env` when co-locating GUI and readsb on chase, or (b) bind readsb to a different port via `READSB_URL`. Document the chosen port in this table once chase is configured.
+> **Port note:** readsb/tar1090 and the GUI both *default* to 8080, so co-locating
+> them needs the GUI moved. On `chase` this is resolved with `GUI_PORT=8088` in
+> `.env` (GUI reachable at `http://<chase>:8088`). On `survkis` there is no SDR, so
+> no collision.
 
 ---
 
@@ -170,7 +171,7 @@ Single-tier model: all work branches merge directly to `main` via PR. No integra
 | Issue | Affects | Node | Severity | Status |
 |-------|---------|------|----------|--------|
 | Multi-node coordination missing | Entire system | Both | High | Next major milestone — see Architectural Direction |
-| GUI/readsb port collision (both default 8080) | chase deployment | chase | Medium | No conflict until GUI enabled alongside SDR — resolve at chase bring-up |
+| GUI/readsb port collision (both default 8080) | chase deployment | chase | Low | ✅ Resolved — `GUI_PORT=8088` on chase |
 | Branch-creation ruleset blocks non-admin contributors | All contributors | — | Low | Admin bypass in use; bypass-list decision pending |
 | Unsigned Pi commits hard-rejected if signature rule tightened | survkis, chase | Both | Medium | Fix: `git config gpg.format ssh` + `git config user.signingkey ~/.ssh/id_ed25519` — reuses existing deploy key, no new GPG setup needed |
 | Telegram/Discord require manual credentials | Alert backends | Both | Low | Config gap only |
@@ -191,6 +192,12 @@ scan). Commit signing is not yet configured on the Pis — see Known Issues.
 ---
 
 ## Error Handling Standardization Roadmap
+
+> Status (2026-06): Steps 1–3 are done. Step 4 (`ModuleHealth`) is still unbuilt,
+> though the sensor **stall watchdog** (#79) now covers part of the same need
+> (flagging a silently-stalled sensor). The active product roadmap is
+> `docs/roadmap-fixed-node-prototype.md` (P0–P5); this error-handling track is a
+> background cleanup, not the current sprint.
 
 **Steps:**
 1. ~~Update CONTEXT.md~~ ✅
@@ -240,6 +247,8 @@ scan). Commit signing is not yet configured on the Pis — see Known Issues.
 [2026-05-30] Context refresh session (survkis). Diagnosed Grok's gutted CLAUDE.md (stub restored from 20e6484, PR #38 merged). Created fresh `dev` from main (old `dev/improvements` retired — its only unique commit 4b6fa69 gutted CI workflows). Reconciled branch strategy docs across AGENTS.md/CONTRIBUTING.md/README.md/CLAUDE.md/SECURITY.md (PRs merged to dev, then to main). Verified: no secrets in history, u-blox 8 on ttyACM0 (not ttyUSB0), GPS_DEVICE set in .env. Port collision noted: GUI + readsb both default 8080. ModuleHealth (Step 4) confirmed not yet built.
 
 [2026-05-30] Branch model simplified to single-tier: all work branches → main directly. `dev` was bypassed in practice (all PRs during this session went to main); retired. Commit-style conflict resolved: AGENTS.md governs agent commit subjects ([agent] type(scope):); CLAUDE.md governs PR titles, release notes, human commits. Version string bumped to 0.4.3-alpha. README/setup.md/CLAUDE.md architecture tree synced. `dev` pending deletion after this PR cycle.
+
+[2026-06-07] chase fixed-node session. Landed P0 endurance hardening (#74), the approaching trigger (#75), Bluetooth reboot durability (#76), reliability fixes — stall watchdog + GUI bind-retry (#79), and the dashboard baseline header + aircraft-panel fixes (#80). Diagnosed and fixed two chase outages: a silent sensor stall (counters frozen while the health banner stayed green — hence the watchdog) and a post-reboot crash loop (NODE_MODE missing from `.env`). Restarted chase clean on a wiped baseline; a 48h soak is running the P0+P1+P2 stack (`feat/egregious-during-baseline`), freezing ~2026-06-09 22:55 UTC, after which the P1 walk-test runs. Bluetooth re-enabled and made durable. Test suite at 417. Docs de-duplicated (#81) and refreshed (this pass); `_VERSION` bumped to 0.6.0-alpha. Open finding: DSI touchscreen still non-functional; DroneRF still disabled on #63.
 
 ---
 
