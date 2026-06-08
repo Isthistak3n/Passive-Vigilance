@@ -5,6 +5,48 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ---
 
+## [v0.6.0-alpha] — 2026-06
+
+### What's better now
+
+Hardened for days-long unattended running, with the fixed-node detector and the
+dashboard both noticeably sharper.
+
+- **Runs for days without leaking** — every per-poll detection stream (WiFi,
+  aircraft, drone, Remote ID) now collapses repeated sightings of one entity into
+  a single ongoing detection instead of growing a row per poll, and the
+  observation history is bounded by a time-based retention sweep. Validated on the
+  node across a forced baseline freeze — the gap that left post-freeze running
+  unproven (#74).
+- **Aircraft show as tracks** — a plane is now one detection carrying its flight
+  path (drawn as a line in the Google Earth export) instead of a scatter of
+  points; the dashboard's aircraft list de-duplicates a moving plane and now also
+  lists aircraft that report without a position (#74, #80).
+- **"Something is closing in"** — a fixed node flags a known device whose signal is
+  trending meaningfully stronger than its learned baseline (physically
+  approaching), with noise guards and access points excluded (#75).
+- **A stalled sensor no longer looks healthy** — a watchdog flips a sensor to
+  degraded and alerts when its polling goes silent, catching the case where the
+  node sat green while quietly capturing nothing (#79).
+- **The dashboard survives a restart** — it retries binding its port instead of
+  dying silently when a fast restart still holds the old one, and logs a clear
+  error if it truly cannot start (#79).
+- **Baseline state at a glance** — a header strip shows whether the node is still
+  learning (with a countdown to freeze) or frozen and watching for deviations (#80).
+- **Bluetooth survives reboots** — the USB Bluetooth controller is raised before
+  Kismet reads its sources, so BT capture returns on its own after a restart
+  instead of needing a manual re-enable (#76).
+
+### Under the hood
+
+- New: a sensor stall watchdog and observation-history retention; per-ICAO
+  aircraft tracks and per-band drone / per-UAS Remote ID de-duplication.
+- The agent and contributor docs were de-duplicated so each topic has one home
+  (#81).
+- Test suite grew to 417 passing.
+
+---
+
 ## [v0.5.0-alpha] — 2026-06
 
 ### What's better now
