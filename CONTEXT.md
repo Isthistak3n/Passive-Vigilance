@@ -2,12 +2,21 @@
 
 > **Maintained by:** Claude Code + Cody (updated at session close and on merges to `main`)
 > **Read by:** Claude Code at the start of every session
-> **Last updated:** 2026-05-30 HST
-> **Updated by:** [claude-code] — context refresh: real hostnames, hardware map, architectural direction, port collision, bypass issues
+> **Last updated:** 2026-06-07 HST
+> **Updated by:** [claude-code] — doc dedup: roles point to AGENTS.md, module list to CLAUDE.md, security to SECURITY.md
+>
+> **Scope note:** this file holds *live state* only (hardware, ports, branches,
+> handoffs). How-the-code-works lives in `CLAUDE.md`; how-we-work (roles, branch
+> strategy, commit format) lives in `AGENTS.md`.
 
 ---
 
 ## Current Sprint Focus
+
+> ⚠️ **Stale:** this section, **Architectural Direction**, **Active Branches**, and
+> the dated session notes below pre-date the chase fixed-node bring-up and the
+> P0–P5 work. They need a freshness pass — tracked separately from this
+> doc-dedup change.
 
 **Active goal:** Base-station bring-up (`chase`) — prerequisite for all multi-sensor and multi-node work
 **Near-term priorities (sequential):**
@@ -20,8 +29,10 @@
 7. Expand error-path integration tests
 8. Produce final standardization checklist + PR template
 
-**Blocking issues:** `chase` is unpowered — SDR/ADS-B/DroneRF capabilities are coded and tested but cannot be deployed until base station is up.
-**Multi-node coordination** remains unbuilt and is the key enabling work for the tiered architecture (see Architectural Direction below).
+**Blocking issues:** **Multi-node coordination** remains unbuilt — the key
+enabling work for the tiered architecture (see Architectural Direction below).
+(`chase` base station is up and running fixed-mode scoring; see Hardware &
+Adapter Map.)
 
 ---
 
@@ -58,12 +69,13 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 
 ## Node Roles
 
-| Hostname | Hardware | Logical Alias | Role | Status |
-|----------|----------|---------------|------|--------|
-| `survkis` | Pi 3B+ | `pv-node-1` (alias only) | Active dev + WiFi/GPS spoke | ✅ Running |
-| `chase` | Pi 4B+ | `pv-node-2` (alias only) | Intended base station (SDR/ADS-B/RF) | ⏸ Unpowered — pending bring-up |
+Logical roles and aliases live in **`AGENTS.md` → Node Roles**. Live per-node
+hardware and verified status are in **Hardware & Adapter Map** below — that is the
+authority for what is actually present and working on each node.
 
-> **Note:** `pv-node-1` / `pv-node-2` are logical role names used in AGENTS.md. The real hostnames (`survkis`, `chase`) are what Tailscale/mDNS will resolve. Use real hostnames in any network or SSH config.
+> `pv-node-1` / `pv-node-2` are logical aliases only; the real hostnames
+> (`survkis`, `chase`) are what Tailscale/mDNS resolve. Use real hostnames in any
+> network or SSH config.
 
 ---
 
@@ -122,30 +134,9 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 
 ## Module Registry
 
-| Module | File | Node(s) | Service | Status | Last tested |
-|--------|------|---------|---------|--------|-------------|
-| GPS Handler | `modules/gps.py` | Both | — | ✅ Stable | 2026-05-06 |
-| Kismet WiFi/BT Scanner | `modules/kismet.py` | Both | `kismet.service` | ✅ Stable | 2026-05-06 |
-| ADS-B (readsb) | `modules/dump1090.py` | chase | `readsb.service` | ✅ Stable (code) | 2026-05-06 |
-| Drone RF Detection | `modules/drone_rf.py` | chase | — | ✅ Stable (code) | 2026-05-06 |
-| SDR Coordinator | `modules/sdr_coordinator.py` | chase | — | ✅ Hardened (P1) | 2026-05-06 |
-| SDR Manager | `modules/sdr_manager.py` | Both | — | ✅ Stable | 2026-05-06 |
-| Core Exceptions | `core/exceptions.py` | Both | — | ✅ Complete (Step 3) | 2026-05-12 |
-| Core Logging | `core/logging.py` | Both | — | ✅ Complete (Step 3) | 2026-05-12 |
-| Persistence Engine | `modules/persistence.py` | Both | — | ✅ Stable | 2026-05-06 |
-| Alert Factory | `modules/alerts.py` | Both | — | ✅ Stable | 2026-05-06 |
-| Ignore List | `modules/ignore_list.py` | Both | — | ✅ Stable | 2026-05-06 |
-| MAC Utils | `modules/mac_utils.py` | Both | — | ✅ Stable | 2026-05-06 |
-| Probe Analyzer | `modules/probe_analyzer.py` | Both | — | ✅ Stable | 2026-05-06 |
-| SDR Utils | `modules/sdr_utils.py` | Both | — | ✅ Stable (PR #31) | 2026-05-12 |
-| Shapefile Writer | `modules/shapefile.py` | Both | — | ✅ Stable | 2026-05-06 |
-| KML Writer | `modules/kml_writer.py` | Both | — | ✅ Stable | 2026-05-06 |
-| WiGLE Uploader | `modules/wigle.py` | chase | — | ✅ Stable | 2026-05-06 |
-| Main Orchestrator | `main.py` | Both | `passive-vigilance.service` | ✅ Stable | 2026-05-30 |
-| Web GUI | `gui/server.py` | Both | — | ✅ Stable | 2026-05-06 |
-| Remote ID Detector | `modules/remote_id.py` | Both | — | ✅ Complete | 2026-05-06 |
-
-**Test Coverage:** 280 tests passing (validated survkis Pi 3B+ — 2026-05-06 / 2026-05-30).
+The canonical module list — file, class, and responsibility — is **`CLAUDE.md` →
+Module Map**. Maintain it there; don't keep a second copy here. Systemd services
+per module are in **`CLAUDE.md` → Deploy Directory**.
 
 ---
 
@@ -184,13 +175,18 @@ Single-tier model: all work branches merge directly to `main` via PR. No integra
 | Unsigned Pi commits hard-rejected if signature rule tightened | survkis, chase | Both | Medium | Fix: `git config gpg.format ssh` + `git config user.signingkey ~/.ssh/id_ed25519` — reuses existing deploy key, no new GPG setup needed |
 | Telegram/Discord require manual credentials | Alert backends | Both | Low | Config gap only |
 | No comprehensive frontend tests for Web GUI | gui/server.py | Both | Low | Partial unit tests exist |
-| `chase` hardware entirely unverified | chase | chase | High | Unpowered — all chase entries in hardware map are intended, not confirmed |
+| DroneRF disabled — RTL-SDR/libusb SIGSEGV during scan (#63) | Drone detection | chase | Medium | `DRONE_RF_ENABLED=false`; readsb-only. Re-enable blocked on #63 |
+| DSI touchscreen non-functional | Local display | chase | Medium | Blocks field readiness |
 
 ---
 
 ## Security Note
 
-GitHub authentication on each Pi uses per-Pi SSH ed25519 keys held in `~/.ssh/` **outside the repo** (`~/.ssh/id_ed25519`, permissions 600). No key material has ever entered git history (verified 2026-05-30 via full history scan). Commit signing is not yet configured on the Pis — see Known Issues.
+Security policy and vulnerability reporting live in **`SECURITY.md`**.
+Live operational specifics for this deployment: GitHub auth on each Pi uses per-Pi
+SSH ed25519 keys in `~/.ssh/` **outside the repo** (`id_ed25519`, mode 600); no
+key material has ever entered git history (verified 2026-05-30 via full history
+scan). Commit signing is not yet configured on the Pis — see Known Issues.
 
 ---
 
@@ -264,7 +260,7 @@ GitHub authentication on each Pi uses per-Pi SSH ed25519 keys held in `~/.ssh/` 
 - [ ] `git fetch origin && git checkout main && git pull origin main`
 - [ ] Read **Current Sprint Focus** and **Error Handling Standardization Roadmap**
 - [ ] Confirm hardware matches **Hardware & Adapter Map** for this node
-- [ ] Check **Module Registry** for latest status
+- [ ] Check **`CLAUDE.md` → Module Map** for the module list
 - [ ] Check **Known Issues** for any new blockers
 
 ## Handoff Checklist for Claude Code Session Close
@@ -273,4 +269,4 @@ GitHub authentication on each Pi uses per-Pi SSH ed25519 keys held in `~/.ssh/` 
 - [ ] Append session note to **Claude Code Session Notes**
 - [ ] Push branch to `origin`
 - [ ] Open PR base `main` (or report compare URL if gh unavailable)
-- [ ] Update **Module Registry** status if anything changed
+- [ ] Update **`CLAUDE.md` → Module Map** if modules changed
