@@ -47,6 +47,7 @@ header {
 }
 .sensor.ok  { background: #1a3a1a; color: #3fb950; }
 .sensor.err { background: #3a1a1a; color: #f85149; }
+.sensor.disabled { background: #21262d; color: #6e7681; opacity: 0.6; }
 
 .session-id {
   font-size: 11px;

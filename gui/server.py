@@ -172,6 +172,9 @@ class GUIServer:
             if orch is None:
                 return jsonify({"status": "no_orchestrator"})
             health = dict(getattr(orch, "_sensor_health", {}))
+            # Which sensors are actually active — so the dashboard can show a
+            # disabled sensor (e.g. DroneRF off) as off rather than healthy.
+            active = dict(getattr(orch, "_modules_active", {}))
             stats = dict(getattr(orch, "_stats", {}))
             fix = getattr(orch, "_current_fix", None)
             # Scoring/baseline state for the header — guarded so a status()
@@ -186,6 +189,7 @@ class GUIServer:
             return jsonify({
                 "session_id":   getattr(orch, "session_id", ""),
                 "sensor_health": health,
+                "modules_active": active,
                 "stats":         stats,
                 "gps_fix":       fix,
                 "scoring":       scoring,

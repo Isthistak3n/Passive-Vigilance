@@ -535,3 +535,27 @@ class TestGUIStatusScoring(unittest.TestCase):
         resp = client.get("/api/status")
         self.assertEqual(resp.status_code, 200)        # never breaks /api/status
         self.assertIsNone(resp.get_json()["scoring"])  # guarded -> null
+
+
+class TestGUIStatusModulesActive(unittest.TestCase):
+    """/api/status exposes modules_active so the dashboard shows a disabled
+    sensor (e.g. DroneRF off) as off, not falsely healthy."""
+
+    def test_status_exposes_modules_active(self):
+        from gui.server import GUIServer
+        orch = MagicMock()
+        orch.session_id = "x"
+        orch._sensor_health = {"drone_rf": True, "kismet": True}
+        orch._modules_active = {"drone_rf": False, "kismet": True}
+        orch._stats = {}
+        orch._current_fix = None
+        orch.persistence.status.return_value = None
+        gui = GUIServer(orchestrator=orch)
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        body = gui.app.test_client().get("/api/status").get_json()
+        # health reports drone_rf True, but it isn't active — the dashboard needs
+        # both to avoid a green chiclet for a disabled sensor.
+        self.assertTrue(body["sensor_health"]["drone_rf"])
+        self.assertFalse(body["modules_active"]["drone_rf"])
+        self.assertTrue(body["modules_active"]["kismet"])
