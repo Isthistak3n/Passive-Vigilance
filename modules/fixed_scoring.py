@@ -87,6 +87,20 @@ APPROACHING_MIN_DB_MARGIN = 6.0         # ...and at least this many dB (absolute
 # device without flooding on ordinary nearby traffic.
 EGREGIOUS_SIGNAL_DBM = -45.0
 
+# Environment-density presets for the egregious threshold (post-soak calibration).
+# A DENSE node (apartment block, many close devices) needs a STRICTER, closer bar
+# or it floods; a SPARSE/rural node (large yard, few neighbours) can use a more
+# sensitive, farther bar because any close device is notable. NODE_DENSITY picks
+# the default; an explicit EGREGIOUS_SIGNAL_DBM overrides it.
+_EGREGIOUS_DENSITY_PRESETS = {"dense": -30.0, "suburban": -40.0, "rural": -50.0}
+
+# Novelty on a RANDOMIZED MAC with no probe-SSID fingerprint is the post-freeze
+# flood source: each MAC rotation of a baselined device reads as brand-new. Such a
+# device must show SUSTAINED presence (this many observations) before novelty
+# fires; a randomized device WITH a fingerprint (keyed "fp:") is unaffected.
+# Env-overridable. The default is the dense-node value the chase soak motivated.
+NOVELTY_RANDOM_MIN_OBSERVATIONS = 30
+
 
 def _coerce_signal(value) -> Optional[float]:
     """Return *value* as float, or None if it should be skipped.
@@ -171,9 +185,20 @@ class FixedScoring(ScoringEngine):
         self._approaching_min_db_margin = float(
             os.getenv("APPROACHING_MIN_DB_MARGIN", str(APPROACHING_MIN_DB_MARGIN))
         )
-        # Egregious-during-baseline strength threshold (design 5.2).
-        self._egregious_signal_dbm = float(
-            os.getenv("EGREGIOUS_SIGNAL_DBM", str(EGREGIOUS_SIGNAL_DBM))
+        # Egregious-during-baseline strength threshold (design 5.2). An explicit
+        # EGREGIOUS_SIGNAL_DBM wins; otherwise it follows the node's environment
+        # density (NODE_DENSITY: dense | suburban | rural).
+        _egr = os.getenv("EGREGIOUS_SIGNAL_DBM")
+        if _egr is not None and _egr.strip():
+            self._egregious_signal_dbm = float(_egr)
+        else:
+            _density = os.getenv("NODE_DENSITY", "suburban").strip().lower()
+            self._egregious_signal_dbm = _EGREGIOUS_DENSITY_PRESETS.get(
+                _density, EGREGIOUS_SIGNAL_DBM
+            )
+        # Sustained-presence threshold for randomized-MAC novelty (anti-flood).
+        self._novelty_random_min_obs = int(
+            os.getenv("NOVELTY_RANDOM_MIN_OBSERVATIONS", str(NOVELTY_RANDOM_MIN_OBSERVATIONS))
         )
         # Distinct Wi-Fi APs suppressed from approaching that would otherwise have
         # qualified — observable so a soak can show exactly what the filter caught.
@@ -301,10 +326,15 @@ class FixedScoring(ScoringEngine):
         phase (always 0.0) — populated columns exist, no trigger yet.
         """
         is_novel = profile.first_seen > freeze_time
-        novelty = (
-            1.0 if (is_novel and profile.observation_count >= _MIN_NOVELTY_OBSERVATIONS)
-            else 0.0
+        # A randomized MAC with no probe-SSID fingerprint (keyed "mac:") is the
+        # post-freeze flood source — every rotation of a baselined device reads as
+        # new. Require SUSTAINED presence for it; a static MAC or a fingerprinted
+        # ("fp:") randomized device uses the normal minimum.
+        randomized_no_fp = (
+            profile.mac_type == "randomized" and str(profile.key).startswith("mac:")
         )
+        min_obs = self._novelty_random_min_obs if randomized_no_fp else _MIN_NOVELTY_OBSERVATIONS
+        novelty = 1.0 if (is_novel and profile.observation_count >= min_obs) else 0.0
         # Off-schedule applies ONLY to known (baseline) devices — a novel device
         # has no baseline schedule to deviate from. It also stays silent until the
         # device's baseline spans enough DISTINCT hours to define a schedule

@@ -311,6 +311,31 @@ disabled. A run that survives multi-day, stays bounded, and produces a sane
 anomaly stream with tolerable FP — demonstrating learn-then-detect end to end —
 is the working prototype.
 
+### Soak #1 — chase, 2026-06-07 → 09 (P0+P1+P2, 48h, DroneRF off)
+
+**The machinery works; the false-positive rate did not.** What passed: clean
+freeze at +48h; rich banking (5,026 profiles, 1,872 with ≥10 RSSI samples →
+approaching-eligible, 4,227 with ≥12 baseline hours → off-schedule-eligible);
+0 restarts; both sensors advancing post-freeze; RSS modest (99 → 155 MB across the
+freeze). What failed — two false-positive **floods**:
+
+1. **Egregious-during-baseline flooded** — ~22 devices/poll flagged at the −45 dBm
+   default for the whole 48h. chase is a dense RF environment; −45 is not "in the
+   operator's space." Fix: the threshold is now **environment-density-tuned**
+   (`NODE_DENSITY` → dense −30 / suburban −40 / rural −50; `EGREGIOUS_SIGNAL_DBM`
+   overrides). chase runs `dense`.
+2. **Post-freeze novelty flooded** — ~969 devices/poll, ~10.7k ntfy alerts. ~60%
+   were randomized MACs: a baselined device, post-MAC-rotation, reads as
+   brand-new. Fingerprint keying only rescues the ~quarter that broadcast named
+   probes. Fix: **a randomized MAC with no fingerprint must show sustained
+   presence (`NOVELTY_RANDOM_MIN_OBSERVATIONS`) before novelty fires.** A possible
+   off-schedule-at-hour-rollover contribution is unconfirmed — `score_breakdown`
+   is now written to `events.jsonl` so soak #2 can decompose the flag mix.
+
+Soak #2 runs the fix-stack (above changes) to confirm the FP rate is livable; the
+walk-test is held until then. This is the alert-fatigue risk below, realized — it
+elevates **P3 (rolling baseline)** from "later" toward "needed for usability."
+
 ## Sequencing
 
 P0 → (P1, P2 in parallel) → **first multi-day soak** → P3 → P4 → P5, iterating the
@@ -332,7 +357,8 @@ origin-geofencing (§10); multi-node correlation (§11.8). All genuinely later.
 
 - Treating the 4h memory pass as sufficient and finding the post-freeze leak only
   during the multi-day run — P0 plus the forced-freeze test exists to retire this.
-- Alert fatigue without P3 — a multi-day run past freeze accumulates "novel
-  forever" devices.
+- Alert fatigue without P3 — **CONFIRMED in soak #1**: post-freeze novelty floods
+  (~969/poll, ~60% randomized MACs). Mitigated by the sustained-presence guard for
+  fingerprint-less randomized MACs; P3 (rolling baseline) is the durable fix.
 - Every recent PR is blocked on **commit signing** (verified-signatures ruleset) —
   resolve so these merges don't stall at the gate.
