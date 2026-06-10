@@ -15,6 +15,7 @@ import os
 import queue
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -171,13 +172,27 @@ class GUIServer:
             if orch is None:
                 return jsonify({"status": "no_orchestrator"})
             health = dict(getattr(orch, "_sensor_health", {}))
+            # Which sensors are actually active — so the dashboard can show a
+            # disabled sensor (e.g. DroneRF off) as off rather than healthy.
+            active = dict(getattr(orch, "_modules_active", {}))
             stats = dict(getattr(orch, "_stats", {}))
             fix = getattr(orch, "_current_fix", None)
+            # Scoring/baseline state for the header — guarded so a status()
+            # failure never breaks /api/status.
+            scoring = None
+            engine = getattr(orch, "persistence", None)
+            if engine is not None:
+                try:
+                    scoring = engine.status()
+                except Exception:
+                    scoring = None
             return jsonify({
                 "session_id":   getattr(orch, "session_id", ""),
                 "sensor_health": health,
+                "modules_active": active,
                 "stats":         stats,
                 "gps_fix":       fix,
+                "scoring":       scoring,
             })
 
         @app.route("/api/wifi")
@@ -306,20 +321,48 @@ class GUIServer:
         """Start Flask in a daemon thread. Returns False if Flask is not installed."""
         if self._app is None:
             return False
-
-        def _run():
-            self._app.run(
-                host=self._host,
-                port=self._port,
-                threaded=True,
-                use_reloader=False,
-                debug=False,
-            )
-
-        self._thread = threading.Thread(target=_run, daemon=True, name="gui-flask")
+        self._thread = threading.Thread(
+            target=self._serve_with_retry, daemon=True, name="gui-flask"
+        )
         self._thread.start()
-        logger.info("GUI server started on http://%s:%d", self._host, self._port)
+        logger.info("GUI server starting on http://%s:%d", self._host, self._port)
         return True
+
+    def _serve_with_retry(self) -> None:
+        """Run Flask, retrying the port bind before giving up.
+
+        On a fast service restart (``Restart=always``) the previous process may
+        still be releasing the port, so the first bind can fail with "address in
+        use". Without a retry the daemon thread dies silently and the GUI is
+        simply gone while the node keeps reporting healthy. This retries with a
+        short backoff and, if it still cannot bind, logs a clear ERROR instead of
+        vanishing. Retry count/delay are env-overridable.
+        """
+        attempts = max(1, int(os.getenv("GUI_BIND_RETRIES", "5")))
+        delay = float(os.getenv("GUI_BIND_RETRY_SECONDS", "2"))
+        for attempt in range(1, attempts + 1):
+            try:
+                self._app.run(
+                    host=self._host,
+                    port=self._port,
+                    threaded=True,
+                    use_reloader=False,
+                    debug=False,
+                )
+                return  # run() only returns on a clean shutdown
+            except OSError as exc:
+                if attempt >= attempts:
+                    logger.error(
+                        "GUI server could not bind %s:%d after %d attempts: %s — "
+                        "GUI unavailable this session",
+                        self._host, self._port, attempts, exc,
+                    )
+                    return
+                logger.warning(
+                    "GUI bind attempt %d/%d failed (%s) — retrying in %.1fs",
+                    attempt, attempts, exc, delay,
+                )
+                time.sleep(delay)
 
     def push_event(self, event_type: str, data: dict) -> None:
         """Broadcast a sensor event to all connected SSE clients.
