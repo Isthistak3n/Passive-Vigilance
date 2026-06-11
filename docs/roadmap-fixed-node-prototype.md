@@ -289,7 +289,7 @@ Full design: [design-aircraft-of-interest.md](design-aircraft-of-interest.md).
 **Tests.** Off-hardware: a synthetic orbit track near the node flags while a
 straight transit and a high overflight do not; a baselined daily orbiter stops
 flagging while a novel one fires; dwell/heading accumulate across track gaps. On
-chase: a real circling aircraft (e.g. the Kaneohe training traffic) is surfaced as
+chase: a real circling aircraft is surfaced as
 "orbiting," and the ambient false-positive rate among transit traffic stays low.
 
 **Exit gate.** A circling aircraft in the immediate area is distinguished from
