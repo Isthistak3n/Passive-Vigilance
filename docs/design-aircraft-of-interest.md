@@ -93,9 +93,8 @@ point. Persist the choice. All range/bearing math keys off this single reference
 ## Baseline pattern-of-life — the flood guard
 
 Bare "I have seen this airframe orbit before" would flood: tour helicopters orbit
-the same landmarks daily, flight schools fly patterns, medevac and military
-(Kaneohe) return constantly. This is the exact alert-fatigue trap the first WiFi
-soak sprang.
+the same landmarks daily, flight schools fly patterns, medevac and  return constantly. 
+This is the exact alert-fatigue trap the first WiFi soak sprang.
 
 So aircraft of interest get the **same baseline-then-flag discipline** as the fixed
 WiFi scoring:
