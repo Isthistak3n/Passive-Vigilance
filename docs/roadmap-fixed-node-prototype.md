@@ -199,27 +199,31 @@ detection/alert history they rely on survives a refresh and a restart.
 
 ### P6 — Aircraft panel: serve the live current sky, not a push-log (near-term bug)
 
-**Why.** Operator-reproduced on chase, 2026-06-10: an aircraft loitering in
-tar1090 — so readsb has it continuously — drops off the dashboard's aircraft panel
-after a page refresh. The decode is fine; the loss is in the GUI's re-seed path,
-and the root cause is two interacting things:
+**Why.** Operator-reproduced on chase, 2026-06-10: an aircraft doing tight circles
+in tar1090 — so readsb has it — drops off the dashboard's aircraft panel after a
+page refresh. Verified live against the running node, the mechanism is **cache
+eviction in the GUI's re-seed path**, not a decode miss:
 
-1. The orchestrator pushes an aircraft to the GUI **once, on first detection**, and
-   thereafter only re-pushes it when its track actually *moves* (`_poll_adsb`
-   pushes on `moved`). A loitering or holding aircraft barely moves, so after the
-   first push it goes quiet on the live stream.
+1. readsb keeps each aircraft for its own staleness timeout, so tar1090 keeps
+   showing the circling target. PV pushes an aircraft to the GUI only when it
+   freshly polls a position update for it.
 2. `/api/aircraft` — what a refresh re-seeds from — serves the flat `_recent_aircraft`
-   **push-log**, capped at the last 200 events. The loiterer's single push scrolls
-   off the back as other traffic accumulates, so the refreshed page seeds an
-   aircraft list that no longer contains it — even though the orchestrator's own
-   `_aircraft_index` (the live, per-ICAO current-aircraft map) still holds it and
-   readsb still reports it.
+   **push-log**, capped at 200 events. With ~18 aircraft each re-pushing on most
+   5 s polls, those 200 slots hold only about the last minute of pushes (and the
+   orchestrator pushes the *same* dict object each time, so the slots are even more
+   redundant). Any aircraft PV hasn't pushed within that ~minute is already evicted
+   from the cap — and under sparse RTL-SDR reception, where the receiver catches one
+   target at a time, a circling aircraft routinely goes that long between PV pushes.
 
-So the live SSE session shows the plane (it caught the one push) and the refresh
-loses it (that push aged out of the cap). The data was on the server the whole
-time; the panel just reads from the wrong structure. (Null-position aircraft — the
-earlier hypothesis — are a real but separate, already-handled case: they render as
-"no position" in the table and are omitted from the map.)
+So the live SSE session shows the plane (it caught each push as it arrived) and a
+refresh loses it (its last push aged out of the 200-cap). PV's own per-ICAO
+current-aircraft map (`_aircraft_index`, never pruned) still holds it — the panel
+just re-seeds from the wrong, churn-starved structure. (A live check found PV
+holding 18 aircraft while readsb's instantaneous view held 1 — the same eviction
+story from the other side: the cap is dominated by re-push churn from the most
+active aircraft.) Null-position aircraft — the earlier hypothesis — are a separate,
+already-handled case: shown as "no position", omitted from the map (3 of the 18 in
+the live check).
 
 **Scope.** Serve `/api/aircraft` from the current-aircraft index (`_aircraft_index`)
 so a refresh rebuilds the actual present sky rather than a bounded slice of push
