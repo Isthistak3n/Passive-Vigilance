@@ -278,8 +278,8 @@ rather than a straight pass — tolerant of the gappy tracks sparse reception
 produces. First-cut defaults: 5 nm / 5,000 ft / 8 min / >270°, all configurable.
 Reference position defaults to **GPS (smoothed), with a GUI override** for
 degradation. A **durable per-ICAO baseline** makes daily orbiters (tours, training,
-medevac, Kaneohe military) normal and a *novel* loiterer the signal — the same
-baseline-then-flag discipline that tamed the WiFi flood — with an
+medevacy) normal and a *novel* loiterer the signal — the same baseline-then-flag 
+discipline that tamed the WiFi flood — with an
 egregious-during-learning carve-out and an interest weight for blocked/anonymous,
 military, no-callsign, and rotorcraft. The orbit logic is **modality-agnostic**: a
 loitering small UAS via Remote ID is the highest-value case and rides the same path
