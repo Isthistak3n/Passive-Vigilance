@@ -72,7 +72,7 @@ deployment.
   devices even when SSID strings are empty and may be the more robust key.
 - **Bluetooth is an even weaker correlator here.** Of 207 BT devices (all BTLE),
   only ~7% (15) expose a stable anchor (a name or public OUI), and those are
-  stationary appliances (a Samsung TV, a ResMed CPAP, Espressif IoT, Bose
+  stationary appliances (a smart TV, medical devices, IoT, BT
   speakers) — not the mobile phones we'd want to tie to a WiFi probe fingerprint.
   ~206/207 use randomized BLE addresses. Kismet exposes **no** cross-PHY link
   (`kismet.device.base.related_devices` is empty on every device), so WiFi↔BT
