@@ -19,8 +19,8 @@ any action on the codebase.
 
 | Node   | Hostname   | Logical Alias | Role                                                                 |
 |--------|------------|---------------|---------------------------------------------------------------------|
-| Pi 3B+ | `survkis`  | `pv-node-1`   | Active dev + WiFi/GPS spoke (Kismet, GPS, persistence)              |
-| Pi 4B+ | `chase`    | `pv-node-2`   | Active fixed base station — WiFi/BT + ADS-B + Remote ID, fixed-mode scoring |
+| Pi 3B+ | `survkis`  | `pi3`         | Active dev + mobile node - WiFi/BT, mobile-node scoring |
+| Pi 4B+ | `chase`    | `pi4`         | Active fixed base station — WiFi/BT + ADS-B + Remote ID, fixed-mode scoring |
 
 Live per-node hardware, adapters, and verified status are in **`CONTEXT.md` →
 Hardware & Adapter Map** — the authority for what is actually present on each
