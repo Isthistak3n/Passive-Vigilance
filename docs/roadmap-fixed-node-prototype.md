@@ -151,9 +151,12 @@ store was built for.
 
 **Scope.** A resolution pass over the entity store that merges fingerprints /
 probe evidence into stable entities across sessions and surfaces "returning
-entity" as a signal. (Recon showed Bluetooth will NOT strengthen this here — it's
-sparse and the stable subset is appliances — so this leans on WiFi probe
-fingerprints, not BT.)
+entity" as a signal. The durable answer to the soak's randomized-MAC novelty
+flood: key on a **payload fingerprint that survives MAC rotation**, not the MAC.
+BLE-as-identity stays weak (the stable subset is appliances), but BLE adds
+**proximity** and a **person-level wearable cluster** — and capturing BLE/WiFi
+beacon payloads (incl. BLE RSSI) is the prerequisite. Full design:
+[design-entity-fingerprinting.md](design-entity-fingerprinting.md).
 
 **Tests.** Off-hardware: two MAC-rotated sightings sharing a probe fingerprint
 resolve to one entity; distinct devices don't merge. On chase: a known device
