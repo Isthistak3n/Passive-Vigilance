@@ -74,9 +74,7 @@ Logical roles and aliases live in **`AGENTS.md` → Node Roles**. Live per-node
 hardware and verified status are in **Hardware & Adapter Map** below — that is the
 authority for what is actually present and working on each node.
 
-> `pv-node-1` / `pv-node-2` are logical aliases only; the real hostnames
-> (`survkis`, `chase`) are what Tailscale/mDNS resolve. Use real hostnames in any
-> network or SSH config.
+> `pi3` / `pi4` are logical aliases only
 
 ---
 
