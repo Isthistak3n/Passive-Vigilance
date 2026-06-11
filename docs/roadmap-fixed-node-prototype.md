@@ -167,17 +167,34 @@ re-identifies across a restart and a day boundary.
 ### P5 — Fixed-mode GUI framing + ADS-B panel fix
 
 **Why.** The GUI got the mode toggle but still shows a raw device list, not the
-fixed-node lens; and there is a known bug where the dashboard's aircraft panel
-does not show ADS-B that readsb has.
+fixed-node lens; there is a known bug where the dashboard's aircraft panel does
+not show ADS-B that readsb has; and **the detection/alert view does not survive a
+page refresh.** The GUI is backed only by in-memory state — the server's bounded
+`_recent_*` caches (200 events each) plus whatever the browser has accumulated
+live — so a refresh, a reconnect, or a service restart re-seeds from those caps
+and silently drops everything older. The raw `events.jsonl` and the SQLite stores
+keep the full history, but the operator, who lives in the GUI, loses sight of it.
+For a counter-surveillance tool whose entire value is "what showed up, and when,"
+a forgetful operator surface is a correctness gap, not a polish item — and it bites
+hardest exactly when volume is high (the soak's floods would blow past the 200-cap
+in seconds).
 
 **Scope.** Show baseline state (learning vs. frozen, time remaining), the anomaly
 list framed by signal / severity, and returning entities; fix the aircraft panel
-(null-position aircraft are a starting hypothesis for the missing-aircraft bug).
+(null-position aircraft are a starting hypothesis for the missing-aircraft bug);
+and **make the detection and alert history durable across a refresh** — back the
+panels with the on-disk session store (read history on load, paginate rather than
+truncate) instead of only the in-memory caches, so a reload or restart rebuilds the
+operator's view rather than forgetting it. Alerts especially must persist: an alert
+the operator missed while away from the screen must still be there when they return.
 
 **Tests.** Panels populate; the aircraft panel matches what the ADS-B module
-logged.
+logged; after a forced page reload — and after a service restart — the detection
+and alert lists rebuild from disk to the same history, not an empty or truncated
+view.
 
-**Exit gate.** An operator can read node state and anomalies at a glance.
+**Exit gate.** An operator can read node state and anomalies at a glance, and the
+detection/alert history they rely on survives a refresh and a restart.
 
 ---
 
