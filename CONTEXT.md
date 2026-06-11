@@ -2,7 +2,7 @@
 
 > **Maintained by:** Claude Code + Cody (updated at session close and on merges to `main`)
 > **Read by:** Claude Code at the start of every session
-> **Last updated:** 2026-06-07 HST
+> **Last updated:** 2026-06-07
 > **Updated by:** [claude-code] — freshness pass: sprint, architecture status, branches, ports
 >
 > **Scope note:** this file holds *live state* only (hardware, ports, branches,
@@ -256,7 +256,7 @@ scan). Commit signing is not yet configured on the Pis — see Known Issues.
 
 > Grok appends a note on every merge to main and at the start of any sequential standardization phase.
 
-[2026-05-06 22:14 HST]
+[2026-05-06]
 - Step 2 fully verified on Pi 3B+ (280/280).
 - Added retrospective note acknowledging direct-to-main code commits (process gap).
 - Updated README.md test count to 280.
