@@ -61,7 +61,9 @@ new detection features.
 | **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
 | **P4** | Cross-session entity resolution (Phase F) | ☐ Not started | No |
-| **P5** | Fixed-mode GUI framing + ADS-B panel fix | ☐ Not started | No |
+| **P5** | Fixed-mode GUI framing + durable history | ☐ Not started | No |
+| **P6** | Aircraft panel: live current-sky view + decay (bug) | ☐ Not started — near-term, independent of phasing | No |
+| **P7** | Aircraft of interest: orbit/loiter detection | ☐ Not started — design captured | No |
 
 ### P0 — Endurance hardening (blocking)
 
@@ -164,7 +166,7 @@ re-identifies across a restart and a day boundary.
 
 **Exit gate.** Cross-session re-identification works on known devices.
 
-### P5 — Fixed-mode GUI framing + ADS-B panel fix
+### P5 — Fixed-mode GUI framing + durable history
 
 **Why.** The GUI got the mode toggle but still shows a raw device list, not the
 fixed-node lens; there is a known bug where the dashboard's aircraft panel does
@@ -180,21 +182,110 @@ hardest exactly when volume is high (the soak's floods would blow past the 200-c
 in seconds).
 
 **Scope.** Show baseline state (learning vs. frozen, time remaining), the anomaly
-list framed by signal / severity, and returning entities; fix the aircraft panel
-(null-position aircraft are a starting hypothesis for the missing-aircraft bug);
-and **make the detection and alert history durable across a refresh** — back the
-panels with the on-disk session store (read history on load, paginate rather than
-truncate) instead of only the in-memory caches, so a reload or restart rebuilds the
-operator's view rather than forgetting it. Alerts especially must persist: an alert
-the operator missed while away from the screen must still be there when they return.
+list framed by signal / severity, and returning entities; and **make the detection
+and alert history durable across a refresh** — back the panels with the on-disk
+session store (read history on load, paginate rather than truncate) instead of only
+the in-memory caches, so a reload or restart rebuilds the operator's view rather
+than forgetting it. Alerts especially must persist: an alert the operator missed
+while away from the screen must still be there when they return. (The aircraft
+panel's own version of this gap is split out as **P6** — a self-contained bug with
+a live reproduction, pulled ahead of the broader framing work.)
 
-**Tests.** Panels populate; the aircraft panel matches what the ADS-B module
-logged; after a forced page reload — and after a service restart — the detection
-and alert lists rebuild from disk to the same history, not an empty or truncated
-view.
+**Tests.** Panels populate; after a forced page reload — and after a service
+restart — the detection and alert lists rebuild from disk to the same history, not
+an empty or truncated view.
 
 **Exit gate.** An operator can read node state and anomalies at a glance, and the
 detection/alert history they rely on survives a refresh and a restart.
+
+### P6 — Aircraft panel: serve the live current sky, not a push-log (near-term bug)
+
+**Why.** Operator-reproduced on chase, 2026-06-10: an aircraft doing tight circles
+in tar1090 — so readsb has it — drops off the dashboard's aircraft panel after a
+page refresh. Verified live against the running node, the mechanism is **cache
+eviction in the GUI's re-seed path**, not a decode miss:
+
+1. readsb keeps each aircraft for its own staleness timeout, so tar1090 keeps
+   showing the circling target. PV pushes an aircraft to the GUI only when it
+   freshly polls a position update for it.
+2. `/api/aircraft` — what a refresh re-seeds from — serves the flat `_recent_aircraft`
+   **push-log**, capped at 200 events. With ~18 aircraft each re-pushing on most
+   5 s polls, those 200 slots hold only about the last minute of pushes (and the
+   orchestrator pushes the *same* dict object each time, so the slots are even more
+   redundant). Any aircraft PV hasn't pushed within that ~minute is already evicted
+   from the cap — and under sparse RTL-SDR reception, where the receiver catches one
+   target at a time, a circling aircraft routinely goes that long between PV pushes.
+
+So the live SSE session shows the plane (it caught each push as it arrived) and a
+refresh loses it (its last push aged out of the 200-cap). PV's own per-ICAO
+current-aircraft map (`_aircraft_index`, never pruned) still holds it — the panel
+just re-seeds from the wrong, churn-starved structure. (A live check found PV
+holding 18 aircraft while readsb's instantaneous view held 1 — the same eviction
+story from the other side: the cap is dominated by re-push churn from the most
+active aircraft.) Null-position aircraft — the earlier hypothesis — are a separate,
+already-handled case: shown as "no position", omitted from the map (3 of the 18 in
+the live check).
+
+**Scope.** Serve `/api/aircraft` from the current-aircraft index (`_aircraft_index`)
+so a refresh rebuilds the actual present sky rather than a bounded slice of push
+history, and key the client's aircraft state by ICAO so the seed path can never
+list one airframe twice — **one event per aircraft, locations updated in place**.
+Add **recency decay** to the map: a marker shrinks and greys by time since last
+seen, then expires, so the operator sees what is *active now*, not a frozen pile of
+stale dots. Supporting data-model fixes (also prerequisites for P7): **bound each
+aircraft's track** (an orbiter grows it without limit, and the whole track ships to
+the GUI on every push), **expire aircraft from the index** on a staleness timeout so
+it does not grow across a multi-day run, stop merging ID-less contacts into one
+"unknown" airframe, and treat a returning ICAO as the **same identity with a marked
+track gap**. This is the aircraft-specific instance of the P5 durability gap, but it
+is self-contained with a live reproduction, so it is pulled ahead as a near-term bug.
+
+**Tests.** A circling aircraft present in readsb stays in the panel — as a single
+row — across a page refresh and a reconnect; a departed aircraft decays then ages
+out; position-less aircraft still render as "no position"; a track stays bounded
+under a long orbit.
+
+**Exit gate.** What readsb holds is in the panel, once per airframe, and stays there
+across a refresh for as long as readsb holds it — fading as it goes stale.
+
+### P7 — Aircraft of interest: orbit/loiter detection (ADS-B + Remote ID)
+
+**Why.** Aircraft are currently display-and-enrichment only — nothing scores them.
+But the air picture carries a real counter-surveillance question: *is something
+watching from above, and has it watched before?* The operator asked for a
+returning-aircraft signal analogous to the WiFi/BT work. Unlike WiFi, identity is
+the *easy* part here — the ICAO address is a stable, non-rotating airframe key, so
+the returning-entity problem (P4) nearly vanishes; the work is **geometry and
+baseline discipline**.
+
+**Scope.** Score aircraft against the node's own position. The one distinction that
+matters is **transit vs. orbit**: almost everything is fly-by traffic (approach /
+departure, coastline tour helicopters) and benign; the signal is an aircraft that
+**orbits or loiters in the immediate area** — circle patterns overhead, a slow
+racetrack within visual range. Flag the *behavior*, never assuming a circling
+aircraft is benign (a known-benign orbiter is suppressed by the baseline / operator
+whitelist, not by the code guessing "training"). Trigger = inside a horizontal
+radius, under an altitude ceiling (3-D slant range, so a high overflight does not
+count), for a sustained dwell, with an orbit signature (cumulative heading change)
+rather than a straight pass — tolerant of the gappy tracks sparse reception
+produces. First-cut defaults: 5 nm / 5,000 ft / 8 min / >270°, all configurable.
+Reference position defaults to **GPS (smoothed), with a GUI override** for
+degradation. A **durable per-ICAO baseline** makes daily orbiters (tours, training,
+medevac, Kaneohe military) normal and a *novel* loiterer the signal — the same
+baseline-then-flag discipline that tamed the WiFi flood — with an
+egregious-during-learning carve-out and an interest weight for blocked/anonymous,
+military, no-callsign, and rotorcraft. The orbit logic is **modality-agnostic**: a
+loitering small UAS via Remote ID is the highest-value case and rides the same path.
+Full design: [design-aircraft-of-interest.md](design-aircraft-of-interest.md).
+
+**Tests.** Off-hardware: a synthetic orbit track near the node flags while a
+straight transit and a high overflight do not; a baselined daily orbiter stops
+flagging while a novel one fires; dwell/heading accumulate across track gaps. On
+chase: a real circling aircraft (e.g. the Kaneohe training traffic) is surfaced as
+"orbiting," and the ambient false-positive rate among transit traffic stays low.
+
+**Exit gate.** A circling aircraft in the immediate area is distinguished from
+transit and surfaced; a novel returning loiterer alerts; routine traffic does not.
 
 ---
 
@@ -216,7 +307,12 @@ is the working prototype.
 
 P0 → (P1, P2 in parallel) → **first multi-day soak** → P3 → P4 → P5, iterating the
 soak after P3 once adaptation is in. The first long soak should be read as an
-endurance-and-correctness test, not a usability one, until P3 lands.
+endurance-and-correctness test, not a usability one, until P3 lands. **P6 sits
+outside this chain** — it is a self-contained GUI bug with a live reproduction and
+can be fixed at any time, independent of the detection-quality sequencing. **P7
+(aircraft of interest)** is a new modality that builds on P6's data-model fixes;
+its own first long run is an endurance-and-correctness test like the WiFi path, and
+its baseline is what eventually makes its alerts livable.
 
 ## Deliberately deferred (per the design doc)
 
