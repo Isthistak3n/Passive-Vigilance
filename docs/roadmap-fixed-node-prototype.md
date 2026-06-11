@@ -62,7 +62,8 @@ new detection features.
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
 | **P4** | Cross-session entity resolution (Phase F) | ☐ Not started | No |
 | **P5** | Fixed-mode GUI framing + durable history | ☐ Not started | No |
-| **P6** | Aircraft panel: live current-sky view (bug) | ☐ Not started — near-term, independent of phasing | No |
+| **P6** | Aircraft panel: live current-sky view + decay (bug) | ☐ Not started — near-term, independent of phasing | No |
+| **P7** | Aircraft of interest: orbit/loiter detection | ☐ Not started — design captured | No |
 
 ### P0 — Endurance hardening (blocking)
 
@@ -227,17 +228,64 @@ the live check).
 
 **Scope.** Serve `/api/aircraft` from the current-aircraft index (`_aircraft_index`)
 so a refresh rebuilds the actual present sky rather than a bounded slice of push
-history; optionally re-push loitering aircraft on a heartbeat so the live stream
-keeps them current too. This is the aircraft-specific instance of the P5 durability
-gap, but it is self-contained with a clear fix and a live reproduction, so it is
-pulled ahead as a near-term bug rather than waiting on the broader P5 work.
+history, and key the client's aircraft state by ICAO so the seed path can never
+list one airframe twice — **one event per aircraft, locations updated in place**.
+Add **recency decay** to the map: a marker shrinks and greys by time since last
+seen, then expires, so the operator sees what is *active now*, not a frozen pile of
+stale dots. Supporting data-model fixes (also prerequisites for P7): **bound each
+aircraft's track** (an orbiter grows it without limit, and the whole track ships to
+the GUI on every push), **expire aircraft from the index** on a staleness timeout so
+it does not grow across a multi-day run, stop merging ID-less contacts into one
+"unknown" airframe, and treat a returning ICAO as the **same identity with a marked
+track gap**. This is the aircraft-specific instance of the P5 durability gap, but it
+is self-contained with a live reproduction, so it is pulled ahead as a near-term bug.
 
-**Tests.** A loitering aircraft present in readsb stays in the panel across a page
-refresh and a reconnect; a departed aircraft ages out; position-less aircraft still
-render as "no position."
+**Tests.** A circling aircraft present in readsb stays in the panel — as a single
+row — across a page refresh and a reconnect; a departed aircraft decays then ages
+out; position-less aircraft still render as "no position"; a track stays bounded
+under a long orbit.
 
-**Exit gate.** What readsb holds is in the panel and stays there across a refresh,
-for as long as readsb holds it.
+**Exit gate.** What readsb holds is in the panel, once per airframe, and stays there
+across a refresh for as long as readsb holds it — fading as it goes stale.
+
+### P7 — Aircraft of interest: orbit/loiter detection (ADS-B + Remote ID)
+
+**Why.** Aircraft are currently display-and-enrichment only — nothing scores them.
+But the air picture carries a real counter-surveillance question: *is something
+watching from above, and has it watched before?* The operator asked for a
+returning-aircraft signal analogous to the WiFi/BT work. Unlike WiFi, identity is
+the *easy* part here — the ICAO address is a stable, non-rotating airframe key, so
+the returning-entity problem (P4) nearly vanishes; the work is **geometry and
+baseline discipline**.
+
+**Scope.** Score aircraft against the node's own position. The one distinction that
+matters is **transit vs. orbit**: almost everything is fly-by traffic (approach /
+departure, coastline tour helicopters) and benign; the signal is an aircraft that
+**orbits or loiters in the immediate area** — circle patterns overhead, a slow
+racetrack within visual range. Flag the *behavior*, never assuming a circling
+aircraft is benign (a known-benign orbiter is suppressed by the baseline / operator
+whitelist, not by the code guessing "training"). Trigger = inside a horizontal
+radius, under an altitude ceiling (3-D slant range, so a high overflight does not
+count), for a sustained dwell, with an orbit signature (cumulative heading change)
+rather than a straight pass — tolerant of the gappy tracks sparse reception
+produces. First-cut defaults: 5 nm / 5,000 ft / 8 min / >270°, all configurable.
+Reference position defaults to **GPS (smoothed), with a GUI override** for
+degradation. A **durable per-ICAO baseline** makes daily orbiters (tours, training,
+medevac, Kaneohe military) normal and a *novel* loiterer the signal — the same
+baseline-then-flag discipline that tamed the WiFi flood — with an
+egregious-during-learning carve-out and an interest weight for blocked/anonymous,
+military, no-callsign, and rotorcraft. The orbit logic is **modality-agnostic**: a
+loitering small UAS via Remote ID is the highest-value case and rides the same path.
+Full design: [design-aircraft-of-interest.md](design-aircraft-of-interest.md).
+
+**Tests.** Off-hardware: a synthetic orbit track near the node flags while a
+straight transit and a high overflight do not; a baselined daily orbiter stops
+flagging while a novel one fires; dwell/heading accumulate across track gaps. On
+chase: a real circling aircraft (e.g. the Kaneohe training traffic) is surfaced as
+"orbiting," and the ambient false-positive rate among transit traffic stays low.
+
+**Exit gate.** A circling aircraft in the immediate area is distinguished from
+transit and surfaced; a novel returning loiterer alerts; routine traffic does not.
 
 ---
 
@@ -261,7 +309,10 @@ P0 → (P1, P2 in parallel) → **first multi-day soak** → P3 → P4 → P5, i
 soak after P3 once adaptation is in. The first long soak should be read as an
 endurance-and-correctness test, not a usability one, until P3 lands. **P6 sits
 outside this chain** — it is a self-contained GUI bug with a live reproduction and
-can be fixed at any time, independent of the detection-quality sequencing.
+can be fixed at any time, independent of the detection-quality sequencing. **P7
+(aircraft of interest)** is a new modality that builds on P6's data-model fixes;
+its own first long run is an endurance-and-correctness test like the WiFi path, and
+its baseline is what eventually makes its alerts livable.
 
 ## Deliberately deferred (per the design doc)
 
