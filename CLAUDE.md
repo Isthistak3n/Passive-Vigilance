@@ -368,7 +368,7 @@ If `.env` does not exist or `GPS_DEVICE` is unset, it defaults to `/dev/ttyUSB0`
 - Never commit `data/`, `logs/`, `*.kismet`, `*.db`, `*.shp`, or any `output/` files
 - Never use `sudo` inside Python code
 - Never hardcode credentials, API keys, or device paths — always read from environment
-- Never commit directly to `main`
+- Never commit directly to `main`; exceptions for doc only PRs on a case-by-case basis
 - Never upload raw log data; only summaries
 - Never upload information that can be used to identify nodes or repo users
 
