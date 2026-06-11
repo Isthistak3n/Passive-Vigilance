@@ -98,11 +98,11 @@ authority for what is actually present and working on each node.
 
 | Component | Detail | Interface / Path | Status |
 |-----------|--------|-----------------|--------|
-| RTL8811CU WiFi adapter | Realtek (0bda:c811), driver rtw88_8821cu | `wlan1` — monitor mode (Kismet) | ✅ Active |
-| USB Bluetooth dongle | BD_ADDR 08:BE:AC:4D:3A:5B, USB | `hci0` — Kismet `linuxbluetooth` source | ✅ Active (rfkill unblocked) |
-| GNSS (LoRaWAN/GNSS HAT) | L76K GNSS over UART | `/dev/ttyAMA0` (`GPS_DEVICE` in `.env`) | ✅ Active (3D fix) |
-| RTL-SDR | RTL2838 (0bda:2838) | readsb (ADS-B), port 8080 | ✅ Active |
-| DSI touchscreen | — | — | ⏸ Non-functional, blocking field readiness |
+| RTL8811CU WiFi adapter | Realtek , driver rtw88_8821cu | `wlan1` — monitor mode (Kismet) | ✅ Active |
+| USB Bluetooth dongle | USB | `hci0` — Kismet `linuxbluetooth` source | ✅ Active (rfkill unblocked) |
+| GNSS (LoRaWAN/GNSS HAT) | GNSS over UART | `/dev/ttyAMA0` (`GPS_DEVICE` in `.env`) | ✅ Active (3D fix) |
+| RTL-SDR | RTL2838  | readsb (ADS-B), port 8080 | ✅ Active |
+| DSI touchscreen | — | — | - |
 
 > **Bluetooth note:** onboard Pi Bluetooth shares the GPS-HAT UART (issue #48), so
 > BT/BLE is captured via a **USB dongle** as a Kismet `linuxbluetooth` source on
