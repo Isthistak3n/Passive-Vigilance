@@ -28,7 +28,7 @@ it is benign.
 The behavior of interest is the opposite: an aircraft **orbiting or loitering in
 the immediate area** — a helicopter flying circle patterns overhead, an aircraft
 holding a slow racetrack within visual range of the node. As of this writing a
-contact (ER37) is doing exactly that nearby. We happen to know it is a training
+contact is doing exactly that nearby. We happen to know it is a training
 event — **but the code must never assume that.** The detector flags the *behavior*;
 a known-benign orbiter is suppressed by the baseline and the operator whitelist,
 **not** by the code guessing "probably training." Assuming benignity is how a
@@ -165,8 +165,7 @@ and several are endurance lessons from P0 applied to the air picture:
    independent of scoring.
 2. **Reference position + geometry:** node-relative range/bearing, the GPS-default /
    GUI-override home, and the live orbit-vs-transit classifier (no alerting yet —
-   surface "currently orbiting" on the GUI first, validate against real traffic like
-   ER37).
+   surface "currently orbiting" on the GUI first, validate against real traffic).
 3. **Baseline + scoring:** the durable per-ICAO history, novelty/returning/off-hours
    scoring, egregious-during-learning carve-out, interest weighting, and alerting
    through the existing rate limiter.
