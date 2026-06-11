@@ -57,12 +57,12 @@ new detection features.
 | Phase | Goal | Status | Blocking for first multi-day soak? |
 |---|---|---|---|
 | **P0** | Endurance hardening (post-freeze memory + disk) | ✅ Done — merged #74, forced-freeze validated on chase | **Yes** |
-| **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Rebased on `main`, green; walk-test gated on 2026-06-10 freeze | No (recommended) |
+| **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Rebased on `main`, green; walk-test gated on the soak #2 freeze (2026-06-12 07:41 UTC) | No (recommended) |
 | **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
 | **P4** | Cross-session entity resolution (Phase F) | ☐ Not started | No |
 | **P5** | Fixed-mode GUI framing + durable history | ☐ Not started | No |
-| **P6** | Aircraft panel: live current-sky view + decay (bug) | ☐ Not started — near-term, independent of phasing | No |
+| **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ☐ Not started — near-term, independent of phasing | No |
 | **P7** | Aircraft of interest: orbit/loiter detection | ☐ Not started — design captured | No |
 
 ### P0 — Endurance hardening (blocking)
@@ -240,10 +240,17 @@ it does not grow across a multi-day run, stop merging ID-less contacts into one
 track gap**. This is the aircraft-specific instance of the P5 durability gap, but it
 is self-contained with a live reproduction, so it is pulled ahead as a near-term bug.
 
+**Surface Remote ID.** The same air-picture GUI is missing a Remote ID view: the
+node detects UAS via Remote ID, but the dashboard has no way to show them
+(`gui/server.py` carries a standing `TODO(remote-id)` for a `/api/remote_id`
+endpoint and a Remote ID tab). Add that surface here — it is near-term GUI plumbing
+in the same domain, and it is where **P7's loitering-UAS case must appear**, so it
+is a prerequisite for the highest-value aircraft-of-interest signal.
+
 **Tests.** A circling aircraft present in readsb stays in the panel — as a single
 row — across a page refresh and a reconnect; a departed aircraft decays then ages
 out; position-less aircraft still render as "no position"; a track stays bounded
-under a long orbit.
+under a long orbit; a Remote ID detection appears in its tab.
 
 **Exit gate.** What readsb holds is in the panel, once per airframe, and stays there
 across a refresh for as long as readsb holds it — fading as it goes stale.
@@ -275,7 +282,8 @@ medevac, Kaneohe military) normal and a *novel* loiterer the signal — the same
 baseline-then-flag discipline that tamed the WiFi flood — with an
 egregious-during-learning carve-out and an interest weight for blocked/anonymous,
 military, no-callsign, and rotorcraft. The orbit logic is **modality-agnostic**: a
-loitering small UAS via Remote ID is the highest-value case and rides the same path.
+loitering small UAS via Remote ID is the highest-value case and rides the same path
+(its dashboard surface is the Remote ID tab added in P6).
 Full design: [design-aircraft-of-interest.md](design-aircraft-of-interest.md).
 
 **Tests.** Off-hardware: a synthetic orbit track near the node flags while a
