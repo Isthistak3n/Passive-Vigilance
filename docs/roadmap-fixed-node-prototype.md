@@ -61,7 +61,8 @@ new detection features.
 | **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
 | **P4** | Cross-session entity resolution (Phase F) | ☐ Not started | No |
-| **P5** | Fixed-mode GUI framing + ADS-B panel fix | ☐ Not started | No |
+| **P5** | Fixed-mode GUI framing + durable history | ☐ Not started | No |
+| **P6** | Aircraft panel: live current-sky view (bug) | ☐ Not started — near-term, independent of phasing | No |
 
 ### P0 — Endurance hardening (blocking)
 
@@ -164,7 +165,7 @@ re-identifies across a restart and a day boundary.
 
 **Exit gate.** Cross-session re-identification works on known devices.
 
-### P5 — Fixed-mode GUI framing + ADS-B panel fix
+### P5 — Fixed-mode GUI framing + durable history
 
 **Why.** The GUI got the mode toggle but still shows a raw device list, not the
 fixed-node lens; there is a known bug where the dashboard's aircraft panel does
@@ -180,21 +181,59 @@ hardest exactly when volume is high (the soak's floods would blow past the 200-c
 in seconds).
 
 **Scope.** Show baseline state (learning vs. frozen, time remaining), the anomaly
-list framed by signal / severity, and returning entities; fix the aircraft panel
-(null-position aircraft are a starting hypothesis for the missing-aircraft bug);
-and **make the detection and alert history durable across a refresh** — back the
-panels with the on-disk session store (read history on load, paginate rather than
-truncate) instead of only the in-memory caches, so a reload or restart rebuilds the
-operator's view rather than forgetting it. Alerts especially must persist: an alert
-the operator missed while away from the screen must still be there when they return.
+list framed by signal / severity, and returning entities; and **make the detection
+and alert history durable across a refresh** — back the panels with the on-disk
+session store (read history on load, paginate rather than truncate) instead of only
+the in-memory caches, so a reload or restart rebuilds the operator's view rather
+than forgetting it. Alerts especially must persist: an alert the operator missed
+while away from the screen must still be there when they return. (The aircraft
+panel's own version of this gap is split out as **P6** — a self-contained bug with
+a live reproduction, pulled ahead of the broader framing work.)
 
-**Tests.** Panels populate; the aircraft panel matches what the ADS-B module
-logged; after a forced page reload — and after a service restart — the detection
-and alert lists rebuild from disk to the same history, not an empty or truncated
-view.
+**Tests.** Panels populate; after a forced page reload — and after a service
+restart — the detection and alert lists rebuild from disk to the same history, not
+an empty or truncated view.
 
 **Exit gate.** An operator can read node state and anomalies at a glance, and the
 detection/alert history they rely on survives a refresh and a restart.
+
+### P6 — Aircraft panel: serve the live current sky, not a push-log (near-term bug)
+
+**Why.** Operator-reproduced on chase, 2026-06-10: an aircraft loitering in
+tar1090 — so readsb has it continuously — drops off the dashboard's aircraft panel
+after a page refresh. The decode is fine; the loss is in the GUI's re-seed path,
+and the root cause is two interacting things:
+
+1. The orchestrator pushes an aircraft to the GUI **once, on first detection**, and
+   thereafter only re-pushes it when its track actually *moves* (`_poll_adsb`
+   pushes on `moved`). A loitering or holding aircraft barely moves, so after the
+   first push it goes quiet on the live stream.
+2. `/api/aircraft` — what a refresh re-seeds from — serves the flat `_recent_aircraft`
+   **push-log**, capped at the last 200 events. The loiterer's single push scrolls
+   off the back as other traffic accumulates, so the refreshed page seeds an
+   aircraft list that no longer contains it — even though the orchestrator's own
+   `_aircraft_index` (the live, per-ICAO current-aircraft map) still holds it and
+   readsb still reports it.
+
+So the live SSE session shows the plane (it caught the one push) and the refresh
+loses it (that push aged out of the cap). The data was on the server the whole
+time; the panel just reads from the wrong structure. (Null-position aircraft — the
+earlier hypothesis — are a real but separate, already-handled case: they render as
+"no position" in the table and are omitted from the map.)
+
+**Scope.** Serve `/api/aircraft` from the current-aircraft index (`_aircraft_index`)
+so a refresh rebuilds the actual present sky rather than a bounded slice of push
+history; optionally re-push loitering aircraft on a heartbeat so the live stream
+keeps them current too. This is the aircraft-specific instance of the P5 durability
+gap, but it is self-contained with a clear fix and a live reproduction, so it is
+pulled ahead as a near-term bug rather than waiting on the broader P5 work.
+
+**Tests.** A loitering aircraft present in readsb stays in the panel across a page
+refresh and a reconnect; a departed aircraft ages out; position-less aircraft still
+render as "no position."
+
+**Exit gate.** What readsb holds is in the panel and stays there across a refresh,
+for as long as readsb holds it.
 
 ---
 
@@ -216,7 +255,9 @@ is the working prototype.
 
 P0 → (P1, P2 in parallel) → **first multi-day soak** → P3 → P4 → P5, iterating the
 soak after P3 once adaptation is in. The first long soak should be read as an
-endurance-and-correctness test, not a usability one, until P3 lands.
+endurance-and-correctness test, not a usability one, until P3 lands. **P6 sits
+outside this chain** — it is a self-contained GUI bug with a live reproduction and
+can be fixed at any time, independent of the detection-quality sequencing.
 
 ## Deliberately deferred (per the design doc)
 
