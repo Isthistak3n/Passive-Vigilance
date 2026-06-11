@@ -95,12 +95,12 @@ feat|fix|docs|hotfix|refactor/<name>  →  main   (via PR)
 **Gate: work branch → `main`**
 - CI must be green
 - At least one confirmed Pi validation recorded in the PR
-- Cody approval
+- Human approval
 - PR required (ruleset-enforced — direct pushes to `main` are blocked)
 - Commits must be **signed** — the ruleset requires verified signatures; an
   unsigned commit shows the PR as BLOCKED until signing is resolved
 
-- Claude Code opens its own PRs; Grok reviews all PRs for cross-module impact before Cody approval
+- Claude Code opens its own PRs; Grok reviews all PRs for cross-module impact before human approval
 - There is no docs-only exception — all changes go through the normal PR path
 
 ---
@@ -175,7 +175,7 @@ that read like a debug log, or bury the user benefit in implementation detail.
 |----------------|---------------|----------------------------------------------|
 | `claude-code`  | Claude Code   | Implementation or hardware testing task      |
 | `grok`         | Grok          | Review, refactor, or documentation task      |
-| `human`        | Cody          | Requires physical access or final decision   |
+| `human`        | Ask for name  | Requires physical access or final decision   |
 | `blocked`      | —            | Waiting on another agent or hardware         |
 | `needs-pi-test`| Claude Code   | Code written but not yet validated on hardware |
 | `ready-to-merge`| Grok + Human | PR reviewed, Pi-tested, awaiting approval    |
