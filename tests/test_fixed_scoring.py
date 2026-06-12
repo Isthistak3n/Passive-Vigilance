@@ -18,10 +18,18 @@ T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def _clocked_engine(baseline_hours=1.0, start=T0):
-    """Return (engine, clock_holder) with a controllable in-memory store."""
+    """Return (engine, clock_holder) with a controllable in-memory store.
+
+    The egregious-during-baseline threshold is read from the environment at
+    construction (NODE_DENSITY preset or an explicit EGREGIOUS_SIGNAL_DBM), so
+    pin it here to the module default. Otherwise the suite is non-hermetic: on a
+    node whose .env sets NODE_DENSITY=dense (threshold -30) the -40 dBm egregious
+    fixtures would not qualify and the test would fail purely from deployment config.
+    """
     holder = [start]
     store = BaselineStore(":memory:", baseline_hours=baseline_hours, now=start)
-    engine = FixedScoring(store=store, clock=lambda: holder[0])
+    with patch.dict(os.environ, {"EGREGIOUS_SIGNAL_DBM": "-45"}):
+        engine = FixedScoring(store=store, clock=lambda: holder[0])
     return engine, holder
 
 
