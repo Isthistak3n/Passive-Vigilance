@@ -200,5 +200,119 @@ class TestGPSQualityFilter(unittest.TestCase):
         self.assertIsNotNone(fix)
 
 
+class TestGPSReadTimeout(unittest.TestCase):
+    """A silent gpsd must never block get_fix() forever.
+
+    The python3-gps client sets no read timeout of its own and may silently
+    re-connect() to a fresh blocking socket between reads, so the wrapper must
+    re-apply the socket timeout before EVERY read — not just at connect().
+    """
+
+    @patch("modules.gps.GpsSession")
+    def test_settimeout_reapplied_on_every_read(self, MockGpsSession):
+        """settimeout() must be called before each get_fix() read, not only at connect()."""
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=3)
+        # Distinct mock socket so we can count settimeout calls precisely.
+        session.sock = MagicMock()
+        MockGpsSession.return_value = session
+
+        gps = GPSModule()
+        gps.connect()
+        calls_after_connect = session.sock.settimeout.call_count
+        self.assertGreaterEqual(calls_after_connect, 1)  # armed at connect
+
+        gps.get_fix()
+        gps.get_fix()
+        # Each get_fix re-arms the timeout on the live socket.
+        self.assertGreaterEqual(
+            session.sock.settimeout.call_count, calls_after_connect + 2
+        )
+
+    @patch("modules.gps.GpsSession")
+    def test_timeout_reapplied_after_socket_recreated(self, MockGpsSession):
+        """A fresh blocking socket appearing between reads must be re-armed."""
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=3)
+        first_sock = MagicMock()
+        session.sock = first_sock
+        MockGpsSession.return_value = session
+
+        gps = GPSModule()
+        gps.connect()
+
+        # Simulate the client library silently re-creating the socket.
+        second_sock = MagicMock()
+        session.sock = second_sock
+        gps.get_fix()
+        self.assertGreaterEqual(second_sock.settimeout.call_count, 1)
+
+    @patch("modules.gps.GpsSession")
+    def test_get_fix_returns_none_on_read_timeout(self, MockGpsSession):
+        """A read() that raises socket.timeout is treated as 'no fix', not a crash/hang."""
+        import socket
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=3)
+        session.sock = MagicMock()
+        session.read.side_effect = socket.timeout("timed out")
+        MockGpsSession.return_value = session
+
+        gps = GPSModule()
+        gps.connect()
+        # Must return promptly with None rather than propagating or blocking.
+        self.assertIsNone(gps.get_fix())
+
+    @patch("modules.gps.GpsSession")
+    def test_get_fix_does_not_hang_on_blocking_read(self, MockGpsSession):
+        """A read() that would block forever must be bounded by the socket timeout.
+
+        Here the fake socket's settimeout 'arms' a flag that makes the blocking
+        read raise instead of sleeping, mirroring how a real socket timeout
+        converts a forever-blocking recv() into socket.timeout.
+        """
+        import socket
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=3)
+        sock = MagicMock()
+        armed = {"timeout": False}
+
+        def _settimeout(_value):
+            armed["timeout"] = True
+
+        sock.settimeout.side_effect = _settimeout
+
+        def _read():
+            if armed["timeout"]:
+                raise socket.timeout("timed out")
+            raise AssertionError("read() would have blocked forever (timeout not armed)")
+
+        session.sock = sock
+        session.read.side_effect = _read
+        MockGpsSession.return_value = session
+
+        gps = GPSModule()
+        gps.connect()
+        self.assertIsNone(gps.get_fix())
+
+    @patch("modules.gps.GpsSession")
+    def test_read_timeout_is_configurable(self, MockGpsSession):
+        """GPS_READ_TIMEOUT_SECONDS controls the value passed to settimeout()."""
+        from modules.gps import GPSModule
+
+        session = _make_session(mode=3)
+        session.sock = MagicMock()
+        MockGpsSession.return_value = session
+
+        with patch.dict(os.environ, {"GPS_READ_TIMEOUT_SECONDS": "4.5"}):
+            gps = GPSModule()
+            gps.connect()
+
+        session.sock.settimeout.assert_called_with(4.5)
+
+
 if __name__ == "__main__":
     unittest.main()

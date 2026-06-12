@@ -67,6 +67,11 @@ class GPSModule:
         # Cache quality settings once at construction (avoids repeated env reads in hot path)
         self._min_quality = os.getenv("GPS_MIN_QUALITY", "2d").lower()
         self._max_hdop = float(os.getenv("GPS_MAX_HDOP", "5.0"))
+        # Per-read socket timeout. python3-gps sets no read timeout of its own and
+        # silently re-connect()s to a fresh blocking socket, which defeats a
+        # timeout applied only once at connect(). We therefore re-apply this on
+        # EVERY read so a silent gpsd can never block recv() forever.
+        self._read_timeout = float(os.getenv("GPS_READ_TIMEOUT_SECONDS", "2.0"))
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -75,22 +80,41 @@ class GPSModule:
     def connect(self) -> None:
         """Open a streaming connection to gpsd.
 
-        Sets a 2-second socket timeout so that get_fix() never blocks
-        indefinitely (gpsd sends nothing when no GNSS data is available).
+        Arms the per-read socket timeout (GPS_READ_TIMEOUT_SECONDS, default 2.0)
+        so that get_fix() never blocks indefinitely (gpsd sends nothing when no
+        GNSS data is available). The timeout is re-applied on every read because
+        the client library may silently re-create the socket.
 
         Raises:
             ConnectionError: if gpsd is not reachable.
         """
         try:
             self._session = GpsSession(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
-            if self._session.sock is not None:
-                self._session.sock.settimeout(0.5)
+            self._apply_read_timeout()
             logger.info("Connected to gpsd (device: %s)", GPS_DEVICE)
         except Exception as exc:
             self._session = None
             raise ConnectionError(
                 f"Could not connect to gpsd — is it running? ({exc})"
             ) from exc
+
+    def _apply_read_timeout(self) -> None:
+        """Re-apply the socket read timeout to the live gpsd socket.
+
+        Called at connect() and before every read(). python3-gps may silently
+        re-connect() to a fresh blocking socket between reads, so applying the
+        timeout once is not enough — without this, a quiet gpsd makes the next
+        recv() block forever. Guarded for a missing/closed socket.
+        """
+        sess = self._session
+        if sess is None:
+            return
+        sock = getattr(sess, "sock", None)
+        if sock is not None:
+            try:
+                sock.settimeout(self._read_timeout)
+            except OSError as exc:
+                logger.debug("Could not set gpsd socket timeout: %s", exc)
 
     def close(self) -> None:
         """Close the gpsd streaming connection."""
@@ -125,6 +149,11 @@ class GPSModule:
             logger.warning("get_fix() called before connect()")
             return None
 
+        # Re-arm the read timeout on the (possibly re-created) socket BEFORE every
+        # read, so a silent gpsd raises socket.timeout instead of blocking recv()
+        # forever. A timeout is treated as "no fix this cycle" — same as any other
+        # read error — with no crash and no extra health side effects here.
+        self._apply_read_timeout()
         try:
             self._session.read()
         except Exception as exc:

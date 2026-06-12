@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from math import atan2, cos, radians, sin, sqrt
@@ -195,6 +196,20 @@ class SensorOrchestrator:
         self._current_fix: Optional[dict] = None
         self._gps_fix_count: int = 0
 
+        # Dedicated single-thread pool for blocking gpsd calls (get_fix / connect
+        # / close). Defense in depth: if a gpsd read still wedges its worker
+        # thread despite the per-read socket timeout, it can only starve this
+        # one-thread pool — never the default executor shared by the SQLite
+        # stores, SDR systemctl calls, and other blocking work.
+        self._gps_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="gps"
+        )
+        # Hard ceiling on awaiting any GPS executor dispatch, so even a fully
+        # wedged worker thread can't stall the awaiting coroutine forever.
+        self._gps_call_timeout = float(
+            os.getenv("GPS_READ_TIMEOUT_SECONDS", "2.0")
+        ) + 1.0
+
     @property
     def collected_events(self) -> CollectedEvents:
         '''Return all session event lists as a CollectedEvents dataclass for shutdown use.'''
@@ -290,11 +305,24 @@ class SensorOrchestrator:
     # Inner poll methods
     # ------------------------------------------------------------------
 
+    async def _run_gps_call(self, func):
+        '''Run a blocking GPS callable on the dedicated GPS pool under a hard timeout.
+
+        Uses the single-thread GPS executor (so a wedged read can't starve the
+        default pool) and asyncio.wait_for (so even a wedged worker thread can't
+        stall the awaiting coroutine). asyncio.TimeoutError surfaces to the
+        caller's except path, which treats it like any other GPS failure.
+        '''
+        loop = asyncio.get_running_loop()
+        return await asyncio.wait_for(
+            loop.run_in_executor(self._gps_executor, func),
+            timeout=self._gps_call_timeout,
+        )
+
     async def _poll_gps(self) -> None:
         '''Read one GPS fix; update _current_fix and health state.'''
-        loop = asyncio.get_running_loop()
         try:
-            fix = await loop.run_in_executor(None, self.gps.get_fix)
+            fix = await self._run_gps_call(self.gps.get_fix)
         except Exception as exc:
             if self._sensor_health["gps"]:
                 logger.warning("Sensor gps degraded: %s", exc)
@@ -324,7 +352,9 @@ class SensorOrchestrator:
     async def _poll_adsb(self) -> None:
         '''Poll readsb for aircraft; append to aircraft_detections and fire alerts.'''
         try:
-            aircraft_list = await self.adsb.poll_aircraft()
+            # GPS-stamp from the orchestrator's own fresh fix; the module no
+            # longer reads the shared gpsd socket on the poll loop.
+            aircraft_list = await self.adsb.poll_aircraft(gps_fix=self._current_fix)
         except Exception as exc:
             if self._sensor_health["adsb"]:
                 logger.warning("Sensor adsb degraded: %s", exc)
@@ -377,7 +407,9 @@ class SensorOrchestrator:
     async def _poll_kismet(self) -> None:
         '''Poll Kismet for WiFi/BT devices; run persistence engine; fire alerts.'''
         try:
-            devices = await self.kismet.poll_devices()
+            # GPS-stamp from the orchestrator's own fresh fix; the module no
+            # longer reads the shared gpsd socket on the poll loop.
+            devices = await self.kismet.poll_devices(gps_fix=self._current_fix)
         except Exception as exc:
             if self._sensor_health["kismet"]:
                 logger.warning("Sensor kismet degraded: %s", exc)
@@ -900,12 +932,11 @@ class SensorOrchestrator:
             logger.warning("Attempting reconnect %s (%d/%d)...", module_name, attempt, max_attempts)
             try:
                 if module_name == "gps":
-                    loop = asyncio.get_running_loop()
                     try:
-                        await loop.run_in_executor(None, self.gps.close)
+                        await self._run_gps_call(self.gps.close)
                     except Exception:
                         pass
-                    await loop.run_in_executor(None, self.gps.connect)
+                    await self._run_gps_call(self.gps.connect)
                 elif module_name == "kismet":
                     try:
                         await self.kismet.close()

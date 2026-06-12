@@ -74,12 +74,18 @@ class KismetModule:
     generated once via the Kismet web UI:
     http://<pi-ip>:2501 → Settings → API Keys → Create → name: passive-vigilance
 
-    A :class:`~modules.gps.GPSModule` instance is accepted at construction
-    time; every device record returned by :meth:`poll_devices` is stamped with
-    the current GPS fix.
+    Device records are GPS-stamped by the orchestrator, which passes the
+    current fix into :meth:`poll_devices` (``gps_fix=``). The module performs
+    no GPS reads of its own — sharing the gpsd socket on the poll loop is what
+    coupled the WiFi and ADS-B pollers and let a silent gpsd wedge both at once.
+
+    ``gps_module`` is still accepted at construction for backward compatibility
+    with older callers/tests, but it is no longer read.
     """
 
     def __init__(self, gps_module=None, ignore_list=None) -> None:
+        # Retained for backward-compatible construction only; the module no
+        # longer reads GPS itself (see poll_devices' gps_fix argument).
         self._gps = gps_module
         self._ignore = ignore_list
         self._session: Optional[aiohttp.ClientSession] = None
@@ -155,7 +161,7 @@ class KismetModule:
     # Device polling
     # ------------------------------------------------------------------
 
-    async def poll_devices(self) -> list:
+    async def poll_devices(self, gps_fix: Optional[dict] = None) -> list:
         """Return recently seen devices from Kismet, GPS-stamped.
 
         Calls ``/devices/views/all/devices.json`` with a field filter to keep
@@ -164,17 +170,16 @@ class KismetModule:
         ``macaddr``, ``type``, ``name``, ``manuf``, ``phyname``,
         ``first_time``, ``last_time``, ``last_signal``,
         ``gps_lat``, ``gps_lon``, ``gps_utc``
+
+        Args:
+            gps_fix: The current GPS fix dict (as returned by
+                :meth:`~modules.gps.GPSModule.get_fix`), or ``None`` when no fix
+                is available. Supplied by the orchestrator from its own fresh
+                fix — the module performs no GPS read of its own.
         """
         if self._session is None:
             logger.warning("poll_devices() called before connect()")
             return []
-
-        gps_fix = None
-        if self._gps is not None:
-            try:
-                gps_fix = self._gps.get_fix()
-            except Exception as exc:
-                logger.debug("GPS fix unavailable: %s", exc)
 
         payload = {"fields": _DEVICE_FIELDS}
 
