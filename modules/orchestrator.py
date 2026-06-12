@@ -122,6 +122,39 @@ class SensorOrchestrator:
         # not data volume, so an idle-but-healthy sensor is never flagged.
         self._last_poll_ts: dict[str, float] = {}
         self._watchdog_stall_s = float(os.getenv("SENSOR_STALL_SECONDS", "180"))
+        # Data-progress watchdog: a poll loop that keeps *completing* while its
+        # upstream source is dead (frozen cumulative counter, no exception) is the
+        # liveness check's blind spot. For data-bearing sensors we also track the
+        # monotonic time their cumulative stat last advanced, and trip when it has
+        # been frozen longer than SENSOR_DATA_STALL_SECONDS. Kismet re-reports its
+        # active device set every poll so its counter climbs continuously; an exact
+        # multi-minute freeze is unambiguous dead-capture. ADS-B is off by default
+        # (an empty sky is a legitimate flat counter).
+        self._data_stall_s = float(os.getenv("SENSOR_DATA_STALL_SECONDS", "600"))
+        self._watchdog_interval_s = float(os.getenv("WATCHDOG_INTERVAL_SECONDS", "30"))
+        _data_sensors = os.getenv("WATCHDOG_DATA_SENSORS", "kismet")
+        self._data_sensors: set[str] = {
+            s.strip() for s in _data_sensors.split(",") if s.strip()
+        }
+        # Which cumulative stat key signals progress for each data sensor.
+        self._data_stat_key: dict[str, str] = {
+            "kismet": "kismet_devices_seen",
+            "adsb": "aircraft_seen",
+        }
+        # Last observed counter value and the monotonic time it last advanced.
+        self._last_progress_value: dict[str, int] = {}
+        self._last_progress_ts: dict[str, float] = {}
+        # Sensors that have already tripped a data/loop stall this episode, so a
+        # re-trip after a reconnect (within the window) escalates to self-restart.
+        self._stalled_since_reconnect: set[str] = set()
+        # Self-restart crash-guard (persisted, since os._exit wipes memory).
+        self._max_restarts = int(os.getenv("WATCHDOG_MAX_RESTARTS", "5"))
+        self._restart_window_s = float(os.getenv("WATCHDOG_RESTART_WINDOW_S", "1800"))
+        _data_dir = Path(__file__).resolve().parent.parent / "data"
+        self._restart_log_path = _data_dir / "watchdog_restarts.json"
+        # sd_notify: writes to $NOTIFY_SOCKET when run under systemd Type=notify;
+        # a no-op (empty string) on dev / non-systemd runs.
+        self._notify_socket = os.getenv("NOTIFY_SOCKET", "")
         self._stats: dict[str, int] = {
             "kismet_devices_seen": 0,
             "aircraft_seen": 0,
@@ -251,7 +284,6 @@ class SensorOrchestrator:
             except Exception as exc:
                 logger.error("Health banner loop sleep error: %s", exc)
             if not self._stop_event.is_set():
-                self._check_watchdog()
                 self._log_health_banner()
 
     # ------------------------------------------------------------------
@@ -551,25 +583,70 @@ class SensorOrchestrator:
         '''Record that sensor *name* just completed a poll cycle (liveness).'''
         self._last_poll_ts[name] = time.monotonic()
 
-    def _check_watchdog(self) -> None:
-        '''Flip a sensor to degraded if its poll loop has gone silent.
+    def _data_is_progressing(self, name: str) -> bool:
+        '''True if *name*'s cumulative stat advanced within the data-stall window.
 
-        Catches the failure the exception-based health flips miss: a loop that
-        stops completing without raising (a hung await or a dead task) — the node
-        keeps reporting ✓ while nothing is captured. Liveness is the poll cycle
-        completing, not data volume, so an idle-but-healthy sensor (e.g. no
-        aircraft overhead) is never flagged. A sensor that has not polled yet
-        (startup) is skipped until its first completed cycle.
+        Used both by the data-stall trip and by the systemd heartbeat (which only
+        beats while the primary sensor is genuinely capturing). A sensor not on the
+        data-progress list, or one that has not produced a first reading yet, is
+        treated as progressing so it never falsely suppresses the heartbeat.
+        '''
+        if name not in self._data_sensors:
+            return True
+        last_adv = self._last_progress_ts.get(name)
+        if last_adv is None:
+            return True
+        return (time.monotonic() - last_adv) <= self._data_stall_s
+
+    def _check_watchdog(self) -> list[str]:
+        '''Flip degraded any sensor whose poll loop has gone silent OR whose data
+        has frozen, and return the list of sensors that newly tripped.
+
+        Two failure modes are caught:
+
+        - **Loop-liveness:** a poll loop that stops *completing* without raising (a
+          hung await, a dead task) — the node keeps reporting ✓ while nothing is
+          captured. Liveness is the poll cycle completing, not data volume, so an
+          idle-but-healthy sensor (e.g. no aircraft overhead) is never flagged.
+        - **Data-progress:** a loop that keeps completing while its source is dead
+          upstream — the cumulative counter flatlines. Applied only to the
+          configured data sensors (kismet by default); ADS-B is off by default
+          because an empty sky is a legitimate flat counter.
+
+        A sensor that has not polled yet (startup) is skipped until its first
+        completed cycle. Returns the names that tripped on this pass so the caller
+        can drive recovery (reconnect → restart).
         '''
         now = time.monotonic()
+        tripped: list[str] = []
         for name in ("gps", "kismet", "adsb", "drone_rf", "remote_id"):
             if not self._modules_active.get(name, False):
                 continue
             last = self._last_poll_ts.get(name)
             if last is None:
                 continue
+            if not self._sensor_health.get(name, False):
+                continue
+
             idle = now - last
-            if idle > self._watchdog_stall_s and self._sensor_health.get(name, False):
+            loop_stalled = idle > self._watchdog_stall_s
+
+            # Data-progress: snapshot the counter and remember when it last moved.
+            data_stalled = False
+            data_frozen_s = 0.0
+            if name in self._data_sensors:
+                stat_key = self._data_stat_key.get(name)
+                if stat_key is not None:
+                    value = self._stats.get(stat_key, 0)
+                    prev = self._last_progress_value.get(name)
+                    if prev is None or value != prev:
+                        self._last_progress_value[name] = value
+                        self._last_progress_ts[name] = now
+                    else:
+                        data_frozen_s = now - self._last_progress_ts.get(name, now)
+                        data_stalled = data_frozen_s > self._data_stall_s
+
+            if loop_stalled:
                 logger.warning(
                     "Watchdog: sensor %s has not completed a poll in %.0fs "
                     "(threshold %.0fs) — marking degraded",
@@ -580,6 +657,193 @@ class SensorOrchestrator:
                     f"(was reporting healthy)"
                 )
                 self._sensor_health[name] = False
+                tripped.append(name)
+            elif data_stalled:
+                logger.warning(
+                    "Watchdog: sensor %s loop is alive but its data has not "
+                    "advanced in %.0fs (threshold %.0fs) — capture frozen, "
+                    "marking degraded",
+                    name, data_frozen_s, self._data_stall_s,
+                )
+                self._console_alert(
+                    f"Sensor {name} capture frozen — no new data in "
+                    f"{int(data_frozen_s)}s (loop still running)"
+                )
+                self._sensor_health[name] = False
+                tripped.append(name)
+        return tripped
+
+    # ------------------------------------------------------------------
+    # Watchdog loop + recovery escalation
+    # ------------------------------------------------------------------
+
+    async def _watchdog_loop(self) -> None:
+        '''Dedicated pure-async watchdog: detect stalls, drive recovery, beat systemd.
+
+        Runs on its own short interval (WATCHDOG_INTERVAL_SECONDS, default 30s),
+        independent of the 5-minute health banner, so detection latency is roughly
+        the stall threshold rather than up to five minutes. Kept pure-async (only
+        asyncio.sleep, in-memory reads, _reconnect, and os._exit) so it stays
+        schedulable even if the default executor thread-pool is starved — a prime
+        suspect for a process-wide wedge.
+        '''
+        # Notify systemd we have finished startup (required by Type=notify).
+        self._sd_notify("READY=1")
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.sleep(self._watchdog_interval_s)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Watchdog loop sleep error: %s", exc)
+            if self._stop_event.is_set():
+                break
+            try:
+                tripped = self._check_watchdog()
+                if tripped:
+                    await self._handle_stall(tripped)
+                # Beat systemd's hardware-style watchdog ONLY while capture is
+                # genuinely progressing. If the primary sensor's data has frozen,
+                # heartbeats stop and systemd restarts us after WatchdogSec — the
+                # layer that survives even a total in-process wedge.
+                if self._capture_progressing():
+                    self._sd_notify("WATCHDOG=1")
+            except Exception as exc:
+                logger.error("Watchdog evaluation error: %s", exc, exc_info=True)
+
+    def _capture_progressing(self) -> bool:
+        '''True if every active data sensor is still advancing its counter.
+
+        Gates the systemd heartbeat: a single frozen data sensor stops the beat so
+        the outer net can act even when the in-process recovery cannot fire.
+        '''
+        for name in self._data_sensors:
+            if not self._modules_active.get(name, False):
+                continue
+            if not self._data_is_progressing(name):
+                return False
+        return True
+
+    async def _handle_stall(self, tripped: list[str]) -> None:
+        '''Recover from one or more stalled sensors: reconnect, else self-restart.
+
+        Escalates to a self-restart (os._exit(1) → systemd Restart=always respawn,
+        durable BaselineStore resumes the learning window) when: a reconnect fails,
+        OR two or more sensors are stalled at once (a process-wide wedge — exactly
+        the incident this guards), OR a sensor re-trips after a reconnect within
+        this episode. A persistent root cause cannot become a restart loop: the
+        crash-guard caps self-restarts per window.
+        '''
+        # Two or more sensors stalled together ⇒ process-wide wedge ⇒ restart now.
+        if len(tripped) >= 2:
+            self._self_restart(
+                f"{len(tripped)} sensors stalled simultaneously "
+                f"({', '.join(sorted(tripped))}) — process-wide wedge"
+            )
+            return
+
+        for name in tripped:
+            if name in self._stalled_since_reconnect:
+                # Already reconnected once this episode and it stalled again.
+                self._self_restart(
+                    f"sensor {name} re-stalled after a reconnect — escalating"
+                )
+                return
+            reconnected = await self._reconnect(name)
+            if not reconnected:
+                self._self_restart(
+                    f"sensor {name} stalled and failed to reconnect — escalating"
+                )
+                return
+            # Reconnect succeeded: clear the frozen-data baseline so the next pass
+            # measures progress fresh, and remember we already gave it one chance.
+            self._last_progress_ts[name] = time.monotonic()
+            self._last_progress_value.pop(name, None)
+            self._stalled_since_reconnect.add(name)
+
+    def _self_restart(self, reason: str) -> None:
+        '''Exit the process so systemd respawns it — unless the crash-guard trips.
+
+        os._exit(1) is dependency-free and fires even through a wedged event loop.
+        Restart timestamps are persisted (os._exit wipes memory) so more than
+        WATCHDOG_MAX_RESTARTS within WATCHDOG_RESTART_WINDOW_S stops the loop: the
+        node logs CRITICAL and stays up degraded rather than crash-looping on a
+        persistent root cause.
+        '''
+        now = time.time()
+        recent = self._record_restart(now)
+        if len(recent) > self._max_restarts:
+            logger.critical(
+                "Watchdog: %s — but %d self-restarts already in the last %.0fs "
+                "(limit %d). Suppressing restart; staying up DEGRADED. A persistent "
+                "root cause needs manual attention.",
+                reason, len(recent), self._restart_window_s, self._max_restarts,
+            )
+            self._console_alert(
+                f"Watchdog restart loop suppressed ({len(recent)} restarts in window) "
+                f"— node staying up degraded; manual attention needed"
+            )
+            return
+        logger.critical(
+            "Watchdog: %s — self-restarting (restart %d in window) so systemd "
+            "respawns a clean process.",
+            reason, len(recent),
+        )
+        self._console_alert(f"Watchdog self-restart: {reason}")
+        # Best-effort: stop the systemd heartbeat before we go.
+        self._sd_notify("STOPPING=1")
+        os._exit(1)
+
+    def _record_restart(self, now: float) -> list[float]:
+        '''Append *now* to the persisted restart log and return the in-window list.
+
+        Returns the timestamps (including this one) that fall inside the restart
+        window — its length is what the crash-guard checks. Failures to read/write
+        the log are non-fatal: an empty/corrupt log just means we count from here.
+        '''
+        timestamps: list[float] = []
+        try:
+            if self._restart_log_path.exists():
+                raw = json.loads(self._restart_log_path.read_text(encoding="utf-8"))
+                if isinstance(raw, list):
+                    timestamps = [float(t) for t in raw]
+        except Exception as exc:
+            logger.warning("Watchdog restart-log read failed (non-fatal): %s", exc)
+            timestamps = []
+        timestamps.append(now)
+        # Keep only timestamps inside the window so the file stays small.
+        cutoff = now - self._restart_window_s
+        in_window = [t for t in timestamps if t >= cutoff]
+        try:
+            self._restart_log_path.parent.mkdir(parents=True, exist_ok=True)
+            self._restart_log_path.write_text(
+                json.dumps(in_window), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.warning("Watchdog restart-log write failed (non-fatal): %s", exc)
+        return in_window
+
+    def _sd_notify(self, state: str) -> None:
+        '''Send *state* to systemd via $NOTIFY_SOCKET (sd_notify), stdlib-only.
+
+        No-op when NOTIFY_SOCKET is unset (dev / non-systemd runs). A leading '@'
+        denotes a Linux abstract namespace socket. Any failure is swallowed — a
+        missing heartbeat must never crash the watchdog.
+        '''
+        if not self._notify_socket:
+            return
+        import socket
+        addr = self._notify_socket
+        if addr.startswith("@"):
+            addr = "\0" + addr[1:]
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            try:
+                sock.sendto(state.encode("utf-8"), addr)
+            finally:
+                sock.close()
+        except Exception as exc:
+            logger.debug("sd_notify(%s) failed: %s", state, exc)
 
     # ------------------------------------------------------------------
     # Health banner

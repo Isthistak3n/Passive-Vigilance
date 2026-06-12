@@ -9,6 +9,18 @@ Group=${PI_USER}
 WorkingDirectory=/home/${PI_USER}/Passive-Vigilance
 EnvironmentFile=/home/${PI_USER}/Passive-Vigilance/.env
 ExecStart=/opt/passive-vigilance/venv/bin/python3 /home/${PI_USER}/Passive-Vigilance/main.py
+# Type=notify: the orchestrator sends READY=1 once startup completes, then a
+# WATCHDOG=1 heartbeat only while capture is genuinely progressing. If capture
+# freezes, the heartbeats stop and systemd restarts the service after WatchdogSec
+# — the outer net that survives even a total in-process wedge.
+Type=notify
+NotifyAccess=main
+WatchdogSec=120
+# READY=1 is sent only after startup() returns, and startup waits up to
+# GPS_STARTUP_TIMEOUT_SECONDS (default 120) for a first fix. The default notify
+# start timeout is 90s, so a slow-GPS cold boot would be killed before READY=1
+# and crash-loop. Allow startup to exceed the GPS wait with margin.
+TimeoutStartSec=180
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
