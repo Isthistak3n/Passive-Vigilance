@@ -30,11 +30,18 @@ class ADSBModule:
     enriches each aircraft record with registration, type, and operator data
     from the adsb.lol / ADSBExchange API.
 
-    A :class:`~modules.gps.GPSModule` instance may be passed at construction;
-    every aircraft record returned by :meth:`poll_aircraft` is GPS-stamped.
+    Aircraft records are GPS-stamped by the orchestrator, which passes the
+    current fix into :meth:`poll_aircraft` (``gps_fix=``). The module performs
+    no GPS reads of its own — sharing the gpsd socket on the poll loop is what
+    coupled the WiFi and ADS-B pollers and let a silent gpsd wedge both at once.
+
+    ``gps_module`` is still accepted at construction for backward compatibility
+    with older callers/tests, but it is no longer read.
     """
 
     def __init__(self, gps_module=None) -> None:
+        # Retained for backward-compatible construction only; the module no
+        # longer reads GPS itself (see poll_aircraft's gps_fix argument).
         self._gps = gps_module
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -87,24 +94,23 @@ class ADSBModule:
     # Aircraft polling
     # ------------------------------------------------------------------
 
-    async def poll_aircraft(self) -> list:
+    async def poll_aircraft(self, gps_fix: Optional[dict] = None) -> list:
         """Fetch current aircraft from readsb, GPS-stamped.
 
         Returns a list of dicts with keys:
         ``icao``, ``callsign``, ``lat``, ``lon``, ``altitude``, ``speed``,
         ``track``, ``squawk``, ``seen``, ``rssi``, ``emergency``,
         ``gps_lat``, ``gps_lon``, ``gps_utc``
+
+        Args:
+            gps_fix: The current GPS fix dict (as returned by
+                :meth:`~modules.gps.GPSModule.get_fix`), or ``None`` when no fix
+                is available. Supplied by the orchestrator from its own fresh
+                fix — the module performs no GPS read of its own.
         """
         if self._session is None:
             logger.warning("poll_aircraft() called before connect()")
             return []
-
-        gps_fix = None
-        if self._gps is not None:
-            try:
-                gps_fix = self._gps.get_fix()
-            except Exception as exc:
-                logger.debug("GPS fix unavailable: %s", exc)
 
         try:
             async with self._session.get(

@@ -113,8 +113,12 @@ class PassiveVigilance:
 
         self.gps = GPSModule()
         self.ignore_list = IgnoreList(data_dir="data/ignore_lists")
-        self.kismet = KismetModule(gps_module=self.gps, ignore_list=self.ignore_list)
-        self.adsb = ADSBModule(gps_module=self.gps)
+        # Kismet and ADS-B are GPS-stamped by the orchestrator from its own fresh
+        # fix (poll_devices/poll_aircraft gps_fix=); they no longer read the
+        # shared gpsd socket on the poll loop, which is what coupled the two
+        # pollers and let a silent gpsd wedge both at once.
+        self.kismet = KismetModule(ignore_list=self.ignore_list)
+        self.adsb = ADSBModule()
         self.drone_rf = DroneRFModule(gps_module=self.gps)
         self.sdr_coordinator: SDRCoordinator = SDRCoordinator(self.drone_rf)
         # Scoring engine forked by mode: fixed = baseline-deviation (durable
@@ -260,12 +264,13 @@ class PassiveVigilance:
             gps_timeout = int(os.getenv("GPS_STARTUP_TIMEOUT_SECONDS", "120"))
             logger.info("GPS: waiting up to %ds for first fix...", gps_timeout)
             import time as _time
-            loop = asyncio.get_running_loop()
             _gps_deadline = _time.monotonic() + gps_timeout
             _got_fix = False
             while _time.monotonic() < _gps_deadline:
                 try:
-                    fix = await loop.run_in_executor(None, self.gps.get_fix)
+                    # Dedicated GPS pool + hard timeout, so a silent gpsd can't
+                    # wedge the startup wait beyond a single read interval.
+                    fix = await self.sensor_orchestrator._run_gps_call(self.gps.get_fix)
                 except Exception:
                     fix = None
                 if fix:
@@ -381,9 +386,16 @@ class PassiveVigilance:
             except Exception as exc:
                 logger.debug("%s close error: %s", label, exc)
         try:
-            self.gps.close()
+            # Route the close through the dedicated GPS pool under a hard timeout
+            # so a wedged gpsd socket can't hang shutdown; fall back to a direct
+            # close if the orchestrator helper is unavailable.
+            await self.sensor_orchestrator._run_gps_call(self.gps.close)
         except Exception as exc:
             logger.debug("GPS close error: %s", exc)
+        try:
+            self.sensor_orchestrator._gps_executor.shutdown(wait=False)
+        except Exception as exc:
+            logger.debug("GPS executor shutdown error: %s", exc)
 
         ev = self.sensor_orchestrator.collected_events
         all_events = ev.all_events

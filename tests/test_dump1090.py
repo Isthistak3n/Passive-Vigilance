@@ -128,13 +128,13 @@ class TestADSBModulePollAircraft(unittest.TestCase):
     def _connected_module(self, MockSession, get_json=None, gps_fix=None):
         from modules.dump1090 import ADSBModule
 
-        gps = MagicMock()
-        gps.get_fix = MagicMock(return_value=gps_fix)
-
         json_data = get_json if get_json is not None else _SAMPLE_AIRCRAFT_JSON
         MockSession.return_value = _mock_session(get_status=200, get_json=json_data)
-        m = ADSBModule(gps_module=gps)
+        m = ADSBModule()
         _run(m.connect())
+        # Stash the intended fix so each test can pass it through to
+        # poll_aircraft(gps_fix=...); the module no longer reads GPS itself.
+        m._test_gps_fix = gps_fix
         return m
 
     @patch("modules.dump1090.aiohttp.ClientSession")
@@ -149,7 +149,7 @@ class TestADSBModulePollAircraft(unittest.TestCase):
         """Each aircraft record must contain all required fields."""
         gps_fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
         m = self._connected_module(MockSession, gps_fix=gps_fix)
-        result = _run(m.poll_aircraft())
+        result = _run(m.poll_aircraft(gps_fix=m._test_gps_fix))
 
         self.assertEqual(len(result), 1)
         ac = result[0]
@@ -164,7 +164,7 @@ class TestADSBModulePollAircraft(unittest.TestCase):
         """poll_aircraft() should stamp each record with GPS fix."""
         gps_fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
         m = self._connected_module(MockSession, gps_fix=gps_fix)
-        result = _run(m.poll_aircraft())
+        result = _run(m.poll_aircraft(gps_fix=m._test_gps_fix))
 
         self.assertEqual(result[0]["gps_lat"], 51.5)
         self.assertEqual(result[0]["gps_lon"], -0.1)
@@ -188,6 +188,29 @@ class TestADSBModulePollAircraft(unittest.TestCase):
         m = ADSBModule()
         result = _run(m.poll_aircraft())
         self.assertEqual(result, [])
+
+    @patch("modules.dump1090.aiohttp.ClientSession")
+    def test_poll_aircraft_no_gps_module_required(self, MockSession):
+        """The module no longer needs a gps_module and never reads gpsd itself.
+
+        It is constructed without a GPSModule and stamps location only from the
+        fix the orchestrator passes in — proving the decoupling that stops the
+        shared-socket wedge.
+        """
+        from modules.dump1090 import ADSBModule
+
+        MockSession.return_value = _mock_session(
+            get_status=200, get_json=_SAMPLE_AIRCRAFT_JSON,
+        )
+        m = ADSBModule()  # no gps_module
+        _run(m.connect())
+
+        gps_fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
+        result = _run(m.poll_aircraft(gps_fix=gps_fix))
+        self.assertEqual(result[0]["gps_lat"], 51.5)
+        self.assertEqual(result[0]["gps_lon"], -0.1)
+        self.assertEqual(result[0]["gps_utc"], "2024-01-15T12:00:00Z")
+        _run(m.close())
 
 
 # ---------------------------------------------------------------------------

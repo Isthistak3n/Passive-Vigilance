@@ -1037,3 +1037,116 @@ def test_sd_notify_sends_when_socket_set(orch):
     payload, addr = mock_instance.sendto.call_args[0]
     assert payload == b"WATCHDOG=1"
     assert addr == "/run/systemd/notify"
+
+
+# ---------------------------------------------------------------------------
+# GPS-stamping parity after decoupling the per-module gpsd read
+#
+# The sensor modules no longer read gpsd themselves; the orchestrator stamps
+# from its own fresh _current_fix by passing it into the poll calls. These
+# tests prove the fix the orchestrator holds reaches the modules and the
+# resulting output records, so nothing that was GPS-stamped before is dropped.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_adsb_passes_current_fix_to_module(orch):
+    """_poll_adsb must hand its own _current_fix to poll_aircraft(gps_fix=...)."""
+    so = orch.sensor_orchestrator
+    fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
+    so._current_fix = fix
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[])
+    orch._adsb_active = True
+
+    await so._poll_adsb()
+
+    orch.adsb.poll_aircraft.assert_awaited_once_with(gps_fix=fix)
+
+
+@pytest.mark.asyncio
+async def test_poll_adsb_event_carries_gps_stamp(orch):
+    """An aircraft event must keep its gps_lat/gps_lon/gps_utc after decoupling.
+
+    The module (here mocked) stamps from the passed fix exactly as the real
+    ADSBModule does; the orchestrator must preserve those fields on the event
+    it appends (and therefore on aircraft.jsonl / GeoJSON output).
+    """
+    so = orch.sensor_orchestrator
+    fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
+    so._current_fix = fix
+
+    async def _stamped_poll(gps_fix=None):
+        ac = _make_aircraft(icao="STAMP1")
+        ac.update({
+            "gps_lat": gps_fix["lat"] if gps_fix else None,
+            "gps_lon": gps_fix["lon"] if gps_fix else None,
+            "gps_utc": gps_fix["utc"] if gps_fix else None,
+        })
+        return [ac]
+
+    orch.adsb.poll_aircraft = AsyncMock(side_effect=_stamped_poll)
+    orch._adsb_active = True
+
+    await so._poll_adsb()
+
+    assert len(so.aircraft_detections) == 1
+    event = so.aircraft_detections[0]
+    assert event["gps_lat"] == 51.5
+    assert event["gps_lon"] == -0.1
+    assert event["gps_utc"] == "2024-01-15T12:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_passes_current_fix_to_module_and_stores(orch):
+    """_poll_kismet must pass _current_fix to poll_devices, persistence and entity store."""
+    so = orch.sensor_orchestrator
+    fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
+    so._current_fix = fix
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
+    so.entity_store = MagicMock()
+    orch._kismet_active = True
+
+    await so._poll_kismet()
+
+    orch.kismet.poll_devices.assert_awaited_once_with(gps_fix=fix)
+    # The scorer and durable store still receive the same fresh fix.
+    _, pe_kwargs = orch.persistence.update.call_args
+    assert pe_kwargs.get("gps_fix") == fix
+    _, es_kwargs = so.entity_store.record_poll.call_args
+    assert es_kwargs.get("gps_fix") == fix
+
+
+@pytest.mark.asyncio
+async def test_poll_gps_uses_dedicated_executor(orch):
+    """_poll_gps must dispatch get_fix on the dedicated single-thread GPS pool.
+
+    Item 3 isolation: a wedged gpsd read can only starve this pool, never the
+    default executor used by the stores/SDR/systemctl calls.
+    """
+    so = orch.sensor_orchestrator
+    fix = {"lat": 1.0, "lon": 2.0, "utc": "2024-01-15T12:00:00Z"}
+    orch.gps.get_fix = MagicMock(return_value=fix)
+
+    await so._poll_gps()
+
+    assert so._current_fix == fix
+    # Single-worker dedicated pool exists and is distinct from the default.
+    assert so._gps_executor._max_workers == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_gps_timeout_is_handled_cleanly(orch):
+    """A GPS executor dispatch that times out is treated as a degraded poll, not a crash."""
+    so = orch.sensor_orchestrator
+
+    async def _raise_timeout(_func):
+        raise asyncio.TimeoutError()
+
+    so._run_gps_call = _raise_timeout
+    so._sensor_health["gps"] = True
+    so._reconnect = AsyncMock(return_value=False)
+    orch._gps_active = True
+
+    # Should not raise; degrades health and continues.
+    await so._poll_gps()
+    assert so._sensor_health["gps"] is False

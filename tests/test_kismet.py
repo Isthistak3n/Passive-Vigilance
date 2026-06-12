@@ -123,11 +123,12 @@ _SAMPLE_DEVICES = [
 class TestKismetModulePollDevices(unittest.TestCase):
 
     def _connected_km(self, MockSession, post_status=200, post_json=None, gps_fix=None):
-        """Helper: return a connected KismetModule with mocked session."""
-        from modules.kismet import KismetModule
+        """Helper: return a connected KismetModule with mocked session.
 
-        gps = MagicMock()
-        gps.get_fix = MagicMock(return_value=gps_fix)
+        ``gps_fix`` is stashed on the module so each test can pass it through to
+        ``poll_devices(gps_fix=...)``; the module no longer reads GPS itself.
+        """
+        from modules.kismet import KismetModule
 
         with patch("modules.kismet.KISMET_API_KEY", "valid-key"):
             MockSession.return_value = _mock_session(
@@ -135,8 +136,9 @@ class TestKismetModulePollDevices(unittest.TestCase):
                 post_status=post_status,
                 post_json=post_json if post_json is not None else [],
             )
-            km = KismetModule(gps_module=gps)
+            km = KismetModule()
             _run(km.connect())
+        km._test_gps_fix = gps_fix
         return km
 
     @patch("modules.kismet.aiohttp.ClientSession")
@@ -152,7 +154,7 @@ class TestKismetModulePollDevices(unittest.TestCase):
         """poll_devices() should return dicts with all required fields."""
         gps_fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
         km = self._connected_km(MockSession, post_json=_SAMPLE_DEVICES, gps_fix=gps_fix)
-        result = _run(km.poll_devices())
+        result = _run(km.poll_devices(gps_fix=km._test_gps_fix))
 
         self.assertEqual(len(result), 1)
         device = result[0]
@@ -171,7 +173,7 @@ class TestKismetModulePollDevices(unittest.TestCase):
         """poll_devices() should stamp each record with GPS lat/lon/utc."""
         gps_fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
         km = self._connected_km(MockSession, post_json=_SAMPLE_DEVICES, gps_fix=gps_fix)
-        result = _run(km.poll_devices())
+        result = _run(km.poll_devices(gps_fix=km._test_gps_fix))
 
         self.assertEqual(result[0]["gps_lat"], 51.5)
         self.assertEqual(result[0]["gps_lon"], -0.1)
@@ -182,7 +184,7 @@ class TestKismetModulePollDevices(unittest.TestCase):
     def test_poll_devices_gps_none_when_no_fix(self, MockSession):
         """poll_devices() should set gps_* fields to None when GPS has no fix."""
         km = self._connected_km(MockSession, post_json=_SAMPLE_DEVICES, gps_fix=None)
-        result = _run(km.poll_devices())
+        result = _run(km.poll_devices(gps_fix=km._test_gps_fix))
 
         self.assertIsNone(result[0]["gps_lat"])
         self.assertIsNone(result[0]["gps_lon"])
@@ -205,6 +207,30 @@ class TestKismetModulePollDevices(unittest.TestCase):
         km = KismetModule()
         result = _run(km.poll_devices())
         self.assertEqual(result, [])
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_poll_devices_no_gps_module_required(self, MockSession):
+        """The module no longer needs a gps_module and never reads gpsd itself.
+
+        It is constructed without a GPSModule, and stamps location only from the
+        fix the orchestrator passes in — proving the decoupling that stops the
+        shared-socket wedge.
+        """
+        from modules.kismet import KismetModule
+
+        with patch("modules.kismet.KISMET_API_KEY", "valid-key"):
+            MockSession.return_value = _mock_session(
+                get_status=200, post_status=200, post_json=_SAMPLE_DEVICES,
+            )
+            km = KismetModule()  # no gps_module
+            _run(km.connect())
+
+        gps_fix = {"lat": 51.5, "lon": -0.1, "utc": "2024-01-15T12:00:00Z"}
+        result = _run(km.poll_devices(gps_fix=gps_fix))
+        self.assertEqual(result[0]["gps_lat"], 51.5)
+        self.assertEqual(result[0]["gps_lon"], -0.1)
+        self.assertEqual(result[0]["gps_utc"], "2024-01-15T12:00:00Z")
+        _run(km.close())
 
 
 # ---------------------------------------------------------------------------
@@ -243,10 +269,9 @@ class TestKismetProbeExtraction(unittest.TestCase):
 
     def _poll(self, MockSession, devices):
         from modules.kismet import KismetModule
-        gps = MagicMock(); gps.get_fix = MagicMock(return_value=None)
         with patch("modules.kismet.KISMET_API_KEY", "valid-key"):
             MockSession.return_value = _mock_session(get_status=200, post_status=200, post_json=devices)
-            km = KismetModule(gps_module=gps)
+            km = KismetModule()
             _run(km.connect())
         result = _run(km.poll_devices())
         _run(km.close())
