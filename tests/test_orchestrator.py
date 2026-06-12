@@ -847,3 +847,193 @@ def test_watchdog_startup_grace_before_first_poll(orch):
     so._last_poll_ts.pop("kismet", None)
     so._check_watchdog()
     assert so._sensor_health["kismet"] is True
+
+
+# ---------------------------------------------------------------------------
+# Data-progress watchdog — catch a frozen counter while the loop still completes
+# ---------------------------------------------------------------------------
+
+
+def _arm_data_stall(so, name="kismet", frozen_for=None):
+    """Make *name*'s data counter look frozen for longer than the threshold.
+
+    Seeds the last-progress snapshot to the current counter value and pushes its
+    timestamp into the past, so the next _check_watchdog sees no advance.
+    """
+    if frozen_for is None:
+        frozen_for = so._data_stall_s + 60
+    stat_key = so._data_stat_key[name]
+    so._last_progress_value[name] = so._stats.get(stat_key, 0)
+    so._last_progress_ts[name] = time.monotonic() - frozen_for
+
+
+def test_watchdog_data_stall_trips_on_frozen_counter(orch):
+    # Loop keeps completing (fresh _last_poll_ts) but the cumulative counter has
+    # not advanced past the data-stall threshold -> capture frozen -> degraded.
+    so = orch.sensor_orchestrator
+    so._modules_active["kismet"] = True
+    so._sensor_health["kismet"] = True
+    so._console_alert = MagicMock()
+    so._last_poll_ts["kismet"] = time.monotonic()   # loop is alive
+    _arm_data_stall(so, "kismet")
+    tripped = so._check_watchdog()
+    assert so._sensor_health["kismet"] is False
+    assert "kismet" in tripped
+    so._console_alert.assert_called_once()
+
+
+def test_watchdog_data_progress_resets_on_advance(orch):
+    # If the counter advances, the data-stall baseline is refreshed and the sensor
+    # is NOT flagged even though the previous snapshot was old.
+    so = orch.sensor_orchestrator
+    so._modules_active["kismet"] = True
+    so._sensor_health["kismet"] = True
+    so._last_poll_ts["kismet"] = time.monotonic()
+    so._stats["kismet_devices_seen"] = 100
+    _arm_data_stall(so, "kismet")        # baseline value 100, old timestamp
+    so._stats["kismet_devices_seen"] = 117   # counter advanced since baseline
+    tripped = so._check_watchdog()
+    assert so._sensor_health["kismet"] is True
+    assert "kismet" not in tripped
+
+
+def test_watchdog_data_stall_off_by_default_for_adsb(orch):
+    # ADS-B is not in the data-sensor set, so an empty sky (flat counter) never
+    # trips the data-stall path — an idle-but-live sensor is not flagged.
+    so = orch.sensor_orchestrator
+    so._modules_active["adsb"] = True
+    so._sensor_health["adsb"] = True
+    so._last_poll_ts["adsb"] = time.monotonic()
+    assert "adsb" not in so._data_sensors
+    so._last_progress_value["adsb"] = so._stats.get("aircraft_seen", 0)
+    so._last_progress_ts["adsb"] = time.monotonic() - (so._data_stall_s + 600)
+    tripped = so._check_watchdog()
+    assert so._sensor_health["adsb"] is True
+    assert "adsb" not in tripped
+
+
+# ---------------------------------------------------------------------------
+# Recovery escalation — reconnect, then self-restart (os._exit) with crash-guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_stall_reconnect_failure_self_restarts(orch, tmp_path):
+    # A single stalled sensor whose reconnect fails escalates to os._exit(1).
+    so = orch.sensor_orchestrator
+    so._restart_log_path = tmp_path / "watchdog_restarts.json"
+    so._reconnect = AsyncMock(return_value=False)
+    so._console_alert = MagicMock()
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        await so._handle_stall(["kismet"])
+    so._reconnect.assert_awaited_once_with("kismet")
+    mock_exit.assert_called_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_handle_stall_reconnect_success_no_restart(orch):
+    # A single stalled sensor that reconnects successfully does NOT restart.
+    so = orch.sensor_orchestrator
+    so._reconnect = AsyncMock(return_value=True)
+    so._console_alert = MagicMock()
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        await so._handle_stall(["kismet"])
+    mock_exit.assert_not_called()
+    assert "kismet" in so._stalled_since_reconnect
+
+
+@pytest.mark.asyncio
+async def test_handle_stall_two_sensors_restarts_immediately(orch, tmp_path):
+    # Two sensors stalled at once = process-wide wedge -> immediate restart, no
+    # reconnect attempted.
+    so = orch.sensor_orchestrator
+    so._restart_log_path = tmp_path / "watchdog_restarts.json"
+    so._reconnect = AsyncMock(return_value=True)
+    so._console_alert = MagicMock()
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        await so._handle_stall(["kismet", "adsb"])
+    mock_exit.assert_called_once_with(1)
+    so._reconnect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_stall_retrip_after_reconnect_restarts(orch, tmp_path):
+    # A sensor that already reconnected this episode and stalls again escalates.
+    so = orch.sensor_orchestrator
+    so._restart_log_path = tmp_path / "watchdog_restarts.json"
+    so._reconnect = AsyncMock(return_value=True)
+    so._console_alert = MagicMock()
+    so._stalled_since_reconnect.add("kismet")
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        await so._handle_stall(["kismet"])
+    mock_exit.assert_called_once_with(1)
+    so._reconnect.assert_not_called()
+
+
+def test_crash_guard_blocks_sixth_restart_in_window(orch, tmp_path):
+    # The 6th self-restart within the window is suppressed (default limit 5);
+    # the node logs CRITICAL and stays up instead of crash-looping.
+    so = orch.sensor_orchestrator
+    so._console_alert = MagicMock()
+    so._restart_log_path = tmp_path / "watchdog_restarts.json"
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        for _ in range(5):
+            so._self_restart("forced stall")
+        assert mock_exit.call_count == 5     # first five exit
+        mock_exit.reset_mock()
+        so._self_restart("forced stall")     # sixth is suppressed
+        mock_exit.assert_not_called()
+
+
+def test_crash_guard_window_expiry_allows_restart(orch, tmp_path):
+    # Restarts older than the window are not counted, so a fresh restart proceeds.
+    so = orch.sensor_orchestrator
+    so._console_alert = MagicMock()
+    so._restart_log_path = tmp_path / "watchdog_restarts.json"
+    old = time.time() - (so._restart_window_s + 100)
+    so._restart_log_path.write_text(json.dumps([old] * 10), encoding="utf-8")
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        so._self_restart("forced stall")
+        mock_exit.assert_called_once_with(1)
+
+
+# ---------------------------------------------------------------------------
+# systemd heartbeat (sd_notify WATCHDOG=1) — only while capture is progressing
+# ---------------------------------------------------------------------------
+
+
+def test_capture_progressing_true_when_advancing(orch):
+    so = orch.sensor_orchestrator
+    so._modules_active["kismet"] = True
+    so._last_progress_ts["kismet"] = time.monotonic()   # just advanced
+    assert so._capture_progressing() is True
+
+
+def test_capture_progressing_false_when_frozen(orch):
+    so = orch.sensor_orchestrator
+    so._modules_active["kismet"] = True
+    so._last_progress_ts["kismet"] = time.monotonic() - (so._data_stall_s + 60)
+    assert so._capture_progressing() is False
+
+
+def test_sd_notify_noop_without_socket(orch):
+    # With no NOTIFY_SOCKET, sd_notify silently does nothing (dev/non-systemd).
+    so = orch.sensor_orchestrator
+    so._notify_socket = ""
+    with patch("socket.socket") as mock_sock:
+        so._sd_notify("WATCHDOG=1")
+    mock_sock.assert_not_called()
+
+
+def test_sd_notify_sends_when_socket_set(orch):
+    # With NOTIFY_SOCKET set, sd_notify writes the datagram to that address.
+    so = orch.sensor_orchestrator
+    so._notify_socket = "/run/systemd/notify"
+    mock_instance = MagicMock()
+    with patch("socket.socket", return_value=mock_instance) as mock_sock:
+        so._sd_notify("WATCHDOG=1")
+    mock_sock.assert_called_once()
+    mock_instance.sendto.assert_called_once()
+    payload, addr = mock_instance.sendto.call_args[0]
+    assert payload == b"WATCHDOG=1"
+    assert addr == "/run/systemd/notify"

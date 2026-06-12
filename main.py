@@ -234,6 +234,7 @@ class PassiveVigilance:
             asyncio.create_task(so._poll_drone_rf_loop(), name="poll-dronrf"),
             asyncio.create_task(so._poll_remote_id_loop(), name="poll-remoteid"),
             asyncio.create_task(so._health_banner_loop(), name="health-banner"),
+            asyncio.create_task(so._watchdog_loop(), name="watchdog"),
         ]
         if self.sdr_mode == SDRMode.SHARED and self._drone_active:
             tasks.append(asyncio.create_task(self.sdr_coordinator._coordinator_loop(), name="sdr-coordinator"))
