@@ -147,7 +147,8 @@ Re-run the monitor mode commands after any NM restart.
 - `DroneRFModule` and `readsb` both need an RTL-SDR — two dongles needed to run simultaneously
 - Kernel modules to blacklist: `dvb_usb_rtl28xxu`, `rtl2832`, `rtl2830`
 - `DRONE_RF_REST_SECONDS` (default `20`) — seconds to sleep after each full frequency sweep; set `0` to disable (falls back to `asyncio.sleep(0.1)`)
-- `DRONE_RF_MAX_TEMP_C` (default `75`) — CPU temperature threshold (°C) that doubles the rest period; read from `/sys/class/thermal/thermal_zone0/temp` (millidegrees → Celsius) via `_check_cpu_temp()`; returns `None` if file unavailable
+- `DRONE_RF_MAX_TEMP_C` (default `75`) — CPU temperature threshold (°C) that doubles the rest period; read from `/sys/class/thermal/thermal_zone0/temp` (millidegrees → Celsius) via `_cpu_temp()`; returns `None` if file unavailable
+- **SDR sampling runs in an isolated child process (#63):** the Osmocom librtlsdr/libusb stack can SIGSEGV during a USB transfer, which in a single process crash-loops the whole orchestrator. `_scan_worker` runs the RTL-SDR loop in a `multiprocessing` (spawn) child; a native crash kills only the child. The parent's monitor (`_monitor_tick`) drains detections over a queue, enriches them with GPS, and via a crash guard respawns the worker with backoff — but **disables** DroneRF after `DRONE_RF_MAX_CRASHES` (default 5) deaths within `DRONE_RF_CRASH_WINDOW_S` (default 300) so the node stays up. `_scan_task` is now the parent-side monitor task (main.py / SDR coordinator still check it for "running"). Code-complete; needs on-dongle validation (default-off via `DRONE_RF_ENABLED=false`).
 
 ## Kismet Integration
 
