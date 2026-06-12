@@ -970,6 +970,43 @@ async def test_handle_stall_retrip_after_reconnect_restarts(orch, tmp_path):
     so._reconnect.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_one_reconnect_per_episode_after_recovery(orch, tmp_path):
+    # An episode is: stall -> reconnect (flag set) -> recover (flag cleared) so a
+    # later, unrelated stall earns its OWN reconnect instead of restarting.
+    so = orch.sensor_orchestrator
+    so._restart_log_path = tmp_path / "watchdog_restarts.json"
+    so._reconnect = AsyncMock(return_value=True)
+    so._console_alert = MagicMock()
+    so._modules_active["kismet"] = True
+
+    # Episode 1: stall -> reconnect succeeds -> sensor is flagged.
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        await so._handle_stall(["kismet"])
+    mock_exit.assert_not_called()
+    assert "kismet" in so._stalled_since_reconnect
+
+    # Recovery: a watchdog pass where the sensor is healthy and its data is
+    # progressing again clears the per-episode flag.
+    so._sensor_health["kismet"] = True
+    so._last_poll_ts["kismet"] = time.monotonic()        # loop is alive
+    so._stats["kismet_devices_seen"] = 200
+    so._last_progress_value["kismet"] = 199              # counter advanced
+    so._last_progress_ts["kismet"] = time.monotonic()
+    tripped = so._check_watchdog()
+    assert "kismet" not in tripped
+    assert "kismet" not in so._stalled_since_reconnect
+
+    # Episode 2: a fresh, unrelated stall later gets its own reconnect attempt,
+    # NOT an immediate self-restart.
+    so._reconnect.reset_mock()
+    with patch("modules.orchestrator.os._exit") as mock_exit:
+        await so._handle_stall(["kismet"])
+    mock_exit.assert_not_called()
+    so._reconnect.assert_awaited_once_with("kismet")
+    assert "kismet" in so._stalled_since_reconnect
+
+
 def test_crash_guard_blocks_sixth_restart_in_window(orch, tmp_path):
     # The 6th self-restart within the window is suppressed (default limit 5);
     # the node logs CRITICAL and stays up instead of crash-looping.
