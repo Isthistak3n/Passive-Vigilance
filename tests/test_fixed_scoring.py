@@ -18,10 +18,18 @@ T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def _clocked_engine(baseline_hours=1.0, start=T0):
-    """Return (engine, clock_holder) with a controllable in-memory store."""
+    """Return (engine, clock_holder) with a controllable in-memory store.
+
+    The egregious-during-baseline threshold is read from the environment at
+    construction (NODE_DENSITY preset or an explicit EGREGIOUS_SIGNAL_DBM), so
+    pin it here to the module default. Otherwise the suite is non-hermetic: on a
+    node whose .env sets NODE_DENSITY=dense (threshold -30) the -40 dBm egregious
+    fixtures would not qualify and the test would fail purely from deployment config.
+    """
     holder = [start]
     store = BaselineStore(":memory:", baseline_hours=baseline_hours, now=start)
-    engine = FixedScoring(store=store, clock=lambda: holder[0])
+    with patch.dict(os.environ, {"EGREGIOUS_SIGNAL_DBM": "-45"}):
+        engine = FixedScoring(store=store, clock=lambda: holder[0])
     return engine, holder
 
 
@@ -536,3 +544,124 @@ def test_ap_filter_does_not_affect_off_schedule():
     events = engine.update([ap])
     assert len(events) == 1
     assert events[0].score_breakdown["off_schedule"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Egregious-during-baseline safety net (Phase 2.6, design 5.2)
+# ---------------------------------------------------------------------------
+
+
+def test_egregious_close_flags_during_learning():
+    # A very strong (close) non-AP device flags WHILE the baseline is learning,
+    # so an already-present device in the operator's space is not silently baked
+    # into "normal".
+    engine, clock = _clocked_engine(baseline_hours=1.0)   # clock at T0 -> learning
+    dev = _static_device(mac="d8:96:85:c1:05:e0", type="Wi-Fi Client", last_signal=-40)
+    events = engine.update([dev])
+    assert len(events) == 1
+    assert events[0].score_breakdown["egregious_close"] == 1.0
+    assert events[0].alert_level == "suspicious"
+
+
+def test_egregious_weak_device_silent_during_learning():
+    # Ordinary nearby traffic (well below the strength threshold) stays silent
+    # during learning — only the baseline is updated.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:c1:05:e1", type="Wi-Fi Client", last_signal=-70)
+    assert engine.update([dev]) == []
+
+
+def test_egregious_excludes_access_points():
+    # A nearby strong Wi-Fi AP (a router) is fixed infrastructure, not a device
+    # in the operator's space — excluded from the egregious signal.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    ap = _static_device(mac="d8:96:85:c1:05:e2", type="Wi-Fi AP", last_signal=-40)
+    assert engine.update([ap]) == []
+
+
+def test_egregious_skips_placeholder_and_missing_signal():
+    # The Kismet 0-dBm placeholder is not a real reading, and a missing reading
+    # cannot be egregious.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    assert engine.update([_static_device(mac="d8:96:85:c1:05:e3",
+                                         type="Wi-Fi Client", last_signal=0)]) == []
+    assert engine.update([_static_device(mac="d8:96:85:c1:05:e4",
+                                         type="Wi-Fi Client")]) == []
+
+
+def test_egregious_not_applied_after_freeze():
+    # Egregious strength is a learning-window safety net only. Post-freeze the
+    # node judges by deviation: a known, on-schedule, non-approaching device that
+    # is merely strong does not flag.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:c1:05:e5", type="Wi-Fi Client", last_signal=-40)
+    engine.update([dev])                              # learning sighting
+    clock[0] = T0 + timedelta(hours=24)               # frozen, baselined hour 0
+    assert engine.update([dev]) == []
+
+
+def test_egregious_device_is_still_learned_into_baseline():
+    # The alert is a safety net, not a substitute for a clean baseline — the
+    # egregious device is still profiled into the baseline.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    dev = _static_device(mac="d8:96:85:c1:05:e6", type="Wi-Fi Client", last_signal=-40)
+    engine.update([dev])
+    assert engine._store.get_profile("mac:d8:96:85:c1:05:e6") is not None
+
+
+# ---------------------------------------------------------------------------
+# Post-soak flood controls: randomized-MAC novelty suppression + egregious presets
+# ---------------------------------------------------------------------------
+
+
+def test_novelty_suppressed_for_randomized_no_fingerprint_until_sustained():
+    # A randomized MAC with no probe fingerprint (keyed "mac:") must show
+    # sustained presence before novelty fires — this is the post-freeze flood fix.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)                  # frozen
+    engine._novelty_random_min_obs = 5                  # lower the bar for the test
+    dev = {"macaddr": "a2:bb:cc:dd:ee:01", "name": ""}  # randomized, no probes
+    for _ in range(4):
+        events = engine.update([dev])                   # obs 1..4 < 5
+    assert events == []                                 # suppressed
+    events = engine.update([dev])                       # obs 5 -> fires
+    assert len(events) == 1
+    assert events[0].score_breakdown["novelty"] == 1.0
+
+
+def test_novelty_normal_minimum_for_fingerprinted_randomized():
+    # A randomized MAC WITH a probe fingerprint (keyed "fp:") uses the normal
+    # 2-observation minimum — the suppression only targets fingerprint-less ones.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)
+    dev = _random_device("a2:bb:cc:dd:ee:02", probe="EvilNet")
+    engine.update([dev])
+    events = engine.update([dev])                       # obs 2 -> fires
+    assert len(events) == 1 and events[0].score_breakdown["novelty"] == 1.0
+
+
+def test_novelty_normal_minimum_for_static_mac():
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)
+    dev = _static_device(mac="d8:96:85:aa:bb:cc", type="Wi-Fi Client")
+    engine.update([dev])
+    events = engine.update([dev])                       # obs 2 -> fires
+    assert len(events) == 1 and events[0].score_breakdown["novelty"] == 1.0
+
+
+def test_egregious_threshold_follows_density_preset():
+    from modules.fixed_scoring import FixedScoring
+    from modules.baseline_store import BaselineStore
+    for density, expected in (("dense", -30.0), ("suburban", -40.0), ("rural", -50.0)):
+        with patch.dict(os.environ, {"NODE_DENSITY": density}):
+            os.environ.pop("EGREGIOUS_SIGNAL_DBM", None)
+            e = FixedScoring(store=BaselineStore(":memory:", baseline_hours=1.0, now=T0))
+            assert e._egregious_signal_dbm == expected, density
+
+
+def test_egregious_explicit_value_overrides_density_preset():
+    from modules.fixed_scoring import FixedScoring
+    from modules.baseline_store import BaselineStore
+    with patch.dict(os.environ, {"NODE_DENSITY": "dense", "EGREGIOUS_SIGNAL_DBM": "-25"}):
+        e = FixedScoring(store=BaselineStore(":memory:", baseline_hours=1.0, now=T0))
+        assert e._egregious_signal_dbm == -25.0

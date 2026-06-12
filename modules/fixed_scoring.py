@@ -14,11 +14,16 @@ Phase 2 adds graduated pattern-of-life deviation (design 5.4):
   Novelty alone is now a *low* (suspicious) flag — it still flags (no
   regression), just no longer hardcoded to high.
 
-Also populated during learning (no trigger yet — for Phase 2.5): per-device
-``signal_mean`` / ``signal_var`` (RSSI stats). Explicitly NOT in this phase:
-abnormal-dwell / session-state, the signal-trend/approaching trigger,
-day-of-week patterning, adaptation, egregious-during-baseline, WiGLE. There is
-also **no location gate** (that gate is the #50 bug for fixed nodes).
+Phase 2.6 adds the **egregious-during-baseline** safety net (design 5.2): the
+learning window no longer fully suppresses alerting. A device physically in the
+operator's immediate space (very strong live signal), or already trending
+stronger, still flags WHILE learning — so an already-present surveillance device
+is not silently baked into "normal". The device is still learned into the
+baseline; the alert is the safety net, not a substitute for a clean baseline.
+
+Explicitly NOT in this phase: abnormal-dwell / session-state, day-of-week
+patterning, adaptation, WiGLE. There is also **no location gate** (that gate is
+the #50 bug for fixed nodes).
 
 Keying (design 5.3): stable MACs are keyed by MAC; randomized MACs are keyed by
 their probe-SSID fingerprint via :func:`modules.mac_utils.group_by_fingerprint`.
@@ -73,6 +78,28 @@ APPROACHING_MIN_BASELINE_SAMPLES = 10   # trust the baseline mean only past this
 APPROACHING_MIN_RECENT_SAMPLES = 5      # trust the recent average only past this
 APPROACHING_SIGMA_MARGIN = 2.0          # rise must exceed this many baseline std devs
 APPROACHING_MIN_DB_MARGIN = 6.0         # ...and at least this many dB (absolute floor)
+
+# Egregious-during-baseline (design 5.2, Phase 2.6): the learning window does NOT
+# fully suppress alerting. A live signal at or above this strength (dBm; less
+# negative = physically closer) flags as egregiously close even while learning —
+# a device in the operator's immediate space, not street traffic. Env-overridable;
+# the key knob the on-chase test calibrates so it flags a deliberately-close
+# device without flooding on ordinary nearby traffic.
+EGREGIOUS_SIGNAL_DBM = -45.0
+
+# Environment-density presets for the egregious threshold (post-soak calibration).
+# A DENSE node (apartment block, many close devices) needs a STRICTER, closer bar
+# or it floods; a SPARSE/rural node (large yard, few neighbours) can use a more
+# sensitive, farther bar because any close device is notable. NODE_DENSITY picks
+# the default; an explicit EGREGIOUS_SIGNAL_DBM overrides it.
+_EGREGIOUS_DENSITY_PRESETS = {"dense": -30.0, "suburban": -40.0, "rural": -50.0}
+
+# Novelty on a RANDOMIZED MAC with no probe-SSID fingerprint is the post-freeze
+# flood source: each MAC rotation of a baselined device reads as brand-new. Such a
+# device must show SUSTAINED presence (this many observations) before novelty
+# fires; a randomized device WITH a fingerprint (keyed "fp:") is unaffected.
+# Env-overridable. The default is the dense-node value the chase soak motivated.
+NOVELTY_RANDOM_MIN_OBSERVATIONS = 30
 
 
 def _coerce_signal(value) -> Optional[float]:
@@ -158,6 +185,21 @@ class FixedScoring(ScoringEngine):
         self._approaching_min_db_margin = float(
             os.getenv("APPROACHING_MIN_DB_MARGIN", str(APPROACHING_MIN_DB_MARGIN))
         )
+        # Egregious-during-baseline strength threshold (design 5.2). An explicit
+        # EGREGIOUS_SIGNAL_DBM wins; otherwise it follows the node's environment
+        # density (NODE_DENSITY: dense | suburban | rural).
+        _egr = os.getenv("EGREGIOUS_SIGNAL_DBM")
+        if _egr is not None and _egr.strip():
+            self._egregious_signal_dbm = float(_egr)
+        else:
+            _density = os.getenv("NODE_DENSITY", "suburban").strip().lower()
+            self._egregious_signal_dbm = _EGREGIOUS_DENSITY_PRESETS.get(
+                _density, EGREGIOUS_SIGNAL_DBM
+            )
+        # Sustained-presence threshold for randomized-MAC novelty (anti-flood).
+        self._novelty_random_min_obs = int(
+            os.getenv("NOVELTY_RANDOM_MIN_OBSERVATIONS", str(NOVELTY_RANDOM_MIN_OBSERVATIONS))
+        )
         # Distinct Wi-Fi APs suppressed from approaching that would otherwise have
         # qualified — observable so a soak can show exactly what the filter caught.
         self._approaching_excluded_aps: set = set()
@@ -229,6 +271,13 @@ class FixedScoring(ScoringEngine):
             )
 
             if learning:
+                # Design 5.2 — learn the ordinary, but still shout about the
+                # obviously alarming so an already-present device in the
+                # operator's space isn't silently baked into the baseline.
+                egregious = self._egregious_signals(profile, signal)
+                if _any_active(egregious):
+                    score, level = self._combine(egregious)
+                    events.append(self._make_event(device, profile, now, egregious, score, level))
                 continue
 
             signals = self._signals(profile, now, freeze_time)
@@ -238,8 +287,33 @@ class FixedScoring(ScoringEngine):
             events.append(self._make_event(device, profile, now, signals, score, level))
 
         if events:
-            logger.info("FixedScoring: %d device(s) flagged (novel/off-schedule)", len(events))
+            logger.info(
+                "FixedScoring: %d device(s) flagged (%s)", len(events),
+                "egregious-during-baseline" if learning else "novel/off-schedule/approaching",
+            )
         return events
+
+    def _egregious_signals(self, profile: DeviceProfile, signal: Optional[float]) -> dict:
+        """Signals that flag DURING the learning window (design 5.2).
+
+        The baseline safety net: a device physically in the operator's immediate
+        space, or already closing in, must not be silently learned as "normal".
+        ``signal`` is the live (coerced) reading this poll; RSSI is negative dBm,
+        so "very strong / very close" means at or ABOVE the threshold (a less
+        negative value). Wi-Fi APs are excluded — a nearby router is fixed
+        infrastructure, not a device moving through the operator's space.
+        """
+        egregious_close = 0.0
+        if (signal is not None
+                and signal >= self._egregious_signal_dbm
+                and not _is_access_point(profile.device_type)):
+            egregious_close = 1.0
+        return {
+            "egregious_close": egregious_close,
+            # "Trending stronger during learning" reuses the approaching machinery.
+            # is_novel is False during learning (the freeze time is in the future).
+            "approaching": self._approaching(profile, is_novel=False),
+        }
 
     # ------------------------------------------------------------------
     # Deviation signals + severity (Option B)
@@ -252,10 +326,15 @@ class FixedScoring(ScoringEngine):
         phase (always 0.0) — populated columns exist, no trigger yet.
         """
         is_novel = profile.first_seen > freeze_time
-        novelty = (
-            1.0 if (is_novel and profile.observation_count >= _MIN_NOVELTY_OBSERVATIONS)
-            else 0.0
+        # A randomized MAC with no probe-SSID fingerprint (keyed "mac:") is the
+        # post-freeze flood source — every rotation of a baselined device reads as
+        # new. Require SUSTAINED presence for it; a static MAC or a fingerprinted
+        # ("fp:") randomized device uses the normal minimum.
+        randomized_no_fp = (
+            profile.mac_type == "randomized" and str(profile.key).startswith("mac:")
         )
+        min_obs = self._novelty_random_min_obs if randomized_no_fp else _MIN_NOVELTY_OBSERVATIONS
+        novelty = 1.0 if (is_novel and profile.observation_count >= min_obs) else 0.0
         # Off-schedule applies ONLY to known (baseline) devices — a novel device
         # has no baseline schedule to deviate from. It also stays silent until the
         # device's baseline spans enough DISTINCT hours to define a schedule
