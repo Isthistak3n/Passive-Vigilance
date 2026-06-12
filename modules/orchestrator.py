@@ -671,6 +671,12 @@ class SensorOrchestrator:
                 )
                 self._sensor_health[name] = False
                 tripped.append(name)
+            else:
+                # Sensor passed every check this pass: healthy, loop live, and
+                # (for a data sensor) data progressing again. The stall episode
+                # is over, so drop any one-reconnect-per-episode marker — a fresh
+                # future stall earns its own reconnect before escalating.
+                self._stalled_since_reconnect.discard(name)
         return tripped
 
     # ------------------------------------------------------------------
