@@ -16,6 +16,11 @@ ExecStart=/opt/passive-vigilance/venv/bin/python3 /home/${PI_USER}/Passive-Vigil
 Type=notify
 NotifyAccess=main
 WatchdogSec=120
+# READY=1 is sent only after startup() returns, and startup waits up to
+# GPS_STARTUP_TIMEOUT_SECONDS (default 120) for a first fix. The default notify
+# start timeout is 90s, so a slow-GPS cold boot would be killed before READY=1
+# and crash-loop. Allow startup to exceed the GPS wait with margin.
+TimeoutStartSec=180
 Restart=always
 RestartSec=5
 TimeoutStopSec=30
