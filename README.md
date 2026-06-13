@@ -1,4 +1,5 @@
 <img width="720" height="1280" alt="grok-8714bb48-d43b-460b-9cbd-df2b8099ead7" src="https://github.com/user-attachments/assets/14067ed2-26d6-4632-b7ae-09a258546d50" />
+
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
