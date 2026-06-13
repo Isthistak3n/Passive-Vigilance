@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Passive Vigilance
+GenericName=RF surveillance dashboard
+Comment=Start the mobile node and open the dashboard
+# __REPO_DIR__ is substituted with the repo's absolute path by
+# scripts/install-desktop-launcher.sh — do not hand-edit unless you know the path.
+Exec=__REPO_DIR__/scripts/launch-mobile-gui.sh
+Icon=network-wireless
+Terminal=true
+Categories=Utility;Security;
+Keywords=passive;vigilance;rf;wifi;surveillance;dashboard;
+StartupNotify=true
