@@ -94,13 +94,6 @@ EGREGIOUS_SIGNAL_DBM = -45.0
 # the default; an explicit EGREGIOUS_SIGNAL_DBM overrides it.
 _EGREGIOUS_DENSITY_PRESETS = {"dense": -30.0, "suburban": -40.0, "rural": -50.0}
 
-# Novelty on a RANDOMIZED MAC with no probe-SSID fingerprint is the post-freeze
-# flood source: each MAC rotation of a baselined device reads as brand-new. Such a
-# device must show SUSTAINED presence (this many observations) before novelty
-# fires; a randomized device WITH a fingerprint (keyed "fp:") is unaffected.
-# Env-overridable. The default is the dense-node value the chase soak motivated.
-NOVELTY_RANDOM_MIN_OBSERVATIONS = 30
-
 
 def _coerce_signal(value) -> Optional[float]:
     """Return *value* as float, or None if it should be skipped.
@@ -196,10 +189,6 @@ class FixedScoring(ScoringEngine):
             self._egregious_signal_dbm = _EGREGIOUS_DENSITY_PRESETS.get(
                 _density, EGREGIOUS_SIGNAL_DBM
             )
-        # Sustained-presence threshold for randomized-MAC novelty (anti-flood).
-        self._novelty_random_min_obs = int(
-            os.getenv("NOVELTY_RANDOM_MIN_OBSERVATIONS", str(NOVELTY_RANDOM_MIN_OBSERVATIONS))
-        )
         # Distinct Wi-Fi APs suppressed from approaching that would otherwise have
         # qualified — observable so a soak can show exactly what the filter caught.
         self._approaching_excluded_aps: set = set()
@@ -326,15 +315,27 @@ class FixedScoring(ScoringEngine):
         phase (always 0.0) — populated columns exist, no trigger yet.
         """
         is_novel = profile.first_seen > freeze_time
-        # A randomized MAC with no probe-SSID fingerprint (keyed "mac:") is the
-        # post-freeze flood source — every rotation of a baselined device reads as
-        # new. Require SUSTAINED presence for it; a static MAC or a fingerprinted
-        # ("fp:") randomized device uses the normal minimum.
+        # A randomized MAC with no probe-SSID fingerprint (keyed "mac:") rotates its
+        # identifier, so every rotation reads as brand-new: "novelty" on it is noise,
+        # not signal. Soak #3 showed a higher observation bar only DELAYS the flood —
+        # in a dense environment dozens of persistently-present neighbour devices each
+        # cross any threshold and flag. Such a device cannot be de-duplicated against
+        # the frozen baseline at all, so it is never novelty-eligible. A device that
+        # is actually in the operator's space is still caught by the proximity signals
+        # (egregious-during-baseline, approaching), which are MAC-type agnostic.
+        # Novelty fires only for stable MACs and fingerprinted ("fp:") randomized
+        # devices, which ARE tracked across rotations so "not in the baseline" means
+        # something.
         randomized_no_fp = (
             profile.mac_type == "randomized" and str(profile.key).startswith("mac:")
         )
-        min_obs = self._novelty_random_min_obs if randomized_no_fp else _MIN_NOVELTY_OBSERVATIONS
-        novelty = 1.0 if (is_novel and profile.observation_count >= min_obs) else 0.0
+        novelty = 0.0
+        if (
+            is_novel
+            and not randomized_no_fp
+            and profile.observation_count >= _MIN_NOVELTY_OBSERVATIONS
+        ):
+            novelty = 1.0
         # Off-schedule applies ONLY to known (baseline) devices — a novel device
         # has no baseline schedule to deviate from. It also stays silent until the
         # device's baseline spans enough DISTINCT hours to define a schedule
