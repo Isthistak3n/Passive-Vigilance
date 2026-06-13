@@ -2,6 +2,16 @@
 Description=Passive Vigilance sensor orchestrator
 After=network.target gpsd.service kismet.service
 Wants=gpsd.service kismet.service
+# Restart-loop backstop: if the service restarts StartLimitBurst times within
+# StartLimitIntervalSec, systemd stops respawning it and leaves it failed instead
+# of flailing forever. This is the outer guard for a systemd-watchdog SIGABRT loop
+# (soak #3: a wedged alert backend starved the WATCHDOG=1 heartbeat, so systemd
+# killed and respawned the node every ~2 min indefinitely; the in-process
+# crash-guard only counts os._exit self-restarts, not systemd kills). A genuine
+# one-off stall still self-heals — one restart, well under the burst — so only a
+# non-recovering loop trips this and parks the unit for a human to look at.
+StartLimitIntervalSec=900
+StartLimitBurst=5
 
 [Service]
 User=${PI_USER}
