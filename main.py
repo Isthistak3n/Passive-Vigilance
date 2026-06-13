@@ -396,6 +396,10 @@ class PassiveVigilance:
             self.sensor_orchestrator._gps_executor.shutdown(wait=False)
         except Exception as exc:
             logger.debug("GPS executor shutdown error: %s", exc)
+        try:
+            self.sensor_orchestrator._alert_executor.shutdown(wait=False)
+        except Exception as exc:
+            logger.debug("Alert executor shutdown error: %s", exc)
 
         ev = self.sensor_orchestrator.collected_events
         all_events = ev.all_events

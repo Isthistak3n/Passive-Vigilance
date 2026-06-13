@@ -163,6 +163,7 @@ class SensorOrchestrator:
             "remote_id_detections": 0,
             "alerts_sent": 0,
             "alerts_rate_limited": 0,
+            "alerts_dropped": 0,
             "persistent_detections": 0,
         }
 
@@ -209,6 +210,19 @@ class SensorOrchestrator:
         self._gps_call_timeout = float(
             os.getenv("GPS_READ_TIMEOUT_SECONDS", "2.0")
         ) + 1.0
+
+        # Alert dispatch runs OFF the event loop. Backends do synchronous network
+        # I/O (requests with retries + a multi-second timeout); calling them inline
+        # blocks every async task, including the watchdog heartbeat, so a slow or
+        # misconfigured backend turns a detection flood into a systemd-watchdog kill
+        # loop. A single worker keeps sends serial (the backends' rate limiters are
+        # not thread-safe) and a bounded in-flight count drops rather than queues
+        # unboundedly when a hung backend can't keep up.
+        self._alert_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="alert"
+        )
+        self._alert_max_inflight = int(os.getenv("ALERT_MAX_INFLIGHT", "32"))
+        self._alerts_inflight = 0
 
     @property
     def collected_events(self) -> CollectedEvents:
@@ -394,11 +408,11 @@ class SensorOrchestrator:
                     self.gui_server.push_event("aircraft", event)
             emergency = aircraft.get("emergency", False)
             if emergency:
-                self.alert_backend.send_aircraft_alert(aircraft)
+                self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
                 self._stats["alerts_sent"] += 1
             else:
                 if await self.rate_limiter.is_allowed(f"aircraft:{aircraft.get('icao', 'unknown')}"):
-                    self.alert_backend.send_aircraft_alert(aircraft)
+                    self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
                     self._stats["alerts_sent"] += 1
                 else:
                     self._stats["alerts_rate_limited"] += 1
@@ -486,7 +500,7 @@ class SensorOrchestrator:
                 if self.gui_server is not None:
                     self.gui_server.push_event("wifi", event_dict)
             if await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
-                self.alert_backend.send_persistence_alert(event)
+                self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
                 self._stats["alerts_sent"] += 1
             else:
                 self._stats["alerts_rate_limited"] += 1
@@ -551,7 +565,7 @@ class SensorOrchestrator:
                 "lat": detection.get("gps_lat") or 0.0, "lon": detection.get("gps_lon") or 0.0,
             }
             if await self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
-                self.alert_backend.send_drone_alert(alert_detection)
+                self._dispatch_alert(self.alert_backend.send_drone_alert, alert_detection)
                 self._stats["alerts_sent"] += 1
             else:
                 self._stats["alerts_rate_limited"] += 1
@@ -604,10 +618,46 @@ class SensorOrchestrator:
                 self._remote_id_index[uas_id] = event
                 self.remote_id_detections.append(event)
             if await self.rate_limiter.is_allowed(f"remote_id:{uas_id}"):
-                self.alert_backend.send_remote_id_alert(detection)
+                self._dispatch_alert(self.alert_backend.send_remote_id_alert, detection)
                 self._stats["alerts_sent"] += 1
             else:
                 self._stats["alerts_rate_limited"] += 1
+
+    # ------------------------------------------------------------------
+    # Alert dispatch (off the event loop)
+    # ------------------------------------------------------------------
+
+    def _dispatch_alert(self, send_fn, *args) -> bool:
+        """Fire an alert off the event loop, fire-and-forget and bounded.
+
+        ``send_fn`` is a blocking backend method (``send_persistence_alert`` etc.)
+        that does synchronous network I/O. Running it inline on the event loop
+        starves all async tasks — including the watchdog heartbeat — so a slow or
+        unreachable backend becomes a systemd-watchdog kill loop (the soak-#3
+        cascade). Offload to the single-thread alert pool and never await: a hung
+        backend can only delay alerts, never the loop. Returns True if the send was
+        scheduled, False if it was dropped because too many sends are already in
+        flight (backlog bound — better to drop noise than grow an unbounded queue
+        behind a wedged backend).
+        """
+        if self._alerts_inflight >= self._alert_max_inflight:
+            self._stats["alerts_dropped"] += 1
+            return False
+        self._alerts_inflight += 1
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(self._alert_executor, send_fn, *args)
+        future.add_done_callback(self._alert_done)
+        return True
+
+    def _alert_done(self, future) -> None:
+        """Done-callback for a dispatched alert; runs on the event loop thread."""
+        self._alerts_inflight -= 1
+        try:
+            exc = future.exception()
+        except Exception:
+            return  # cancelled (e.g. executor shutdown) — nothing to report
+        if exc is not None:
+            logger.warning("alert send raised off-loop: %s", exc)
 
     # ------------------------------------------------------------------
     # Watchdog
@@ -921,7 +971,7 @@ class SensorOrchestrator:
         logger.info("DroneRF:   %s | Detections: %d", _status("drone_rf"), self._stats["drone_detections"])
         logger.info("RemoteID:  %s | Detections: %d", _status("remote_id"), self._stats["remote_id_detections"])
         logger.info("SDR:       %s | Mode: %s | Owner: %s", sdr_status, self.sdr_mode.value, self.sdr_coordinator.current_owner)
-        logger.info("Alerts:    %s | Sent: %d | Rate-limited: %d", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"])
+        logger.info("Alerts:    %s | Sent: %d | Rate-limited: %d | Dropped: %d", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"], self._stats["alerts_dropped"])
         logger.info("Events:    %d persistent | %d aircraft | %d drone | %d remote_id", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"], self._stats["remote_id_detections"])
         logger.info(sep)
 

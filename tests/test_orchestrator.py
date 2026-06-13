@@ -7,6 +7,7 @@ access required.
 import asyncio
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,6 +77,18 @@ def _make_remote_id(**overrides) -> dict:
     }
     r.update(overrides)
     return r
+
+
+async def _drain_alerts(orch) -> None:
+    """Block until fire-and-forget alert sends have actually run.
+
+    ``_dispatch_alert`` offloads sends to a single-worker executor and does not
+    await them, so a backend assertion right after a poll would race the worker
+    thread. Submitting a no-op after the sends and awaiting it guarantees (FIFO,
+    one worker) that the queued sends completed and the mocked backend was called.
+    """
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(orch.sensor_orchestrator._alert_executor, lambda: None)
 
 
 @pytest.fixture()
@@ -249,6 +262,7 @@ async def test_poll_adsb_emergency_bypasses_rate_limiter(orch):
     await orch.rate_limiter.is_allowed("aircraft:EMG001")  # consumes the slot
 
     await orch.sensor_orchestrator._poll_adsb()
+    await _drain_alerts(orch)
     # Backend must still be called
     orch._mock_backend.send_aircraft_alert.assert_called_once()
 
@@ -262,6 +276,7 @@ async def test_poll_adsb_rate_limiter_suppresses_repeat_normal_alert(orch):
 
     await orch.sensor_orchestrator._poll_adsb()   # first poll — alert fires
     await orch.sensor_orchestrator._poll_adsb()   # second poll — rate-limited, no second alert
+    await _drain_alerts(orch)
 
     orch._mock_backend.send_aircraft_alert.assert_called_once()
 
@@ -291,6 +306,7 @@ async def test_poll_kismet_sends_alert_for_high_score_event(orch):
     orch._kismet_active = True
 
     await orch.sensor_orchestrator._poll_kismet()
+    await _drain_alerts(orch)
 
     orch._mock_backend.send_persistence_alert.assert_called_once_with(event)
     assert len(orch.sensor_orchestrator.all_events) == 1
@@ -1187,3 +1203,76 @@ async def test_poll_gps_timeout_is_handled_cleanly(orch):
     # Should not raise; degrades health and continues.
     await so._poll_gps()
     assert so._sensor_health["gps"] is False
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_alert() — alerts run OFF the event loop (soak-#3 cascade fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_alert_offloads_and_calls_backend(orch):
+    """A dispatched alert eventually calls the backend and clears in-flight."""
+    so = orch.sensor_orchestrator
+    scheduled = so._dispatch_alert(orch._mock_backend.send_aircraft_alert, {"icao": "X"})
+    assert scheduled is True
+    await _drain_alerts(orch)
+    orch._mock_backend.send_aircraft_alert.assert_called_once_with({"icao": "X"})
+    # give the loop a tick for the done-callback to decrement the counter
+    await asyncio.sleep(0)
+    assert so._alerts_inflight == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_alert_does_not_block_the_event_loop(orch):
+    """A slow backend send must not block the dispatching coroutine.
+
+    This is the whole point of the fix: a wedged backend (e.g. an unreachable
+    ntfy topic) previously blocked the event loop and starved the watchdog
+    heartbeat into a systemd-kill loop.
+    """
+    so = orch.sensor_orchestrator
+    release = threading.Event()
+
+    def slow_send(_payload):
+        release.wait(2.0)
+        return True
+
+    orch._mock_backend.send_aircraft_alert.side_effect = slow_send
+
+    t0 = time.monotonic()
+    scheduled = so._dispatch_alert(orch._mock_backend.send_aircraft_alert, {"icao": "SLOW"})
+    elapsed = time.monotonic() - t0
+
+    assert scheduled is True
+    assert elapsed < 0.5, "dispatch blocked on the slow send instead of offloading"
+
+    release.set()
+    await _drain_alerts(orch)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_alert_drops_when_backlog_is_full(orch):
+    """When too many sends are in flight, further alerts are dropped and counted,
+    never queued unboundedly behind a wedged backend."""
+    so = orch.sensor_orchestrator
+    so._alert_max_inflight = 1
+    release = threading.Event()
+
+    def blocking_send(_payload):
+        release.wait(2.0)
+        return True
+
+    orch._mock_backend.send_aircraft_alert.side_effect = blocking_send
+
+    first = so._dispatch_alert(orch._mock_backend.send_aircraft_alert, {"icao": "1"})
+    # worker thread is now blocked holding the single in-flight slot
+    second = so._dispatch_alert(orch._mock_backend.send_aircraft_alert, {"icao": "2"})
+    third = so._dispatch_alert(orch._mock_backend.send_aircraft_alert, {"icao": "3"})
+
+    assert first is True
+    assert second is False and third is False
+    assert so._stats["alerts_dropped"] == 2
+
+    release.set()
+    await _drain_alerts(orch)
