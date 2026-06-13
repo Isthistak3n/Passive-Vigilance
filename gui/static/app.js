@@ -85,6 +85,7 @@ function renderWifi() {
   document.getElementById('wifi-tbody').innerHTML = rows.map(e => `
     <tr>
       <td><code>${e.mac || '—'}</code></td>
+      <td>${e.device_type || '—'}</td>
       <td>${e.mac_type || '—'}</td>
       <td class="${alertClass[e.alert_level] || 'alert-new'}">${(e.score || 0).toFixed(2)}</td>
       <td class="${alertClass[e.alert_level] || 'alert-new'}">${e.alert_level || '—'}</td>
