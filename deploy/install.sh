@@ -172,24 +172,40 @@ chmod 0440 /etc/sudoers.d/passive-vigilance
 # ── 5. gpsd config ─────────────────────────────────────────────────────────
 echo "$LOG Configuring gpsd..."
 
-# Auto-detect GPS device
-# Priority: 1) GPS_DEVICE from .env, 2) UART HAT, 3) USB dongle
+# Auto-detect GPS device(s) — a node may have a UART HAT (ttyAMA0) and one
+# or more USB GNSS receivers (u-blox CDC-ACM on ttyACM*, USB-serial bridges
+# on ttyUSB*) at once; pass all present devices to gpsd so it uses whichever
+# is plugged in. Mirrors the candidate list in modules/gps.py.
+DEVICES=""
+add_device() {
+    [ -e "$1" ] || return
+    case " $DEVICES " in *" $1 "*) return ;; esac
+    DEVICES="${DEVICES:+$DEVICES }$1"
+}
+
+# 1) GPS_DEVICE from .env — single path or space-separated list; takes
+#    priority so an explicit operator choice is listed first.
 if [ -f "$REPO_DIR/.env" ]; then
     GPS_DEVICE_ENV=$(grep "^GPS_DEVICE=" "$REPO_DIR/.env" \
-        | cut -d= -f2 | tr -d ' "')
+        | cut -d= -f2- | tr -d '"')
 fi
+for dev in $GPS_DEVICE_ENV; do
+    add_device "$dev"
+done
 
-if [ -n "$GPS_DEVICE_ENV" ]; then
-    DEVICES="$GPS_DEVICE_ENV"
-    echo "$LOG GPS device from .env: $DEVICES"
-elif [ -e "/dev/ttyAMA0" ]; then
-    DEVICES="/dev/ttyAMA0"
-    echo "$LOG GPS HAT detected: using $DEVICES"
-elif DEVICES=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null | head -1) && [ -n "$DEVICES" ]; then
-    echo "$LOG USB GPS detected: using $DEVICES"
-else
+# 2) UART HAT (Waveshare L76K etc.)
+add_device "/dev/ttyAMA0"
+
+# 3) USB GNSS receivers — u-blox CDC-ACM dongles and USB-serial bridges
+for dev in /dev/ttyACM* /dev/ttyUSB*; do
+    add_device "$dev"
+done
+
+if [ -z "$DEVICES" ]; then
     DEVICES="/dev/ttyUSB0"
     echo "$LOG WARNING: No GPS device found, defaulting to $DEVICES"
+else
+    echo "$LOG GNSS device(s) detected: $DEVICES"
 fi
 
 cat > /etc/default/gpsd << EOF
@@ -208,7 +224,9 @@ EOF
 
 # ── 6. Kismet service ──────────────────────────────────────────────────────
 echo "$LOG Installing Kismet systemd service..."
-cp "$REPO_DIR/deploy/kismet.service" /etc/systemd/system/kismet.service
+PI_USER="$PI_USER" envsubst '$PI_USER' \
+  < "$REPO_DIR/deploy/kismet.service" \
+  > /etc/systemd/system/kismet.service
 
 # ── 7. Passive Vigilance service ───────────────────────────────────────────
 echo "$LOG Installing Passive Vigilance service..."

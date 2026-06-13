@@ -187,7 +187,7 @@ class KismetModule:
             async with self._session.post(
                 f"{_BASE_URL}/devices/views/all/devices.json",
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status != 200:
                     logger.warning("Kismet devices endpoint returned %d", resp.status)

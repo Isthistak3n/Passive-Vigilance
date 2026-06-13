@@ -4,14 +4,14 @@ After=network.target gpsd.service
 Wants=gpsd.service
 
 [Service]
-User=kismet
-Group=kismet
+User=${PI_USER}
+Group=${PI_USER}
 Environment=KISMET_CAPTURE_INTERFACE=wlan1
-Environment=HOME=/var/lib/kismet
-WorkingDirectory=/var/lib/kismet
+Environment=HOME=/home/${PI_USER}
+WorkingDirectory=/home/${PI_USER}
 # Raise the USB Bluetooth controller (hci0) before Kismet reads its sources, so
 # the linuxbluetooth source in kismet_site.conf opens reliably at boot. Runs as
-# root (the leading +) regardless of User=kismet; best-effort, never blocks.
+# root (the leading +) regardless of User=${PI_USER}; best-effort, never blocks.
 ExecStartPre=+/usr/local/bin/set-bt-up.sh
 ExecStart=/usr/bin/kismet --no-ncurses-wrapper -c wlan1
 Restart=on-failure
