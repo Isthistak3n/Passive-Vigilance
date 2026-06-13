@@ -64,6 +64,27 @@ class TestGUIServerPushEvent(unittest.TestCase):
         self.gui.push_event("alert", ev)
         self.assertEqual(len(self.gui._recent_alerts), 1)
 
+    def test_push_aircraft_same_icao_dedups_to_one_entry(self):
+        # A plane re-seen every poll must collapse to ONE cache entry (its
+        # latest state), not one entry per sighting — /api/aircraft returns
+        # one track per aircraft, not one row per detection.
+        self.gui.push_event("aircraft", {"icao": "abc123", "altitude": 30000})
+        self.gui.push_event("aircraft", {"icao": "abc123", "altitude": 31000})
+        self.gui.push_event("aircraft", {"icao": "abc123", "altitude": 32000})
+        self.assertEqual(len(self.gui._recent_aircraft), 1)
+        self.assertEqual(self.gui._recent_aircraft[0]["altitude"], 32000)
+
+    def test_push_aircraft_distinct_icaos_kept_separately(self):
+        self.gui.push_event("aircraft", {"icao": "aaa111"})
+        self.gui.push_event("aircraft", {"icao": "bbb222"})
+        self.assertEqual(len(self.gui._recent_aircraft), 2)
+
+    def test_push_wifi_same_mac_dedups_to_one_entry(self):
+        self.gui.push_event("wifi", {"mac": "aa:bb:cc:dd:ee:ff", "score": 0.5})
+        self.gui.push_event("wifi", {"mac": "aa:bb:cc:dd:ee:ff", "score": 0.9})
+        self.assertEqual(len(self.gui._recent_wifi), 1)
+        self.assertEqual(self.gui._recent_wifi[0]["score"], 0.9)
+
     def test_push_event_broadcasts_to_clients(self):
         client_q: queue.Queue = queue.Queue()
         with self.gui._clients_lock:

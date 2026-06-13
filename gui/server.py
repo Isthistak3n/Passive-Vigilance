@@ -364,6 +364,28 @@ class GUIServer:
                 )
                 time.sleep(delay)
 
+    def _remember(self, cache: list[dict], data: dict, key: "str | None") -> None:
+        """Add ``data`` to a recent-events ``cache``, de-duplicated by identity.
+
+        When ``key`` is given and ``data`` carries that key, an entry already in
+        the cache with the same identity value is REPLACED in place — so a plane
+        re-seen every poll, or a device re-seen every scan, occupies exactly one
+        cache slot (its latest state) instead of accumulating a copy per
+        sighting. When ``key`` is ``None`` (or absent from ``data``) the event is
+        a discrete occurrence and is simply appended. The cache is bounded at
+        ``_MAX_RECENT`` by evicting the oldest entry. Caller holds ``_data_lock``.
+        """
+        if key is not None:
+            ident = data.get(key)
+            if ident is not None:
+                for i, existing in enumerate(cache):
+                    if existing.get(key) == ident:
+                        cache[i] = data
+                        return
+        cache.append(data)
+        if len(cache) > _MAX_RECENT:
+            cache.pop(0)
+
     def push_event(self, event_type: str, data: dict) -> None:
         """Broadcast a sensor event to all connected SSE clients.
 
@@ -380,24 +402,20 @@ class GUIServer:
             logger.debug("GUI push_event serialisation error: %s", exc)
             return
 
-        # Update recent-events cache
+        # Update recent-events cache. Types with a stable identity (aircraft
+        # ICAO, WiFi MAC) are de-duplicated: a re-sighting of the same entity
+        # replaces its cached entry in place instead of appending a duplicate,
+        # so /api/aircraft and /api/wifi return one row per entity (one track)
+        # rather than one row per sighting. Keyless types just append.
         with self._data_lock:
             if event_type == "wifi":
-                self._recent_wifi.append(data)
-                if len(self._recent_wifi) > _MAX_RECENT:
-                    self._recent_wifi.pop(0)
+                self._remember(self._recent_wifi, data, "mac")
             elif event_type == "aircraft":
-                self._recent_aircraft.append(data)
-                if len(self._recent_aircraft) > _MAX_RECENT:
-                    self._recent_aircraft.pop(0)
+                self._remember(self._recent_aircraft, data, "icao")
             elif event_type == "drone":
-                self._recent_drone.append(data)
-                if len(self._recent_drone) > _MAX_RECENT:
-                    self._recent_drone.pop(0)
+                self._remember(self._recent_drone, data, None)
             elif event_type == "alert":
-                self._recent_alerts.append(data)
-                if len(self._recent_alerts) > _MAX_RECENT:
-                    self._recent_alerts.pop(0)
+                self._remember(self._recent_alerts, data, None)
 
         # Broadcast to all SSE clients
         with self._clients_lock:
