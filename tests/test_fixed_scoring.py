@@ -614,19 +614,18 @@ def test_egregious_device_is_still_learned_into_baseline():
 # ---------------------------------------------------------------------------
 
 
-def test_novelty_suppressed_for_randomized_no_fingerprint_until_sustained():
-    # A randomized MAC with no probe fingerprint (keyed "mac:") must show
-    # sustained presence before novelty fires — this is the post-freeze flood fix.
+def test_novelty_never_fires_for_randomized_no_fingerprint():
+    # A randomized MAC with no probe fingerprint (keyed "mac:") rotates its
+    # identifier, so novelty on it is noise, not signal — it floods post-freeze.
+    # It is NEVER novelty-eligible, however many times it is seen (soak #3 fix:
+    # a higher observation bar only delayed the flood). Proximity signals still
+    # cover a device actually in the operator's space.
     engine, clock = _clocked_engine(baseline_hours=1.0)
     clock[0] = T0 + timedelta(hours=2)                  # frozen
-    engine._novelty_random_min_obs = 5                  # lower the bar for the test
     dev = {"macaddr": "a2:bb:cc:dd:ee:01", "name": ""}  # randomized, no probes
-    for _ in range(4):
-        events = engine.update([dev])                   # obs 1..4 < 5
-    assert events == []                                 # suppressed
-    events = engine.update([dev])                       # obs 5 -> fires
-    assert len(events) == 1
-    assert events[0].score_breakdown["novelty"] == 1.0
+    for _ in range(40):                                 # well past any old threshold
+        events = engine.update([dev])
+    assert events == []                                 # never fires novelty
 
 
 def test_novelty_normal_minimum_for_fingerprinted_randomized():
