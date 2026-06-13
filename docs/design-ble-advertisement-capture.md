@@ -78,6 +78,25 @@ costs nothing and replaces a feed that is already empty. Keep **C** (a dedicated
 sniffer) as the known upgrade path if passive controller-level capture turns out
 to miss too much. Re-evaluate **B** only if Kismet's Bluetooth feed earns its keep.
 
+## Validation result (2026-06-13)
+
+Option A was spiked against the real dongle (Edimax `hci0`, BlueZ 5.82), with the
+Bluetooth source briefly closed via the Kismet API so WiFi capture stayed up.
+Result: **GO, with one course-correction on the mechanism.**
+
+- The standard high-level "passive scan" offered by the Python BLE library
+  (BlueZ's advertisement-monitor feature) returned **nothing** on this controller —
+  this inexpensive adapter does not support offloaded advertisement monitoring.
+- **Raw, listen-only capture works.** Reading advertisement reports directly from
+  the controller (passive scan — the radio never transmits) captured live devices
+  with their vendor data **and a real signal strength (−58 dBm)** — the decisive
+  win, since Kismet reports a flat zero for Bluetooth signal today.
+
+So the production capture primitive is **raw listen-only advertisement capture**,
+not the library's advertisement-monitor mode. The proof is
+`scripts/ble_capture_spike.py`. Everything else in this note stands: the captured
+fields, the fingerprint, the scoring tie-in, and the GUI plan are unchanged.
+
 ## What the fingerprint is made of
 
 From each passively captured advertisement we build a signature from the parts
