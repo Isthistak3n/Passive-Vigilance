@@ -8,7 +8,7 @@ import modules.persistence  # noqa: F401 — ensure module importable
 from modules.persistence import DetectionEvent, PersistenceEngine
 
 
-def _obs(minutes_ago: float, lat=None, lon=None, signal=-60.0, manuf="TestCo", dtype="Wi-Fi Device"):
+def _obs(minutes_ago: float, lat=None, lon=None, signal=-60.0, manuf="TestCo", dtype="Wi-Fi Device", name=""):
     """Build a minimal observation dict at *minutes_ago* minutes before now."""
     return {
         "timestamp": datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
@@ -17,7 +17,7 @@ def _obs(minutes_ago: float, lat=None, lon=None, signal=-60.0, manuf="TestCo", d
         "signal":    signal,
         "manuf":     manuf,
         "type":      dtype,
-        "name":      "",
+        "name":      name,
     }
 
 
@@ -282,6 +282,24 @@ class TestMACRandomizationInPersistence(unittest.TestCase):
         events = pe.update(devices, gps_fix=None)
         self.assertTrue(len(events) > 0)
         self.assertEqual(events[0].mac_type, "randomized")
+
+    def test_detection_event_carries_ssid_from_observations(self):
+        """The most recent non-empty device name (AP SSID) surfaces as event.ssid."""
+        pe = PersistenceEngine(alert_threshold=0.3, poll_interval_seconds=240)
+        pe._observations[MAC_A] = [_obs(m, name="HomeNet") for m in [2, 7, 12, 17]]
+        devices = [{"macaddr": MAC_A, "manuf": "", "type": "", "name": "HomeNet", "last_signal": None}]
+        events = pe.update(devices, gps_fix=None)
+        self.assertTrue(len(events) > 0)
+        self.assertEqual(events[0].ssid, "HomeNet")
+
+    def test_detection_event_ssid_defaults_empty_for_probing_client(self):
+        """A client that never advertises a name yields ssid='' (renders as — in the GUI)."""
+        pe = PersistenceEngine(alert_threshold=0.3, poll_interval_seconds=240)
+        pe._observations[MAC_A] = [_obs(m) for m in [2, 7, 12, 17]]
+        devices = [{"macaddr": MAC_A, "manuf": "", "type": "", "name": "", "last_signal": None}]
+        events = pe.update(devices, gps_fix=None)
+        self.assertTrue(len(events) > 0)
+        self.assertEqual(events[0].ssid, "")
 
     def test_get_fingerprint_summary_returns_list(self):
         """get_fingerprint_summary() returns a list (empty when no randomized MACs tracked)."""

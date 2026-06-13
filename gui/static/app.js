@@ -75,6 +75,14 @@ function fmtTime(iso) {
   try { return new Date(iso).toLocaleTimeString(); } catch { return iso; }
 }
 
+// Escape free-text fields (e.g. SSID) before injecting into innerHTML — an AP can
+// broadcast arbitrary bytes in its SSID, so treat it as untrusted.
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function renderWifi() {
   const q = document.getElementById('wifi-search').value.toLowerCase();
   const rows = state.wifi
@@ -85,6 +93,7 @@ function renderWifi() {
   document.getElementById('wifi-tbody').innerHTML = rows.map(e => `
     <tr>
       <td><code>${e.mac || '—'}</code></td>
+      <td>${e.ssid ? esc(e.ssid) : '—'}</td>
       <td>${e.device_type || '—'}</td>
       <td>${e.mac_type || '—'}</td>
       <td class="${alertClass[e.alert_level] || 'alert-new'}">${(e.score || 0).toFixed(2)}</td>

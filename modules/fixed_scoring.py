@@ -447,6 +447,7 @@ class FixedScoring(ScoringEngine):
             device_type=profile.device_type,
             alert_level=alert_level,
             mac_type=get_mac_type(mac),
+            ssid=device.get("name", ""),
         )
 
     def close(self) -> None:
