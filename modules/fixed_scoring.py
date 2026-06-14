@@ -25,8 +25,12 @@ Explicitly NOT in this phase: abnormal-dwell / session-state, day-of-week
 patterning, adaptation, WiGLE. There is also **no location gate** (that gate is
 the #50 bug for fixed nodes).
 
-Keying (design 5.3): stable MACs are keyed by MAC; randomized MACs are keyed by
-their probe-SSID fingerprint via :func:`modules.mac_utils.group_by_fingerprint`.
+Keying (design 5.3): stable MACs are keyed by MAC; randomized MACs are keyed by a
+strong content fingerprint — ``wifi-fp:`` (probed SSIDs + IE set, via
+:mod:`modules.wifi_fingerprint`) or ``ble-fp:`` (vendor/services/name, via
+:mod:`modules.ble_fingerprint`) — so rotating addresses collapse to one identity.
+Randomized devices without a strong fingerprint fall back to ``mac:`` and are not
+novelty-eligible.
 
 Durability (design 5.1) lives in :class:`modules.baseline_store.BaselineStore`.
 """
@@ -34,17 +38,19 @@ Durability (design 5.1) lives in :class:`modules.baseline_store.BaselineStore`.
 import logging
 import os
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Callable, Optional
 
 from modules.baseline_store import BaselineStore, DeviceProfile, _DEFAULT_DB_PATH
+from modules.ble_fingerprint import compute_ble_fingerprint
 from modules.mac_utils import (
     get_mac_type,
-    group_by_fingerprint,
     is_randomized_mac,
     normalize_mac,
 )
 from modules.persistence import DetectionEvent, PersistenceEngine
 from modules.scoring_engine import ScoringEngine
+from modules.wifi_fingerprint import compute_wifi_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -205,22 +211,62 @@ class FixedScoring(ScoringEngine):
     def _device_key(device: dict) -> Optional[str]:
         """Return the pattern-of-life key for *device*, or None if unusable.
 
-        Stable MAC  -> ``mac:<normalized>``.
-        Randomized MAC with probe SSIDs -> ``fp:<sorted|joined probe ssids>``.
-        Randomized MAC without probe SSIDs -> falls back to ``mac:<normalized>``
-        (it cannot be fingerprinted; a rotating MAC seen once never reaches the
-        persistence minimum, so this naturally suppresses ephemeral randoms).
+        Stable MAC -> ``mac:<normalized>``.
+        Randomized MAC with a STRONG content fingerprint -> that fingerprint key
+        (``wifi-fp:<hash>`` for a WiFi client by its probed SSIDs + IE set, or
+        ``ble-fp:<hash>`` for a BLE advertiser by its vendor/services/name), so the
+        device's rotating addresses collapse to one identity.
+        Randomized MAC with no strong fingerprint -> falls back to
+        ``mac:<normalized>``: it cannot be tracked across rotations, so it is never
+        novelty-eligible (see :meth:`_signals`) and a rotating MAC seen once never
+        reaches the persistence minimum — ephemeral randoms are suppressed.
         """
         raw = device.get("macaddr", "")
         if not raw:
             return None
         mac = normalize_mac(raw)
-        if is_randomized_mac(mac):
-            fps = group_by_fingerprint([device])
-            if fps and fps[0].probe_ssids:
-                return "fp:" + "|".join(fps[0].probe_ssids)
+        if not is_randomized_mac(mac):
             return "mac:" + mac
-        return "mac:" + mac
+        return FixedScoring._fingerprint_key(device) or "mac:" + mac
+
+    @staticmethod
+    def _fingerprint_key(device: dict) -> Optional[str]:
+        """The strong, rotation-stable fingerprint key for a randomized device, or
+        None if it cannot be fingerprinted strongly enough to group safely.
+
+        A *weak* fingerprint (bare vendor id / no named probe SSID) returns None so
+        distinct devices are never merged — the same safeguard the signature modules
+        apply. BLE and WiFi are handled by their respective modules; which one to use
+        is decided by the modality of the record.
+        """
+        if FixedScoring._is_ble_device(device):
+            fp = compute_ble_fingerprint(FixedScoring._ble_advert_view(device))
+        else:
+            fp = compute_wifi_fingerprint(device)
+        return fp.key if (fp is not None and fp.strong) else None
+
+    @staticmethod
+    def _is_ble_device(device: dict) -> bool:
+        """True if the record is a BLE advertiser — by its phy/type or by carrying
+        advertisement fields (populated once the BLE scanner feeds the pipeline)."""
+        kind = f"{device.get('type', '')} {device.get('phyname', '')}"
+        if "BTLE" in kind or "BLE" in kind or "Bluetooth" in kind:
+            return True
+        return any(device.get(k) for k in
+                   ("company_ids", "service_uuids", "service_data_uuids", "appearance"))
+
+    @staticmethod
+    def _ble_advert_view(device: dict) -> SimpleNamespace:
+        """Adapt a device record's flat advertisement fields into the attribute view
+        :func:`compute_ble_fingerprint` expects. Absent fields read as empty, so a
+        Kismet BLE record (no advertisement payload) fingerprints weakly -> None."""
+        return SimpleNamespace(
+            company_ids=device.get("company_ids") or [],
+            service_uuids=device.get("service_uuids") or [],
+            service_data_uuids=device.get("service_data_uuids") or [],
+            local_name=device.get("name") or "",
+            appearance=device.get("appearance"),
+        )
 
     # ------------------------------------------------------------------
     # ScoringEngine interface
@@ -323,9 +369,9 @@ class FixedScoring(ScoringEngine):
         # the frozen baseline at all, so it is never novelty-eligible. A device that
         # is actually in the operator's space is still caught by the proximity signals
         # (egregious-during-baseline, approaching), which are MAC-type agnostic.
-        # Novelty fires only for stable MACs and fingerprinted ("fp:") randomized
-        # devices, which ARE tracked across rotations so "not in the baseline" means
-        # something.
+        # Novelty fires only for stable MACs and fingerprinted ("wifi-fp:"/"ble-fp:")
+        # randomized devices, which ARE tracked across rotations so "not in the
+        # baseline" means something.
         randomized_no_fp = (
             profile.mac_type == "randomized" and str(profile.key).startswith("mac:")
         )

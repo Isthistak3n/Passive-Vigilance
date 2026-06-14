@@ -158,6 +158,83 @@ def test_stable_mac_keyed_by_mac():
 
 
 # ---------------------------------------------------------------------------
+# Unified fingerprint keying (WiFi probe + BLE advertisement)
+# ---------------------------------------------------------------------------
+
+
+def _ble_device(mac, services=None, name="", **extra):
+    d = {
+        "macaddr": mac, "type": "BTLE", "name": name,
+        "company_ids": [], "service_uuids": services or [],
+        "service_data_uuids": [], "appearance": None,
+    }
+    d.update(extra)
+    return d
+
+
+def test_wifi_randomized_keyed_by_wifi_fingerprint():
+    # A randomized WiFi client that probes a named SSID keys by wifi-fp:.
+    key = FixedScoring._device_key(_random_device("a2:11:11:11:11:11", probe="HomeNet"))
+    assert key.startswith("wifi-fp:")
+
+
+def test_wifi_randomized_without_probe_falls_back_to_mac():
+    # No named probe SSID, no IE hash, no name -> weak -> mac: fallback.
+    dev = {"macaddr": "a2:11:11:11:11:11", "name": "", "probe_ssids": []}
+    assert FixedScoring._device_key(dev) == "mac:a2:11:11:11:11:11"
+
+
+def test_ble_randomized_strong_keyed_by_ble_fingerprint():
+    # A randomized BLE advertiser exposing a service keys by ble-fp:.
+    key = FixedScoring._device_key(_ble_device("c2:aa:bb:cc:dd:ee", services=[0x180D]))
+    assert key.startswith("ble-fp:")
+
+
+def test_ble_kismet_record_without_advert_falls_back_to_mac():
+    # A Kismet BLE record carries no advertisement payload -> weak -> mac: fallback,
+    # so it stays novelty-suppressed (no flood) until the scanner enriches it.
+    assert FixedScoring._device_key(_ble_device("c2:aa:bb:cc:dd:ee")) == "mac:c2:aa:bb:cc:dd:ee"
+
+
+def test_is_ble_device_detection():
+    assert FixedScoring._is_ble_device({"type": "BTLE"}) is True
+    assert FixedScoring._is_ble_device({"service_uuids": [0x180D]}) is True
+    assert FixedScoring._is_ble_device({"type": "Wi-Fi Client"}) is False
+
+
+def test_ble_fingerprint_groups_rotated_addresses():
+    # Two different randomized BLE addresses with the same advertisement are one
+    # logical device -> the rotated one is not novel after the first is baselined.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    engine.update([_ble_device("c2:11:11:11:11:11", services=[0x180D], name="Band")])
+    clock[0] = T0 + timedelta(hours=24)  # frozen, back at a baselined hour
+    assert engine.update([_ble_device("c6:22:22:22:22:22", services=[0x180D], name="Band")]) == []
+
+
+def test_novel_ble_fingerprint_flagged():
+    # A BLE advertiser whose fingerprint was never in baseline is novel and, once it
+    # persists, flags — the headline new capability (BLE was un-fingerprintable before).
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    engine.update([_ble_device("c2:11:11:11:11:11", services=[0x180D], name="Band")])
+    clock[0] = T0 + timedelta(hours=2)  # frozen
+    new = _ble_device("c2:99:99:99:99:99", services=[0x1234], name="Tracker")
+    assert engine.update([new]) == []           # 1st post-freeze sighting
+    events = engine.update([new])               # persists -> flagged
+    assert len(events) == 1
+    assert events[0].mac_type == "randomized"
+
+
+def test_ble_no_advert_not_novelty_flagged():
+    # A rotating BLE MAC with no advert payload must NOT flood novelty even when it
+    # persists across the freeze (it keys mac: and is never novelty-eligible).
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)  # already frozen
+    dev = _ble_device("c2:77:77:77:77:77")  # type BTLE, no advert fields
+    assert engine.update([dev]) == []
+    assert engine.update([dev]) == []   # persists, but still suppressed
+
+
+# ---------------------------------------------------------------------------
 # Interface robustness
 # ---------------------------------------------------------------------------
 
