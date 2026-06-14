@@ -109,6 +109,11 @@ class DroneRFModule:
         self._detections: list = []
         self._lock = threading.Lock()
         self.can_scan: bool = True
+        # True once the crash guard has permanently given up (5-in-300s). Distinct
+        # from can_scan, which is also False in SHARED mode where the SDR coordinator
+        # drives scanning — so this is the unambiguous "DroneRF auto-disabled" signal
+        # the orchestrator uses to grey the GUI sensor chiclet.
+        self.auto_disabled: bool = False
         # Scan worker (child process) + parent-side monitor. ``_scan_task`` is the
         # monitor asyncio.Task — kept under that name because main.py and the SDR
         # coordinator check ``_scan_task and not _scan_task.done()`` for "running".
@@ -217,6 +222,7 @@ class DroneRFModule:
                      getattr(proc, "exitcode", None), decision)
         if decision == "disable":
             self.can_scan = False
+            self.auto_disabled = True
             logger.error("DroneRF disabled after %d crashes in %.0fs — orchestrator "
                          "stays up, drone scan off (see #63)",
                          self._max_crashes, self._crash_window_s)

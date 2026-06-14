@@ -353,11 +353,17 @@ class PassiveVigilance:
                 adsb_secs = int(os.getenv("ADSB_SLICE_SECONDS", "30"))
                 drone_secs = int(os.getenv("DRONE_RF_SLICE_SECONDS", "30"))
                 logger.info("SDR mode: SHARED (1 dongle detected) — time-sharing ADS-B (%ds) / DroneRF (%ds)", adsb_secs, drone_secs)
+                # ADS-B is an ENABLED sensor in SHARED mode — the coordinator brings
+                # readsb up during its slices. The startup connect() races that (readsb
+                # may be stopped this instant), so a failure here must NOT grey the
+                # chiclet permanently; keep adsb active and let sensor_health track
+                # live readsb liveness (red if it actually stays down).
+                self._adsb_active = True
                 try:
                     await self.adsb.connect()
-                    self._adsb_active = True
                 except Exception as exc:
-                    logger.warning("readsb: unavailable (%s) — ADS-B disabled in SHARED mode", exc)
+                    logger.warning("readsb: not reachable at startup (%s) — ADS-B will "
+                                   "come up via the SDR coordinator", exc)
                 self.drone_rf.can_scan = False
                 self._drone_active = True
                 await self.sdr_coordinator.start()

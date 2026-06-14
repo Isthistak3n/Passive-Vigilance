@@ -661,6 +661,11 @@ class SensorOrchestrator:
 
     async def _poll_drone_rf(self) -> None:
         '''Drain DroneRF detections buffer; append events and fire alerts.'''
+        # Reflect a runtime auto-disable (#63 crash guard gave up) in live status so
+        # the GUI chiclet greys out instead of staying green on a dead scanner.
+        if getattr(self.drone_rf, "auto_disabled", False) and self._modules_active.get("drone_rf"):
+            self._modules_active["drone_rf"] = False
+            logger.warning("DroneRF auto-disabled (crash guard) — marking sensor inactive")
         try:
             pending = self.drone_rf.drain_detections()
         except Exception as exc:
