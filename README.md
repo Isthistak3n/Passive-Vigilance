@@ -1,4 +1,4 @@
-<img width="720" height="1280" alt="grok-8714bb48-d43b-460b-9cbd-df2b8099ead7" src="https://github.com/user-attachments/assets/14067ed2-26d6-4632-b7ae-09a258546d50" />
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/7b8f8dd5-e992-4c54-98e4-e531a630d945" />
 
 # Passive Vigilance
 
