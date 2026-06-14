@@ -1329,3 +1329,45 @@ def test_buffered_ble_device_is_fingerprintable(orch):
     so._on_ble_advert(_advert("c2:aa:bb:cc:dd:ee", service_uuids=[0x180D], local_name="Band"))
     device = so._drain_ble_adverts()[0]
     assert FixedScoring._device_key(device).startswith("ble-fp:")
+
+
+# ---------------------------------------------------------------------------
+# P6 — aircraft panel: live current sky (decay + index pruning)
+# ---------------------------------------------------------------------------
+
+def _ac(icao, age_s):
+    from datetime import datetime, timezone, timedelta
+    ts = (datetime.now(timezone.utc) - timedelta(seconds=age_s)).isoformat()
+    return {"icao": icao, "timestamp": ts}
+
+
+def test_current_aircraft_returns_fresh_only(orch):
+    so = orch.sensor_orchestrator
+    so._aircraft_stale_s = 120
+    so._aircraft_index = {"AAA": _ac("AAA", 0), "BBB": _ac("BBB", 30), "CCC": _ac("CCC", 300)}
+    icaos = {a["icao"] for a in so.current_aircraft()}
+    assert icaos == {"AAA", "BBB"}   # CCC (300s) is stale, excluded
+
+
+def test_current_aircraft_is_read_only(orch):
+    # current_aircraft() must not mutate the index (pruning is the poll loop's job)
+    so = orch.sensor_orchestrator
+    so._aircraft_stale_s = 120
+    so._aircraft_index = {"AAA": _ac("AAA", 0), "CCC": _ac("CCC", 300)}
+    so.current_aircraft()
+    assert set(so._aircraft_index) == {"AAA", "CCC"}
+
+
+def test_prune_aircraft_index_removes_stale(orch):
+    from datetime import datetime, timezone
+    so = orch.sensor_orchestrator
+    so._aircraft_stale_s = 120
+    so._aircraft_index = {"AAA": _ac("AAA", 0), "CCC": _ac("CCC", 300)}
+    so._prune_aircraft_index(datetime.now(timezone.utc))
+    assert "AAA" in so._aircraft_index and "CCC" not in so._aircraft_index
+
+
+def test_current_aircraft_missing_timestamp_treated_stale(orch):
+    so = orch.sensor_orchestrator
+    so._aircraft_index = {"AAA": {"icao": "AAA"}}  # no timestamp
+    assert so.current_aircraft() == []

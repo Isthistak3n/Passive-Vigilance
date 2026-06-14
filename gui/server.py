@@ -215,6 +215,16 @@ class GUIServer:
 
         @app.route("/api/aircraft")
         def api_aircraft():
+            # Seed from the orchestrator's live per-ICAO current-sky index (the
+            # actual present sky, decayed), not the bounded push-log cache — a
+            # refresh must rebuild what's flying now, not the last ~minute of pushes
+            # (P6). Fall back to the cache if the orchestrator is unavailable.
+            orch = self._orchestrator
+            if orch is not None and hasattr(orch, "current_aircraft"):
+                try:
+                    return jsonify(orch.current_aircraft())
+                except Exception as exc:
+                    logger.debug("current_aircraft() failed, using cache: %s", exc)
             with self._data_lock:
                 return jsonify(list(self._recent_aircraft))
 

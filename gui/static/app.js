@@ -34,10 +34,27 @@ function addWifiMarker(ev) {
   ).addTo(layers.wifi);
 }
 
+// An aircraft not re-seen within this window has left the sky — drop it from the
+// panel/map (matches the server's AIRCRAFT_STALE_SECONDS=120 current-sky window).
+const AIRCRAFT_STALE_MS = 120000;
+
+function aircraftAgeMs(e) {
+  const t = e.last_seen || e.timestamp;
+  if (!t) return Infinity;
+  const ms = Date.now() - new Date(t).getTime();
+  return Number.isNaN(ms) ? Infinity : ms;
+}
+
 function addAircraftMarker(ev) {
   if (ev.lat == null || ev.lon == null) return;
+  // Recency decay: a fresh contact is full-size/bright, an aging one shrinks and
+  // fades toward grey, so the operator reads what's active *now*.
+  const frac = Math.max(0, 1 - aircraftAgeMs(ev) / AIRCRAFT_STALE_MS);
   L.circleMarker([ev.lat, ev.lon], {
-    radius: 6, color: ev.emergency ? '#f85149' : '#58a6ff', fillOpacity: 0.85,
+    radius: 4 + 4 * frac,
+    color: ev.emergency ? '#f85149' : '#58a6ff',
+    opacity: 0.3 + 0.7 * frac,
+    fillOpacity: 0.2 + 0.6 * frac,
   }).bindPopup(
     `<b>${ev.callsign || ev.icao}</b><br>Alt: ${ev.altitude} ft<br>Reg: ${ev.registration || '—'}`
   ).addTo(layers.aircraft);
@@ -138,6 +155,10 @@ function renderWifi() {
 
 function renderAircraft() {
   const q = document.getElementById('aircraft-search').value.toLowerCase();
+  // Decay: drop aircraft not seen within the staleness window so the panel is the
+  // live current sky, not a frozen pile of stale contacts (P6).
+  state.aircraft = state.aircraft.filter(e => aircraftAgeMs(e) <= AIRCRAFT_STALE_MS);
+  setBadge('badge-aircraft', state.aircraft.length);
   const rows = state.aircraft
     .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
     .slice(-200)
@@ -379,6 +400,11 @@ function connectSSE() {
 }
 
 connectSSE();
+
+// Re-render the aircraft panel on a timer so recency decay applies (and stale
+// contacts expire) even during quiet periods with no new SSE pushes — e.g. while
+// readsb is stopped during a DroneRF SDR slice.
+setInterval(renderAircraft, 5000);
 
 // ── Baseline-state header ─────────────────────────────────────────────────────
 function fmtDuration(secs) {
