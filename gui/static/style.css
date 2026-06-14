@@ -323,6 +323,9 @@ tr:hover td { background: #161b22; }
   flex: 1;
   overflow-y: auto;
   padding: 10px 14px;
+  /* Leave room at the bottom so the last card isn't hidden behind the
+     floating scroll buttons. */
+  padding-bottom: 72px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -465,7 +468,7 @@ tr:hover td { background: #161b22; }
   .alert-card .alert-body { font-size: 11px; }
   .addr-count { font-size: 9px; padding: 0 4px; }
 
-  #nearby-feed { padding: 6px 8px; gap: 6px; }
+  #nearby-feed { padding: 6px 8px; padding-bottom: 56px; gap: 6px; }
   .nearby-card { padding: 8px 10px; }
   .nearby-name { font-size: 12px; }
   .nearby-signal { font-size: 11px; }
