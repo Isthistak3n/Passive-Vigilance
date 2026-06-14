@@ -47,6 +47,8 @@ class DetectionEvent:
     alert_level: str            # "suspicious" (0.5-0.7) | "likely" (0.7-0.9) | "high" (0.9+)
     mac_type: str = "static"    # "static" | "randomized"
     ssid: str = ""              # AP broadcast SSID / BT device name; "" for probing clients
+    fingerprint: str = ""       # rotation-stable identity key (wifi-fp:/ble-fp:/mac:)
+    fingerprint_label: str = ""  # human-readable identity for the GUI (e.g. "Apple")
 
 
 class PersistenceEngine(ScoringEngine):

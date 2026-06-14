@@ -291,3 +291,14 @@ tr:hover td { background: #161b22; }
 .baseline-unknown { background: #161b22; }
 .baseline-unknown .baseline-label { color: #8b949e; }
 .no-pos { color: #8b949e; font-style: italic; }
+
+/* ── Rotating-address count badge (WiFi/BT identity collapse) ───────────────── */
+.addr-count {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+  color: #d29922;
+  background: #241f17;
+  border-radius: 8px;
+}

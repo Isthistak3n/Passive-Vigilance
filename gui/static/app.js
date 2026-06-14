@@ -83,16 +83,47 @@ function esc(s) {
   ));
 }
 
+// A device's rotation-stable identity: its strong fingerprint if it has one,
+// else its MAC. Rows sharing an identity are one logical device.
+function wifiIdentity(e) {
+  const fp = e.fingerprint || '';
+  return (fp.indexOf('wifi-fp:') === 0 || fp.indexOf('ble-fp:') === 0) ? fp : (e.mac || '');
+}
+
 function renderWifi() {
   const q = document.getElementById('wifi-search').value.toLowerCase();
-  const rows = state.wifi
-    .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
+  // Collapse rotating addresses: group entries by identity, keep the most recent
+  // sighting as the representative row and count the distinct MACs seen under it.
+  const groups = new Map();
+  for (const e of state.wifi) {
+    const id = wifiIdentity(e);
+    const g = groups.get(id);
+    if (!g) {
+      groups.set(id, { latest: e, macs: new Set(e.mac ? [e.mac] : []) });
+    } else {
+      if (e.mac) g.macs.add(e.mac);
+      const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
+      const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
+      if (t2 >= t1) g.latest = e;
+    }
+  }
+  const alertClass = { high: 'alert-high', likely: 'alert-likely', suspicious: 'alert-suspicious' };
+  const rows = [...groups.values()]
+    .filter(g => !q || JSON.stringify(g.latest).toLowerCase().includes(q))
+    .sort((a, b) => new Date(a.latest.last_seen || a.latest.timestamp || 0)
+                  - new Date(b.latest.last_seen || b.latest.timestamp || 0))
     .slice(-200)
     .reverse();
-  const alertClass = { high: 'alert-high', likely: 'alert-likely', suspicious: 'alert-suspicious' };
-  document.getElementById('wifi-tbody').innerHTML = rows.map(e => `
+  document.getElementById('wifi-tbody').innerHTML = rows.map(g => {
+    const e = g.latest;
+    const n = g.macs.size;
+    const identity = e.fingerprint_label ? esc(e.fingerprint_label) : '—';
+    const macCell = `<code>${e.mac || '—'}</code>`
+      + (n > 1 ? ` <span class="addr-count" title="${n} rotating addresses">+${n - 1}</span>` : '');
+    return `
     <tr>
-      <td><code>${e.mac || '—'}</code></td>
+      <td>${identity}</td>
+      <td>${macCell}</td>
       <td>${e.ssid ? esc(e.ssid) : '—'}</td>
       <td>${e.device_type || '—'}</td>
       <td>${e.mac_type || '—'}</td>
@@ -101,7 +132,8 @@ function renderWifi() {
       <td>${e.observation_count || '—'}</td>
       <td>${e.manufacturer || '—'}</td>
       <td>${fmtTime(e.last_seen || e.timestamp)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 function renderAircraft() {
