@@ -25,7 +25,9 @@ is integrated with the asyncio loop via ``add_reader`` so capture is non-blockin
 from __future__ import annotations
 
 import asyncio
+import glob
 import logging
+import os
 import socket
 import struct
 from dataclasses import dataclass, field
@@ -165,15 +167,44 @@ def _hci_command(ocf: int, params: bytes, ogf: int = OGF_LE) -> bytes:
 AdvertCallback = Callable[[BLEAdvert], Optional[Awaitable[None]]]
 
 
+def _present_hci_indices() -> list:
+    """HCI controller indices currently present, e.g. [1] for /sys/class/bluetooth/hci1."""
+    out = []
+    for path in glob.glob("/sys/class/bluetooth/hci*"):
+        tail = path.rsplit("hci", 1)[-1]
+        if tail.isdigit():
+            out.append(int(tail))
+    return sorted(out)
+
+
+def resolve_hci_index(preferred=None, available=None, env=None) -> int:
+    """Choose which HCI controller to bind.
+
+    Priority: an explicit ``env`` override (``BLE_HCI_DEVICE``, accepting ``"1"`` or
+    ``"hci1"``); then a caller-supplied ``preferred`` index; then the lowest-numbered
+    controller actually present — so if the dongle re-enumerates to ``hci1`` after a
+    USB reset, capture still finds it instead of hardcoding ``hci0``; else 0.
+    """
+    if env:
+        return int(env[3:]) if env.lower().startswith("hci") else int(env)
+    if preferred is not None:
+        return preferred
+    if available:
+        return min(available)
+    return 0
+
+
 class BLEScanner:
     """Async passive BLE advertisement scanner bound to a single HCI controller."""
 
     def __init__(
         self,
-        hci_dev: int = 0,
+        hci_dev: Optional[int] = None,
         on_advert: Optional[AdvertCallback] = None,
     ) -> None:
-        self.hci_dev = hci_dev
+        # None -> auto-detect at connect() (env override / lowest present controller).
+        self._preferred_hci_dev = hci_dev
+        self.hci_dev = hci_dev if hci_dev is not None else 0
         self.on_advert = on_advert
         self._sock: Optional[socket.socket] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -182,6 +213,11 @@ class BLEScanner:
     async def connect(self) -> bool:
         """Open the HCI socket and start passive scanning. Returns False (degraded)
         on permission/availability errors rather than raising."""
+        self.hci_dev = resolve_hci_index(
+            preferred=self._preferred_hci_dev,
+            available=_present_hci_indices(),
+            env=os.getenv("BLE_HCI_DEVICE"),
+        )
         try:
             sock = socket.socket(AF_BLUETOOTH, socket.SOCK_RAW, BTPROTO_HCI)
             # hci_filter is 4-byte aligned -> 16 bytes (14 logical + 2 pad), else EINVAL.
