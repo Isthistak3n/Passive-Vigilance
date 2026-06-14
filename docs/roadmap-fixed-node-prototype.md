@@ -38,6 +38,33 @@ crash-looped the service) and silently stalled; it has been restarted clean on
 hour-of-day data and **freezes 2026-06-10 21:42 UTC** — the earliest the P1
 walk-test can run.
 
+**Update (2026-06-14) — randomization-resistant fingerprinting deployed (P4 core).**
+The big one: a device is now identified by *what it broadcasts*, not its rotating
+address, for **both** radios. Merged and live on chase:
+- **Passive BLE advertisement capture** (`modules/ble_scanner.py`) — owns the BT
+  dongle via a raw HCI socket and listens (no transmitting), recovering vendor
+  data, service UUIDs, and a **real RSSI** that Kismet's BT feed never provided.
+  Validated finding: this controller doesn't support BlueZ's offloaded advert
+  monitoring, so raw HCI is the production primitive (see
+  [design-ble-advertisement-capture.md](design-ble-advertisement-capture.md)).
+- **Unified fingerprint signatures** — `modules/ble_fingerprint.py` (vendor /
+  services / name) and `modules/wifi_fingerprint.py` (probed SSIDs + Kismet IE
+  hash), same `key/strong/label` shape, with the over-merge safeguard that a bare
+  vendor id / no-named-SSID stays ungroupable.
+- **Fingerprint-keyed scoring** — `FixedScoring._device_key` keys randomized
+  devices by `wifi-fp:` / `ble-fp:` so novelty/off-schedule track across rotation;
+  BLE was previously un-fingerprintable and novelty-suppressed entirely.
+- **GUI identity collapse** — rotating addresses fold into one labeled row (a slice
+  of P5).
+- **Live result:** on chase the new keying cut the post-freeze randomized-MAC flood
+  from ~36 devices/cycle (the old probe-SSID scheme) to **3–5/cycle** — the durable
+  fix the soak called for. The cutover also surfaced and fixed two real deploy bugs
+  (a `CapabilityBoundingSet` that broke `sudo`, and a hardcoded `hci0`).
+- **Remaining for P4:** the cross-session *returning-entity* linkage (same device
+  across days) — the within-session fingerprint identity is now in place to build
+  it on. BLE-as-identity is still environment-limited here (most advertisers are
+  bare), as the design predicted.
+
 ## The one finding that drives the sequencing
 
 The clean 4-hour memory soak was a **learning-phase** result. With a 72h baseline
@@ -60,8 +87,8 @@ new detection features.
 | **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Rebased on `main`, green; walk-test gated on the soak #2 freeze (2026-06-12 07:41 UTC) | No (recommended) |
 | **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
-| **P4** | Cross-session entity resolution (Phase F) | ☐ Not started | No |
-| **P5** | Fixed-mode GUI framing + durable history | ☐ Not started | No |
+| **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live (BLE raw-HCI capture, BLE/WiFi signatures, fingerprint-keyed scoring); cut the flood ~36→3–5/cycle. Cross-session *returning-entity* linkage remains | No |
+| **P5** | Fixed-mode GUI framing + durable history | ◑ Partial — identity-collapse row (rotating addresses → one labeled device) merged; baseline-state framing + durable-across-refresh history remain | No |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ☐ Not started — near-term, independent of phasing | No |
 | **P7** | Aircraft of interest: orbit/loiter detection | ☐ Not started — design captured | No |
 
@@ -159,6 +186,14 @@ BLE-as-identity stays weak (the stable subset is appliances), but BLE adds
 **proximity** and a **person-level wearable cluster** — and capturing BLE/WiFi
 beacon payloads (incl. BLE RSSI) is the prerequisite. Full design:
 [design-entity-fingerprinting.md](design-entity-fingerprinting.md).
+
+**Built so far (2026-06-14).** The within-session half is done and live: passive
+BLE advertisement capture (raw HCI), unified BLE/WiFi fingerprint signatures, and
+`FixedScoring` keying randomized devices by `wifi-fp:` / `ble-fp:` so a device's
+rotating addresses collapse to one identity for novelty/off-schedule. This is the
+direct fix for the randomized-MAC flood (cut ~36→3–5 flags/cycle on chase). What
+remains is the **cross-session pass**: linking those fingerprints into stable
+entities across days and emitting "returning entity."
 
 **Tests.** Off-hardware: two MAC-rotated sightings sharing a probe fingerprint
 resolve to one entity; distinct devices don't merge. On chase: a known device

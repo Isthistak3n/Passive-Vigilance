@@ -4,11 +4,66 @@ The headline test is the crash-loop regression: a restart must RESUME the
 existing learning window, never reset it.
 """
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 from modules.baseline_store import BaselineStore, DeviceProfile
 
 T0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def test_reads_from_another_thread_do_not_raise(tmp_path):
+    """The GUI (Flask thread) reads status counts off the connection the asyncio
+    thread opened. With check_same_thread=True this raised a ProgrammingError and
+    the GUI showed 'scoring not active'; the lock + check_same_thread=False fix it."""
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=72, now=T0)
+    store.upsert("mac:aa:bb:cc:dd:ee:ff", T0)
+
+    results = {}
+
+    def reader():
+        try:
+            results["profiles"] = store.profile_count()
+            results["baseline"] = store.baseline_count()
+            results["start"] = store.learning_start
+        except Exception as exc:  # would fire on the cross-thread SQLite error
+            results["error"] = exc
+
+    t = threading.Thread(target=reader)
+    t.start()
+    t.join()
+
+    assert "error" not in results, f"cross-thread read raised: {results.get('error')}"
+    assert results["profiles"] == 1
+    assert results["baseline"] == 1
+
+
+def test_concurrent_upsert_and_reads_are_safe(tmp_path):
+    """Concurrent poll-thread writes + GUI-thread reads must not raise or corrupt."""
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=72, now=T0)
+    errors = []
+
+    def writer():
+        try:
+            for i in range(50):
+                store.upsert(f"mac:00:00:00:00:00:{i:02x}", T0)
+        except Exception as exc:
+            errors.append(exc)
+
+    def reader():
+        try:
+            for _ in range(50):
+                store.profile_count()
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert store.profile_count() == 50
 
 
 def test_schema_created_on_fresh_db(tmp_path):
