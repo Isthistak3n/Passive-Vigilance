@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 from modules.alerts import AlertFactory, RateLimiter
 from modules.dump1090 import ADSBModule
+from modules.ble_scanner import BLEScanner
 from modules.drone_rf import DroneRFModule
 from modules.gps import GPSModule
 from modules.ignore_list import IgnoreList
@@ -37,6 +38,7 @@ from modules.sdr_manager import SDRMode, detect_sdr_count, resolve_sdr_mode
 from modules.shapefile import ShapefileWriter
 from modules.wigle import WiGLEUploader
 
+_BLE_SCANNER_ENABLED = os.getenv("BLE_SCANNER_ENABLED", "false").lower() == "true"
 _GUI_ENABLED = os.getenv("GUI_ENABLED", "false").lower() == "true"
 _GUI_HOST    = os.getenv("GUI_HOST", "0.0.0.0")
 _GUI_PORT    = int(os.getenv("GUI_PORT", "8080"))
@@ -108,6 +110,7 @@ class PassiveVigilance:
         self._modules_active: dict[str, bool] = {
             "gps": False, "kismet": False, "adsb": False,
             "drone_rf": False, "sdr_coordinator": False, "remote_id": False,
+            "ble": False,
         }
         self._session_dir: Path = Path(_SESSION_OUTPUT_DIR) / self.session_id
 
@@ -135,6 +138,11 @@ class PassiveVigilance:
         # every NODE_MODE (orthogonal to scoring), injected into the orchestrator.
         self.entity_store = EntityStore()
         self.remote_id = RemoteIDModule(gps_module=self.gps)
+        # Passive BLE advertisement scanner — owns hci0 (raw HCI) when enabled,
+        # replacing Kismet's empty linuxbluetooth feed. Default off so non-BLE
+        # nodes are unaffected; needs CAP_NET_RAW+CAP_NET_ADMIN (granted by the
+        # service unit) and exclusive use of the dongle.
+        self.ble_scanner = BLEScanner() if _BLE_SCANNER_ENABLED else None
         self.alert_backend = AlertFactory.get_backend(persist_path=_RATE_LIMIT_PERSIST)
         self.rate_limiter = RateLimiter(persist_path=_RATE_LIMIT_PERSIST)
         self.shapefile_writer = ShapefileWriter()
@@ -149,6 +157,7 @@ class PassiveVigilance:
             persistence=self.persistence, probe_analyzer=self.probe_analyzer,
             entity_store=self.entity_store,
             gui_server=None, remote_id=self.remote_id,
+            ble_scanner=self.ble_scanner,
             session_id=self.session_id, session_start=self.session_start,
             session_dir=self._session_dir, sdr_mode=self.sdr_mode,
             stop_event=self._stop,
@@ -295,6 +304,15 @@ class PassiveVigilance:
         except Exception as exc:
             logger.warning("RemoteID: unavailable (%s) — Remote ID detection disabled", exc)
 
+        if self.ble_scanner is not None:
+            try:
+                ok = await self.ble_scanner.connect()
+                self._modules_active["ble"] = ok
+                if ok:
+                    logger.info("BLE scanner: passive advertisement capture active on hci0")
+            except Exception as exc:
+                logger.warning("BLE scanner: unavailable (%s) — BLE capture disabled", exc)
+
         sdr_env = os.getenv("SDR_MODE", "auto")
         _valid_sdr_modes = {"auto", "shared", "dedicated"}
         if sdr_env.strip().lower() not in _valid_sdr_modes:
@@ -375,6 +393,11 @@ class PassiveVigilance:
                 await self.drone_rf.stop_scan()
             except Exception as exc:
                 logger.debug("DroneRF stop error: %s", exc)
+        if self.ble_scanner is not None:
+            try:
+                await self.ble_scanner.close()
+            except Exception as exc:
+                logger.debug("BLE scanner stop error: %s", exc)
         close_coros = [
             ("Kismet", self.kismet.close()),
             ("readsb", self.adsb.close()),
