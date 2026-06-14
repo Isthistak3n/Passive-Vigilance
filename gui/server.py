@@ -121,6 +121,12 @@ class GUIServer:
         self._recent_aircraft: list[dict] = []
         self._recent_drone: list[dict] = []
         self._recent_alerts: list[dict] = []
+        self._recent_nearby: list[dict] = []
+
+        # NODE_MODE is only read at startup (a running node keeps its mode until
+        # restarted), so resolve it once here and use it to pick which template
+        # index() serves — the mobile template drops the Leaflet map entirely.
+        self._node_mode = read_node_mode(self._env_path)
 
         self._data_lock = threading.Lock()
 
@@ -164,6 +170,8 @@ class GUIServer:
 
         @app.route("/")
         def index():
+            if self._node_mode == "mobile":
+                return render_template("mobile.html")
             return render_template("index.html")
 
         @app.route("/api/status")
@@ -199,6 +207,11 @@ class GUIServer:
         def api_wifi():
             with self._data_lock:
                 return jsonify(list(self._recent_wifi))
+
+        @app.route("/api/nearby")
+        def api_nearby():
+            with self._data_lock:
+                return jsonify(list(self._recent_nearby))
 
         @app.route("/api/aircraft")
         def api_aircraft():
@@ -392,7 +405,7 @@ class GUIServer:
         Thread-safe — may be called from the asyncio thread or any other thread.
 
         Args:
-            event_type: One of ``wifi``, ``aircraft``, ``drone``, ``alert``.
+            event_type: One of ``wifi``, ``aircraft``, ``drone``, ``alert``, ``nearby``.
             data:       Event dict (must be JSON-serialisable).
         """
         payload_dict = {"type": event_type, **data}
@@ -416,6 +429,8 @@ class GUIServer:
                 self._remember(self._recent_drone, data, None)
             elif event_type == "alert":
                 self._remember(self._recent_alerts, data, None)
+            elif event_type == "nearby":
+                self._remember(self._recent_nearby, data, "mac")
 
         # Broadcast to all SSE clients
         with self._clients_lock:

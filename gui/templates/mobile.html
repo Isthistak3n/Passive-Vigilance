@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Passive Vigilance</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <span class="logo">Passive Vigilance</span>
+    <div class="status-bar">
+      <span class="sensor" id="s-gps" title="GPS">GPS</span>
+      <span class="sensor" id="s-kismet" title="Kismet">WiFi</span>
+      <span class="sensor" id="s-adsb" title="ADS-B">ADS-B</span>
+      <span class="sensor" id="s-drone-rf" title="Drone RF">Drone</span>
+      <span class="session-id" id="session-id">—</span>
+      <span class="node-mode" id="node-mode" title="Scoring mode (NODE_MODE)">
+        <label for="mode-select">Mode</label>
+        <select id="mode-select" disabled>
+          <option value="fixed">fixed</option>
+          <option value="mobile">mobile</option>
+        </select>
+        <button id="mode-save" type="button" disabled>Save</button>
+        <span class="mode-msg" id="mode-msg"></span>
+      </span>
+    </div>
+  </header>
+
+  <div id="baseline-bar" class="baseline-bar baseline-unknown">
+    <span class="baseline-label" id="baseline-state">Baseline: —</span>
+    <span class="baseline-detail" id="baseline-detail"></span>
+  </div>
+
+  <nav>
+    <button class="tab-btn active" data-tab="nearby">
+      Nearby <span class="badge" id="badge-nearby">0</span>
+    </button>
+    <button class="tab-btn" data-tab="wifi">
+      WiFi/BT <span class="badge" id="badge-wifi">0</span>
+    </button>
+    <button class="tab-btn" data-tab="aircraft">
+      Aircraft <span class="badge" id="badge-aircraft">0</span>
+    </button>
+    <button class="tab-btn" data-tab="drone">
+      Drone RF <span class="badge" id="badge-drone">0</span>
+    </button>
+    <button class="tab-btn" data-tab="alerts">
+      Alerts <span class="badge alert-badge" id="badge-alerts">0</span>
+    </button>
+  </nav>
+
+  <main>
+    <!-- Nearby tab — live proximity view, no map -->
+    <section id="tab-nearby" class="tab-panel active">
+      <div id="nearby-feed"></div>
+    </section>
+
+    <!-- WiFi/BT tab -->
+    <section id="tab-wifi" class="tab-panel">
+      <div class="toolbar">
+        <input type="text" id="wifi-search" placeholder="Filter by MAC, type, score…">
+        <button id="wifi-clear" class="btn-sm">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Identity</th>
+              <th>MAC</th>
+              <th>SSID</th>
+              <th>Device</th>
+              <th>MAC Type</th>
+              <th>Score</th>
+              <th>Alert</th>
+              <th>Seen</th>
+              <th>Manufacturer</th>
+              <th>Last</th>
+            </tr>
+          </thead>
+          <tbody id="wifi-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Aircraft tab -->
+    <section id="tab-aircraft" class="tab-panel">
+      <div class="toolbar">
+        <input type="text" id="aircraft-search" placeholder="Filter by callsign, ICAO…">
+        <button id="aircraft-clear" class="btn-sm">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Callsign</th>
+              <th>ICAO</th>
+              <th>Reg</th>
+              <th>Alt (ft)</th>
+              <th>Speed</th>
+              <th>Position</th>
+              <th>Emergency</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="aircraft-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Drone tab -->
+    <section id="tab-drone" class="tab-panel">
+      <div class="toolbar">
+        <input type="text" id="drone-search" placeholder="Filter by frequency…">
+        <button id="drone-clear" class="btn-sm">Clear</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Freq (MHz)</th>
+              <th>Power (dBm)</th>
+              <th>Lat</th>
+              <th>Lon</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="drone-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Alerts tab -->
+    <section id="tab-alerts" class="tab-panel">
+      <div class="toolbar">
+        <button id="alerts-clear" class="btn-sm">Clear</button>
+      </div>
+      <div id="alerts-feed"></div>
+    </section>
+  </main>
+
+  <script src="/static/mobile.js"></script>
+</body>
+</html>
