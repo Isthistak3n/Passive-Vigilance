@@ -213,7 +213,7 @@ document.getElementById('alerts-clear').addEventListener('click', () => {
 });
 
 // ── Status polling ───────────────────────────────────────────────────────────
-function applyHealth(health, active) {
+function applyHealth(health, active, gpsFix) {
   const map_ = { gps: 's-gps', kismet: 's-kismet', adsb: 's-adsb', 'drone_rf': 's-drone-rf' };
   active = active || {};
   Object.entries(map_).forEach(([key, id]) => {
@@ -223,9 +223,17 @@ function applyHealth(health, active) {
     // healthy. A missing modules_active key is treated as active (back-compat).
     const isActive = active[key] !== false;
     const ok = health[key];
-    el.classList.toggle('disabled', !isActive);
-    el.classList.toggle('ok', isActive && !!ok);
-    el.classList.toggle('err', isActive && !ok);
+    el.classList.remove('ok', 'warn', 'err', 'disabled');
+    if (!isActive) {
+      el.classList.add('disabled');
+    } else if (!ok) {
+      el.classList.add('err');
+    } else if (key === 'gps' && !gpsFix) {
+      // gpsd is reachable but hasn't produced a position fix yet (mode < 2).
+      el.classList.add('warn');
+    } else {
+      el.classList.add('ok');
+    }
   });
 }
 
@@ -237,7 +245,7 @@ async function pollStatus() {
     if (d.session_id) {
       document.getElementById('session-id').textContent = d.session_id;
     }
-    if (d.sensor_health) applyHealth(d.sensor_health, d.modules_active);
+    if (d.sensor_health) applyHealth(d.sensor_health, d.modules_active, d.gps_fix);
     renderBaseline(d.scoring);
   } catch { /* network error — ignore */ }
 }
