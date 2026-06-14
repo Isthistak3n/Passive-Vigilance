@@ -14,6 +14,8 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from modules import device_identity
+from modules.mac_utils import is_randomized_mac, normalize_mac
 from modules.scoring_engine import ScoringEngine
 
 load_dotenv()
@@ -94,8 +96,14 @@ class PersistenceEngine(ScoringEngine):
             if handle_randomized is not None
             else os.getenv("HANDLE_MAC_RANDOMIZATION", "true").lower() == "true"
         )
-        # {mac: [{"timestamp", "gps_lat", "gps_lon", "signal", "manuf", "type", "name"}]}
+        # Keyed by the device's rotation-stable identity: a strong content
+        # fingerprint (wifi-fp:/ble-fp:) when the device has one, else its MAC — so
+        # a randomized device that rotates its address still accumulates one
+        # observation series (the location-diversity signal survives rotation).
+        # Each observation carries the actual "mac" it was seen under.
+        # {key: [{"timestamp","gps_lat","gps_lon","signal","manuf","type","name","mac"}]}
         self._observations: dict = {}
+        self._fingerprint_labels: dict = {}   # key -> human-readable identity label
         self._purge_counter: int = 0
 
     # ------------------------------------------------------------------
@@ -133,7 +141,16 @@ class PersistenceEngine(ScoringEngine):
             mac = device.get("macaddr", "")
             if not mac:
                 continue
-            self._observations.setdefault(mac, []).append({
+            # Group by rotation-stable identity. Only RANDOMIZED MACs are
+            # fingerprint-grouped (a stable MAC is its own identity and must not be
+            # merged with another device that happens to share a probe SSID). A
+            # randomized device with a weak/absent fingerprint falls back to its
+            # MAC, so distinct devices are never merged — same rule as fixed mode.
+            if is_randomized_mac(normalize_mac(mac)):
+                key = device_identity.strong_fingerprint(device) or mac
+            else:
+                key = mac
+            self._observations.setdefault(key, []).append({
                 "timestamp": now,
                 "gps_lat":   lat,
                 "gps_lon":   lon,
@@ -141,11 +158,15 @@ class PersistenceEngine(ScoringEngine):
                 "manuf":     device.get("manuf", ""),
                 "type":      device.get("type", ""),
                 "name":      device.get("name", ""),
+                "mac":       mac,
             })
+            label = device_identity.fingerprint_label(device)
+            if label:
+                self._fingerprint_labels[key] = label
 
         events = []
-        for mac, observations in self._observations.items():
-            components = self._compute_score_components(mac)
+        for key, observations in self._observations.items():
+            components = self._compute_score_components(key)
             score = self._components_to_score(components)
             if score < self._threshold:
                 continue
@@ -157,7 +178,7 @@ class PersistenceEngine(ScoringEngine):
                 if len(clusters) < self._min_locations:
                     continue
 
-            events.append(self._make_event(mac, score, components, observations))
+            events.append(self._make_event(key, score, components, observations))
 
         if events:
             logger.info(
@@ -252,7 +273,7 @@ class PersistenceEngine(ScoringEngine):
 
     def _make_event(
         self,
-        mac: str,
+        key: str,
         score: float,
         components: dict,
         observations: list,
@@ -265,6 +286,10 @@ class PersistenceEngine(ScoringEngine):
         manuf = next((o["manuf"] for o in reversed(observations) if o.get("manuf")), "")
         dtype = next((o["type"]  for o in reversed(observations) if o.get("type")),  "")
         ssid  = next((o["name"]  for o in reversed(observations) if o.get("name")),  "")
+        # The key may be a fingerprint (rotating addresses) or a raw MAC. Report the
+        # most-recent actual MAC as the event's address; fall back to the key.
+        mac = next((o["mac"] for o in reversed(observations) if o.get("mac")), key)
+        is_fp = key.startswith("wifi-fp:") or key.startswith("ble-fp:")
         return DetectionEvent(
             mac=mac,
             score=score,
@@ -278,6 +303,8 @@ class PersistenceEngine(ScoringEngine):
             alert_level=self._make_alert_level(score),
             mac_type=get_mac_type(mac),
             ssid=ssid,
+            fingerprint=key if is_fp else "",
+            fingerprint_label=self._fingerprint_labels.get(key, ""),
         )
 
     # ------------------------------------------------------------------

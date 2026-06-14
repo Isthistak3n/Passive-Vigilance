@@ -310,5 +310,51 @@ class TestMACRandomizationInPersistence(unittest.TestCase):
         self.assertIsInstance(result, list)
 
 
+class TestFingerprintKeying(unittest.TestCase):
+    """Mobile now keys randomized devices by content fingerprint so a tail that
+    rotates its MAC across locations still accumulates one observation series."""
+
+    def _dev(self, mac, probe=None, name="", type="Wi-Fi Client", signal=-50):
+        return {"macaddr": mac, "probe_ssids": probe or [], "name": name,
+                "type": type, "manuf": "", "last_signal": signal}
+
+    def test_randomized_macs_share_fingerprint_series(self):
+        pe = PersistenceEngine()
+        pe.update([self._dev("a2:11:11:11:11:11", probe=["HomeNet"])])
+        pe.update([self._dev("a6:22:22:22:22:22", probe=["HomeNet"])])  # rotated MAC
+        self.assertEqual(len(pe._observations), 1)             # one logical device
+        key = next(iter(pe._observations))
+        self.assertTrue(key.startswith("wifi-fp:"))
+        self.assertEqual(
+            {o["mac"] for o in pe._observations[key]},
+            {"a2:11:11:11:11:11", "a6:22:22:22:22:22"},
+        )
+
+    def test_stable_mac_not_fingerprint_grouped(self):
+        # 08:.. is a stable (globally administered) MAC — must key by MAC even with
+        # a probe SSID, so two distinct stable devices never merge.
+        pe = PersistenceEngine()
+        pe.update([self._dev("08:11:11:11:11:11", probe=["HomeNet"])])
+        self.assertIn("08:11:11:11:11:11", pe._observations)
+
+    def test_randomized_without_fingerprint_keys_by_mac(self):
+        pe = PersistenceEngine()
+        pe.update([self._dev("a2:11:11:11:11:11")])  # no probe SSID -> weak
+        self.assertIn("a2:11:11:11:11:11", pe._observations)
+
+    def test_event_carries_fingerprint_mac_and_label(self):
+        pe = PersistenceEngine(alert_threshold=0.3, poll_interval_seconds=240)
+        fpk = "wifi-fp:deadbeef01"
+        pe._observations[fpk] = [_obs(m) for m in [2, 7, 12, 17]]
+        for o in pe._observations[fpk]:
+            o["mac"] = "a2:11:11:11:11:11"
+        pe._fingerprint_labels[fpk] = "HomeNet"
+        events = pe.update([], gps_fix=None)   # score the pre-seeded series
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].fingerprint, fpk)
+        self.assertEqual(events[0].fingerprint_label, "HomeNet")
+        self.assertEqual(events[0].mac, "a2:11:11:11:11:11")   # representative MAC, not the key
+
+
 if __name__ == "__main__":
     unittest.main()
