@@ -315,6 +315,10 @@ tr:hover td { background: #161b22; }
 }
 
 /* ── Nearby (mobile) proximity cards ─────────────────────────────────────── */
+#tab-nearby {
+  position: relative;
+}
+
 #nearby-feed {
   flex: 1;
   overflow-y: auto;
@@ -323,6 +327,35 @@ tr:hover td { background: #161b22; }
   flex-direction: column;
   gap: 8px;
 }
+
+/* Up/down paging buttons — a small touchscreen's scroll gesture can be
+   unreliable, so give a tap-friendly fallback for scrolling the feed. */
+.nearby-scroll {
+  position: absolute;
+  right: 10px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 20;
+}
+
+.nearby-scroll-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(33, 38, 45, 0.9);
+  border: 1px solid #30363d;
+  color: #58a6ff;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.nearby-scroll-btn:active { background: #30363d; }
 
 .nearby-card {
   background: #161b22;
@@ -438,4 +471,7 @@ tr:hover td { background: #161b22; }
   .nearby-signal { font-size: 11px; }
   .nearby-meta { font-size: 10px; }
   .prox-dot { width: 12px; height: 12px; }
+
+  .nearby-scroll { right: 6px; bottom: 8px; gap: 6px; }
+  .nearby-scroll-btn { width: 38px; height: 38px; font-size: 14px; }
 }

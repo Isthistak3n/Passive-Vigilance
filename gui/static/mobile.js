@@ -194,6 +194,22 @@ function renderNearby() {
   setBadge('badge-nearby', state.nearby.length);
 }
 
+// ── Nearby feed scroll buttons ──────────────────────────────────────────────
+// A small touchscreen's drag-to-scroll can be unreliable, so give a
+// tap-friendly up/down fallback that pages the feed by ~80% of its height.
+(() => {
+  const feed = document.getElementById('nearby-feed');
+  const up = document.getElementById('nearby-scroll-up');
+  const down = document.getElementById('nearby-scroll-down');
+  if (!feed || !up || !down) return;
+  up.addEventListener('click', () => {
+    feed.scrollBy({ top: -feed.clientHeight * 0.8, behavior: 'smooth' });
+  });
+  down.addEventListener('click', () => {
+    feed.scrollBy({ top: feed.clientHeight * 0.8, behavior: 'smooth' });
+  });
+})();
+
 // Search filters
 ['wifi', 'aircraft', 'drone'].forEach(tab => {
   const el = document.getElementById(`${tab}-search`);
