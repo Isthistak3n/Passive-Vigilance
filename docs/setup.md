@@ -336,34 +336,73 @@ If `wlan1` reverts to managed mode after reboot:
 
 ---
 
-## Bluetooth (USB dongle — optional)
+## Bluetooth / BLE (USB dongle — optional)
 
-Bluetooth/BLE capture uses a **USB Bluetooth dongle** as a Kismet
-`linuxbluetooth` source. On a node with a GPS HAT, prefer a USB dongle over the
-onboard Bluetooth — the onboard radio shares the GPS-HAT UART and can't be used
-for both (issue #48).
+BLE capture is done by Passive Vigilance's **own passive scanner**
+(`modules/ble_scanner.py`), which opens a **raw HCI socket** on a USB Bluetooth
+dongle and listens to LE Advertising Reports without ever transmitting (no
+SCAN_REQ). This recovers the advertisement payload — manufacturer/company id,
+service UUIDs, advertised name — and a **real per-advert RSSI** that the older
+Kismet BT feed reported as a flat `0`. That payload is what fingerprints a
+randomized-MAC device across address rotation (see
+[design-ble-advertisement-capture.md](design-ble-advertisement-capture.md)).
 
-A fresh dongle is usually **rfkill soft-blocked**, which Kismet (running as an
-unprivileged user) cannot clear itself. Unblock it, then make the source durable:
+On a node with a GPS HAT, prefer a USB dongle over the onboard Bluetooth — the
+onboard radio shares the GPS-HAT UART and can't be used for both (issue #48).
 
-```bash
-# 1. Confirm the controller is present and see the block state
-rfkill list bluetooth          # look for "Soft blocked: yes" on hciN
-hciconfig -a                   # the dongle appears as hci0
+> **Why not Kismet or BlueZ's advertisement monitor?** BlueZ's offloaded
+> `AdvertisementMonitor` API is unsupported on the Edimax controller used here
+> (and on many cheap dongles), and Kismet's `linuxbluetooth` source never
+> surfaced real RSSI. Raw HCI is the production primitive. **If you previously
+> ran a Kismet `linuxbluetooth` source, remove it** (delete the
+> `source=...,type=linuxbluetooth` line from `/etc/kismet/kismet_site.conf` and
+> restart Kismet) so PV's scanner owns the controller — two readers contend for
+> the same HCI device.
 
-# 2. Clear the block (persisted across reboots by systemd-rfkill)
-sudo rfkill unblock bluetooth
+### Enable
 
-# 3. Make the Kismet source survive restarts
-echo 'source=hci0:name=bluetooth,type=linuxbluetooth' | sudo tee -a /etc/kismet/kismet_site.conf
-# (already-running Kismet auto-detects/retries hci0 once unblocked; the config
-#  line guarantees it after the next restart)
+```ini
+# .env
+BLE_SCANNER_ENABLED=true
+BLE_HCI_DEVICE=          # blank = auto-detect; or pin e.g. hci0 / hci1
 ```
 
-Leave the `bluetooth` system service **disabled** — Kismet's BT capture talks to
-the controller directly and `bluetoothd` would compete with it. Verify capture
-with the Kismet REST API: the `hci0` source should report `running=1` and BT/BLE
-devices (phyname `Bluetooth`) should start appearing.
+The HCI index is **auto-detected** — `BLE_HCI_DEVICE` wins, else the preferred
+index, else the lowest present controller, else `hci0`. This matters because a
+USB re-enumeration can move the dongle to `hci1`; auto-detect keeps capture alive
+across that without a config edit.
+
+### Clear the rfkill block
+
+A fresh dongle is usually **rfkill soft-blocked**:
+
+```bash
+rfkill list bluetooth          # look for "Soft blocked: yes" on hciN
+sudo rfkill unblock bluetooth  # persisted across reboots by systemd-rfkill
+hciconfig -a                   # the dongle should appear up (e.g. hci0)
+```
+
+Leave the `bluetooth` system service **disabled** — the scanner talks to the
+controller directly and `bluetoothd` would compete with it.
+
+### Grant raw-socket capability to the service
+
+A raw HCI socket needs `CAP_NET_RAW` + `CAP_NET_ADMIN`. The service unit grants
+them via **`AmbientCapabilities`**:
+
+```ini
+# deploy/passive-vigilance.service  (installed by install.sh)
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+```
+
+> **Do NOT use `CapabilityBoundingSet` for this.** A bounding set restricts the
+> caps a process may ever hold, which strips the setuid/setgid caps `sudo` needs
+> — that breaks the SDR coordinator's `sudo systemctl stop readsb`, which in turn
+> starves the shared SDR and floods DroneRF into auto-disable. `AmbientCapabilities`
+> alone grants the raw-socket caps without that side effect.
+
+Verify capture: BLE advertisements should appear in the GUI's WiFi/BT panel with a
+non-zero RSSI and (where the advertiser exposes one) a `ble-fp:` fingerprint label.
 
 ---
 
@@ -1074,11 +1113,16 @@ by the installer — no separate `pip install` needed.
 
 | Tab | Contents |
 |-----|----------|
-| Map | Live Leaflet map; WiFi, aircraft, and drone RF markers color-coded by alert level |
-| WiFi/BT | Table of all persistence detections with score, MAC type, manufacturer |
-| Aircraft | ADS-B aircraft table with callsign, altitude, speed; emergency rows highlighted |
+| Map | Live Leaflet map; WiFi, aircraft, and drone RF markers color-coded by alert level; aircraft markers **decay by recency** (~120 s) so the map shows the present sky |
+| WiFi/BT | Table of detections with score, MAC type, manufacturer, and a **Contact** designator (`CLASS-IDENT-#` track label, persisted across MAC rotation) — replaces the old Device column |
+| Aircraft | ADS-B aircraft table keyed by ICAO (one row per airframe), retained as a detection log; callsign, altitude, speed; emergency rows highlighted |
 | Drone RF | Drone RF detection table with frequency and power |
 | Alerts | Live alert feed — WiFi, aircraft, drone, and system health events |
+
+Contacts and aircraft now **persist across a page refresh** — `/api/aircraft`
+re-seeds from the live per-ICAO index, not a bounded push-log. The aircraft
+detection log is retained for `AIRCRAFT_RETENTION_SECONDS` (default `3600`); set
+it in `.env` to widen or narrow the table's memory.
 
 Sensor health indicators (GPS / WiFi / ADS-B / Drone) turn green or red in the
 header bar based on `/api/status` polled every 5 seconds.

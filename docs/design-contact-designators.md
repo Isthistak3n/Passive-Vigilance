@@ -1,5 +1,10 @@
 # Design note: contact designators for WiFi/BT devices
 
+> **Status: SHIPPED & deployed (2026-06-14).** Live in `modules/contact_designator.py`
+> with the sequential number persisted in the entity store
+> (`entity_store.assign_contact_number`, keyed by the rotation-stable fingerprint),
+> surfaced as the GUI's **Contact** column. The redundant Device column was removed.
+
 ## Why
 
 The WiFi/BT panel lists devices by raw MAC (or fingerprint hash) — unreadable, and

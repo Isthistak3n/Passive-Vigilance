@@ -4,7 +4,18 @@
 and design §Phase F. Written 2026-06-10, motivated directly by soak #1's
 post-freeze novelty flood.
 **Companion:** [roadmap-fixed-node-prototype.md](roadmap-fixed-node-prototype.md),
-[design-detection-modes.md](design-detection-modes.md).
+[design-detection-modes.md](design-detection-modes.md),
+[design-ble-advertisement-capture.md](design-ble-advertisement-capture.md).
+
+> **Update (2026-06-14) — the within-session half is SHIPPED and deployed.** The
+> capture prerequisite is met (passive BLE raw-HCI advertisement capture with real
+> RSSI) and the per-modality signatures + keying are live: `wifi-fp:` (probed SSIDs
+> + IE-set hash) and `ble-fp:` (vendor/services/name) via
+> [`modules.device_identity`](../modules/device_identity.py), keyed into both fixed
+> and mobile scoring. This collapses a device's rotating MACs to one identity
+> *within a session* and cut the flood ~36→3–5 flags/cycle on chase. **What remains
+> for P4** is the *cross-session* pass below: linking these fingerprints into stable
+> entities across days and emitting the "returning entity" signal.
 
 ---
 
@@ -83,20 +94,23 @@ fingerprints / probe evidence into stable entities." This note specifies the
    (union-find over shared fingerprints, as the probe-SSID grouping already does);
 3. surfaces **"returning entity"** as a first-class signal.
 
-## Capture requirements — the prerequisite we do not yet meet
+## Capture requirements — MET (2026-06)
 
-We currently poll **device-level summaries** from Kismet. Fingerprinting needs the
-raw payload, which means new capture work:
+Originally we polled only **device-level summaries** from Kismet. Fingerprinting
+needed the raw payload; that capture work is now done:
 
-- **WiFi:** pull each device's **IE set / vendor IEs** from Kismet, not just the
-  probe-SSID list. (Verify field paths against the live daemon — the Kismet
-  leaf-key gotcha applies.)
-- **BLE:** capture the **advertisement payload** (manufacturer data, service
-  UUIDs) **and per-advert RSSI** — which currently reads `0`. Investigate the HCI
-  *LE Advertising Report* path, which carries RSSI; if we can surface it, BLE also
-  inherits the proximity/approaching signals.
-- **Store:** key `device_fingerprint` by the signature, with the observed rotating
-  MACs recorded as evidence under it.
+- **WiFi:** ✅ Kismet's `probe_fingerprint` (the IE-set hash) is folded into the
+  `wifi-fp:` signature alongside the named probe SSIDs ([`modules.wifi_fingerprint`](../modules/wifi_fingerprint.py)).
+- **BLE:** ✅ a passive raw-HCI scanner ([`modules.ble_scanner`](../modules/ble_scanner.py))
+  reads LE Advertising Reports directly — manufacturer/company ids, service UUIDs,
+  service data, name **and a real per-advert RSSI** (Kismet's BLE feed reported a
+  flat `0`). BlueZ's offloaded advertisement-monitor path didn't work on this
+  controller; raw HCI is the production primitive. Restores the proximity/approaching
+  signals for BLE.
+- **Store:** the rotation-stable fingerprint is the scoring key; the entity store's
+  `device_fingerprint`/`contact_designator` tables persist per-device evidence and a
+  stable contact number. The remaining piece is keying the *cross-session* entity
+  resolution by that signature (below).
 
 ## Signals this unlocks
 
