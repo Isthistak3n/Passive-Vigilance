@@ -19,6 +19,12 @@ Group=${PI_USER}
 WorkingDirectory=/home/${PI_USER}/Passive-Vigilance
 EnvironmentFile=/home/${PI_USER}/Passive-Vigilance/.env
 ExecStart=/opt/passive-vigilance/venv/bin/python3 /home/${PI_USER}/Passive-Vigilance/main.py
+# Passive BLE capture (BLE_SCANNER_ENABLED=true) opens a raw HCI socket on hci0,
+# which needs CAP_NET_RAW + CAP_NET_ADMIN. Granted as ambient capabilities so they
+# apply to this non-root service process only — scoped here, not via setcap on the
+# shared python binary. Harmless when BLE is disabled (the socket is never opened).
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 # Type=notify: the orchestrator sends READY=1 once startup completes, then a
 # WATCHDOG=1 heartbeat only while capture is genuinely progressing. If capture
 # freezes, the heartbeats stop and systemd restarts the service after WatchdogSec

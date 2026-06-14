@@ -1276,3 +1276,56 @@ async def test_dispatch_alert_drops_when_backlog_is_full(orch):
 
     release.set()
     await _drain_alerts(orch)
+
+
+# ---------------------------------------------------------------------------
+# BLE scanner integration (Phase 2 step 5) — advert buffering + device merge
+# ---------------------------------------------------------------------------
+
+def _advert(address, rssi=-60, company_ids=None, service_uuids=None,
+            service_data_uuids=None, local_name="", appearance=None):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        address=address, rssi=rssi,
+        company_ids=company_ids or [], service_uuids=service_uuids or [],
+        service_data_uuids=service_data_uuids or [], local_name=local_name,
+        appearance=appearance,
+    )
+
+
+def test_ble_advert_buffered_as_btle_device(orch):
+    so = orch.sensor_orchestrator
+    so._on_ble_advert(_advert("c2:aa:bb:cc:dd:ee", rssi=-58,
+                              service_uuids=[0x180D], local_name="Band"))
+    devices = so._drain_ble_adverts()
+    assert len(devices) == 1
+    d = devices[0]
+    assert d["type"] == "BTLE"
+    assert d["last_signal"] == -58
+    assert d["service_uuids"] == [0x180D]
+    assert d["macaddr"] == "c2:aa:bb:cc:dd:ee"
+
+
+def test_drain_clears_buffer(orch):
+    so = orch.sensor_orchestrator
+    so._on_ble_advert(_advert("c2:aa:bb:cc:dd:ee"))
+    assert len(so._drain_ble_adverts()) == 1
+    assert so._drain_ble_adverts() == []   # second drain is empty
+
+
+def test_ble_advert_keeps_latest_per_address(orch):
+    so = orch.sensor_orchestrator
+    so._on_ble_advert(_advert("c2:11:11:11:11:11", rssi=-70))
+    so._on_ble_advert(_advert("c2:11:11:11:11:11", rssi=-55))
+    devices = so._drain_ble_adverts()
+    assert len(devices) == 1
+    assert devices[0]["last_signal"] == -55
+
+
+def test_buffered_ble_device_is_fingerprintable(orch):
+    # The converted device must key by ble-fp: through the unified scorer keying.
+    from modules.fixed_scoring import FixedScoring
+    so = orch.sensor_orchestrator
+    so._on_ble_advert(_advert("c2:aa:bb:cc:dd:ee", service_uuids=[0x180D], local_name="Band"))
+    device = so._drain_ble_adverts()[0]
+    assert FixedScoring._device_key(device).startswith("ble-fp:")

@@ -17,6 +17,8 @@ from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Optional
 
+from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
+
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     '''Great-circle distance in metres between two GPS coordinates.'''
@@ -61,6 +63,7 @@ class SensorOrchestrator:
         gui_server,
         entity_store=None,
         remote_id=None,
+        ble_scanner=None,
         session_id: str,
         session_start: datetime,
         session_dir: Path,
@@ -91,6 +94,16 @@ class SensorOrchestrator:
         # not inside any ScoringEngine. May be None (recording disabled).
         self.entity_store = entity_store
         self.remote_id = remote_id
+        # Passive BLE advertisement scanner (owns hci0). Optional — None unless
+        # BLE_SCANNER_ENABLED. It captures adverts continuously off the asyncio
+        # loop; we buffer the latest advert per address and flush the buffer into
+        # the device list each Kismet poll, so BLE flows through the same
+        # entity/scoring/GUI path as WiFi (it carries advert fields the unified
+        # fingerprint uses). Replaces Kismet's empty linuxbluetooth feed.
+        self.ble_scanner = ble_scanner
+        self._ble_adverts: dict = {}
+        if ble_scanner is not None:
+            ble_scanner.on_advert = self._on_ble_advert
 
         self.session_id = session_id
         self.session_start = session_start
@@ -418,6 +431,42 @@ class SensorOrchestrator:
                     self._stats["alerts_rate_limited"] += 1
         self._write_session_summary()
 
+    def _on_ble_advert(self, advert) -> None:
+        '''Buffer one passively-captured BLE advertisement as a device record.
+
+        Called from the asyncio loop's socket reader (same thread). Keyed by
+        address so only the latest advert per address is kept between polls; the
+        buffer is drained and merged into the device list in :meth:`_poll_kismet`.
+        Carries the advert fields the unified fingerprint consumes (the BLE side
+        of :mod:`modules.fixed_scoring`), plus a real RSSI as ``last_signal``.
+        '''
+        try:
+            mac = normalize_mac(advert.address)
+            self._ble_adverts[mac] = {
+                "macaddr": mac,
+                "type": "BTLE",
+                "phyname": "BTLE",
+                "name": advert.local_name or "",
+                "manuf": "",
+                "last_signal": advert.rssi,
+                "mac_type": get_mac_type(mac),
+                "is_randomized": is_randomized_mac(mac),
+                "company_ids": advert.company_ids,
+                "service_uuids": advert.service_uuids,
+                "service_data_uuids": advert.service_data_uuids,
+                "appearance": advert.appearance,
+            }
+        except Exception:  # a malformed advert must never disturb capture
+            logger.debug("BLE advert buffering failed", exc_info=True)
+
+    def _drain_ble_adverts(self) -> list:
+        '''Return and clear the BLE adverts buffered since the last poll.'''
+        if not self._ble_adverts:
+            return []
+        drained = list(self._ble_adverts.values())
+        self._ble_adverts = {}
+        return drained
+
     async def _poll_kismet(self) -> None:
         '''Poll Kismet for WiFi/BT devices; run persistence engine; fire alerts.'''
         try:
@@ -441,6 +490,12 @@ class SensorOrchestrator:
             logger.info("Sensor kismet recovered")
             self._sensor_health["kismet"] = True
             self._degraded_log_counter["kismet"] = 0
+
+        # Merge passively-captured BLE advertisements (if the scanner is running)
+        # so they flow through the same entity/scoring/GUI path as WiFi devices.
+        ble_devices = self._drain_ble_adverts()
+        if ble_devices:
+            devices = devices + ble_devices
         self._stats["kismet_devices_seen"] += len(devices)
 
         # Durable entity/observation recording — runs for EVERY node mode,
