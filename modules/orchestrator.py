@@ -196,11 +196,13 @@ class SensorOrchestrator:
         self._aircraft_index: dict[str, dict] = {}
         self._aircraft_track_min_m = float(os.getenv("AIRCRAFT_TRACK_MIN_METERS", "250"))
         self._aircraft_track_min_s = float(os.getenv("AIRCRAFT_TRACK_MIN_SECONDS", "15"))
-        # An aircraft not re-seen within this window is considered gone from the sky
-        # and drops from the live panel / index. Default 120s spans a DroneRF SDR
-        # slice gap (readsb is stopped while DroneRF scans) so a real target isn't
-        # flapped off by the time-share. Env-overridable.
-        self._aircraft_stale_s = float(os.getenv("AIRCRAFT_STALE_SECONDS", "120"))
+        # How long an aircraft is retained in the panel/index after it was last
+        # seen — this is the persistent detection LOG window (so the table survives a
+        # refresh, like the WiFi/BT tab), bounded so the index doesn't grow on a
+        # multi-day run. Default 1h. The map is a separate, shorter current-sky lens:
+        # the client fades/expires markers by recency (AIRCRAFT_MAP_DECAY_MS) so the
+        # map shows what's overhead now while the table keeps the log.
+        self._aircraft_retention_s = float(os.getenv("AIRCRAFT_RETENTION_SECONDS", "3600"))
         self.drone_detections: list[dict] = []
         # Index freq-band -> the drone event already in drone_detections, so a
         # persistent emitter heard on every sweep becomes ONE event (refreshed
@@ -452,26 +454,28 @@ class SensorOrchestrator:
             return float("inf")
 
     def _prune_aircraft_index(self, now: datetime) -> None:
-        """Remove aircraft not seen within the staleness window from the index."""
+        """Drop aircraft past the retention window so the index stays a bounded log."""
         stale = [
             icao for icao, ev in self._aircraft_index.items()
-            if self._aircraft_age_seconds(ev, now) > self._aircraft_stale_s
+            if self._aircraft_age_seconds(ev, now) > self._aircraft_retention_s
         ]
         for icao in stale:
             del self._aircraft_index[icao]
 
     def current_aircraft(self) -> list:
-        """The live current sky: aircraft seen within the staleness window.
+        """The retained aircraft detection log (one entry per ICAO, within the
+        retention window).
 
-        Serves /api/aircraft so a page refresh rebuilds the actual present sky from
-        the per-ICAO index (one entry per airframe, position updated in place),
-        instead of a bounded slice of the push-log. Read-only snapshot — safe to
-        call from the GUI thread; expiry happens in the poll loop.
+        Serves /api/aircraft so a page refresh rebuilds the panel from the per-ICAO
+        index — a persistent log that survives refresh, not a churn-evicted slice of
+        the push-log (P6). The map's shorter current-sky decay is applied client-side
+        by recency, so the table persists while the map shows what's overhead now.
+        Read-only snapshot — safe from the GUI thread; expiry happens in the poll loop.
         """
         now = datetime.now(timezone.utc)
         return [
             ev for ev in list(self._aircraft_index.values())
-            if self._aircraft_age_seconds(ev, now) <= self._aircraft_stale_s
+            if self._aircraft_age_seconds(ev, now) <= self._aircraft_retention_s
         ]
 
     def _on_ble_advert(self, advert) -> None:

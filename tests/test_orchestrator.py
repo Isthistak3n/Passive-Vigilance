@@ -1343,7 +1343,7 @@ def _ac(icao, age_s):
 
 def test_current_aircraft_returns_fresh_only(orch):
     so = orch.sensor_orchestrator
-    so._aircraft_stale_s = 120
+    so._aircraft_retention_s = 120
     so._aircraft_index = {"AAA": _ac("AAA", 0), "BBB": _ac("BBB", 30), "CCC": _ac("CCC", 300)}
     icaos = {a["icao"] for a in so.current_aircraft()}
     assert icaos == {"AAA", "BBB"}   # CCC (300s) is stale, excluded
@@ -1352,7 +1352,7 @@ def test_current_aircraft_returns_fresh_only(orch):
 def test_current_aircraft_is_read_only(orch):
     # current_aircraft() must not mutate the index (pruning is the poll loop's job)
     so = orch.sensor_orchestrator
-    so._aircraft_stale_s = 120
+    so._aircraft_retention_s = 120
     so._aircraft_index = {"AAA": _ac("AAA", 0), "CCC": _ac("CCC", 300)}
     so.current_aircraft()
     assert set(so._aircraft_index) == {"AAA", "CCC"}
@@ -1361,7 +1361,7 @@ def test_current_aircraft_is_read_only(orch):
 def test_prune_aircraft_index_removes_stale(orch):
     from datetime import datetime, timezone
     so = orch.sensor_orchestrator
-    so._aircraft_stale_s = 120
+    so._aircraft_retention_s = 120
     so._aircraft_index = {"AAA": _ac("AAA", 0), "CCC": _ac("CCC", 300)}
     so._prune_aircraft_index(datetime.now(timezone.utc))
     assert "AAA" in so._aircraft_index and "CCC" not in so._aircraft_index

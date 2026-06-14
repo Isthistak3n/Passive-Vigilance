@@ -34,9 +34,13 @@ function addWifiMarker(ev) {
   ).addTo(layers.wifi);
 }
 
-// An aircraft not re-seen within this window has left the sky — drop it from the
-// panel/map (matches the server's AIRCRAFT_STALE_SECONDS=120 current-sky window).
-const AIRCRAFT_STALE_MS = 120000;
+// Two lenses on the aircraft picture:
+//  - the TABLE keeps a persistent detection log (survives a refresh, like WiFi/BT)
+//    up to RETENTION (matches the server's AIRCRAFT_RETENTION_SECONDS=3600);
+//  - the MAP shows the current sky: a marker only appears within MAP_DECAY and
+//    shrinks/fades with age, then expires, so it reads what's overhead *now*.
+const AIRCRAFT_RETENTION_MS = 3600000;
+const AIRCRAFT_MAP_DECAY_MS = 120000;
 
 function aircraftAgeMs(e) {
   const t = e.last_seen || e.timestamp;
@@ -47,9 +51,9 @@ function aircraftAgeMs(e) {
 
 function addAircraftMarker(ev) {
   if (ev.lat == null || ev.lon == null) return;
-  // Recency decay: a fresh contact is full-size/bright, an aging one shrinks and
-  // fades toward grey, so the operator reads what's active *now*.
-  const frac = Math.max(0, 1 - aircraftAgeMs(ev) / AIRCRAFT_STALE_MS);
+  const age = aircraftAgeMs(ev);
+  if (age > AIRCRAFT_MAP_DECAY_MS) return;   // left the current sky — off the map
+  const frac = Math.max(0, 1 - age / AIRCRAFT_MAP_DECAY_MS);
   L.circleMarker([ev.lat, ev.lon], {
     radius: 4 + 4 * frac,
     color: ev.emergency ? '#f85149' : '#58a6ff',
@@ -156,9 +160,10 @@ function renderWifi() {
 
 function renderAircraft() {
   const q = document.getElementById('aircraft-search').value.toLowerCase();
-  // Decay: drop aircraft not seen within the staleness window so the panel is the
-  // live current sky, not a frozen pile of stale contacts (P6).
-  state.aircraft = state.aircraft.filter(e => aircraftAgeMs(e) <= AIRCRAFT_STALE_MS);
+  // Keep the table as a persistent log (survives refresh, like WiFi/BT), bounded by
+  // the retention window so it doesn't grow without limit. The current-sky decay is
+  // applied to the MAP markers (addAircraftMarker), not the table.
+  state.aircraft = state.aircraft.filter(e => aircraftAgeMs(e) <= AIRCRAFT_RETENTION_MS);
   setBadge('badge-aircraft', state.aircraft.length);
   const rows = state.aircraft
     .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
