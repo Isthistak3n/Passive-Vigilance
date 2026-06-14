@@ -124,6 +124,22 @@ class EntityStore:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_obs_timestamp ON observations(timestamp)"
         )
+        # Persisted contact-designator instance numbers (design-contact-designators).
+        # Maps a device's rotation-stable identity key to a number that is sequential
+        # within its CLASS-IDENT group and STABLE across rotations/restarts/sessions.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contact_designator (
+                identity_key   TEXT PRIMARY KEY,
+                group_key      TEXT NOT NULL,
+                number         INTEGER NOT NULL,
+                first_assigned TEXT
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contact_group ON contact_designator(group_key)"
+        )
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -246,9 +262,37 @@ class EntityStore:
     # ------------------------------------------------------------------
 
     def count(self, table: str) -> int:
-        if table not in ("probe_evidence", "device_fingerprint", "entities", "observations"):
+        if table not in ("probe_evidence", "device_fingerprint", "entities",
+                         "observations", "contact_designator"):
             raise ValueError(f"unknown table {table!r}")
         return self._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+
+    def assign_contact_number(self, identity_key: str, group_key: str,
+                              now: Optional[datetime] = None) -> int:
+        """Return this identity's stable instance number within ``group_key``.
+
+        Returns the existing number if the identity has one; otherwise assigns
+        ``max(number in group) + 1`` and persists it, so a device keeps the same
+        contact designator across rotations, restarts, and sessions. Called only
+        from the poll (asyncio) thread.
+        """
+        row = self._conn.execute(
+            "SELECT number FROM contact_designator WHERE identity_key = ?",
+            (identity_key,),
+        ).fetchone()
+        if row is not None:
+            return row["number"]
+        nxt = self._conn.execute(
+            "SELECT COALESCE(MAX(number), 0) + 1 AS n FROM contact_designator "
+            "WHERE group_key = ?", (group_key,),
+        ).fetchone()["n"]
+        ts = (now or datetime.now(timezone.utc)).isoformat()
+        self._conn.execute(
+            "INSERT INTO contact_designator (identity_key, group_key, number, first_assigned) "
+            "VALUES (?, ?, ?, ?)", (identity_key, group_key, nxt, ts),
+        )
+        self._conn.commit()
+        return nxt
 
     def probe_evidence_row(self, mac: str, ssid: str):
         return self._conn.execute(

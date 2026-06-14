@@ -289,3 +289,40 @@ def test_no_store_is_a_clean_noop(tmp_path):
     eng = PersistenceEngine()
     orch = _make_orch(eng, None, [_device()], tmp_path)
     asyncio.run(orch._poll_kismet())   # entity_store None -> skipped, no crash
+
+
+# ---------------------------------------------------------------------------
+# Contact designator — persisted, stable instance numbers
+# ---------------------------------------------------------------------------
+
+def test_contact_number_sequential_within_group():
+    s = _store()
+    assert s.assign_contact_number("wifi-fp:a", "AP-NETGEAR") == 1
+    assert s.assign_contact_number("wifi-fp:b", "AP-NETGEAR") == 2
+    assert s.assign_contact_number("wifi-fp:c", "AP-NETGEAR") == 3
+
+
+def test_contact_number_stable_for_same_identity():
+    s = _store()
+    first = s.assign_contact_number("wifi-fp:a", "AP-NETGEAR")
+    # re-assigning the same identity returns the same number, even after others join
+    s.assign_contact_number("wifi-fp:b", "AP-NETGEAR")
+    assert s.assign_contact_number("wifi-fp:a", "AP-NETGEAR") == first
+
+
+def test_contact_number_independent_per_group():
+    s = _store()
+    assert s.assign_contact_number("wifi-fp:a", "AP-NETGEAR") == 1
+    assert s.assign_contact_number("ble-fp:x", "BLE-Apple") == 1   # separate group resets
+
+
+def test_contact_number_survives_reopen():
+    import tempfile, os
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "e.db")
+    s1 = EntityStore(path)
+    n = s1.assign_contact_number("wifi-fp:a", "AP-NETGEAR")
+    s1.close()
+    s2 = EntityStore(path)
+    assert s2.assign_contact_number("wifi-fp:a", "AP-NETGEAR") == n   # stable across restart
+    s2.close()

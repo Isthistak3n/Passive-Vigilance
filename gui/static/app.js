@@ -117,7 +117,9 @@ function renderWifi() {
   document.getElementById('wifi-tbody').innerHTML = rows.map(g => {
     const e = g.latest;
     const n = g.macs.size;
-    const identity = e.fingerprint_label ? esc(e.fingerprint_label) : '—';
+    // Contact designator (CLASS-IDENT-#); its CLASS prefix encodes the device type,
+    // so there is no separate Device column. Fall back to the older label/MAC.
+    const identity = e.contact ? esc(e.contact) : (e.fingerprint_label ? esc(e.fingerprint_label) : '—');
     const macCell = `<code>${e.mac || '—'}</code>`
       + (n > 1 ? ` <span class="addr-count" title="${n} rotating addresses">+${n - 1}</span>` : '');
     return `
@@ -125,7 +127,6 @@ function renderWifi() {
       <td>${identity}</td>
       <td>${macCell}</td>
       <td>${e.ssid ? esc(e.ssid) : '—'}</td>
-      <td>${e.device_type || '—'}</td>
       <td>${e.mac_type || '—'}</td>
       <td class="${alertClass[e.alert_level] || 'alert-new'}">${(e.score || 0).toFixed(2)}</td>
       <td class="${alertClass[e.alert_level] || 'alert-new'}">${e.alert_level || '—'}</td>
