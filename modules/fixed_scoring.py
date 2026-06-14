@@ -38,11 +38,10 @@ Durability (design 5.1) lives in :class:`modules.baseline_store.BaselineStore`.
 import logging
 import os
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Callable, Optional
 
+from modules import device_identity
 from modules.baseline_store import BaselineStore, DeviceProfile, _DEFAULT_DB_PATH
-from modules.ble_fingerprint import compute_ble_fingerprint
 from modules.mac_utils import (
     get_mac_type,
     is_randomized_mac,
@@ -50,7 +49,6 @@ from modules.mac_utils import (
 )
 from modules.persistence import DetectionEvent, PersistenceEngine
 from modules.scoring_engine import ScoringEngine
-from modules.wifi_fingerprint import compute_wifi_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -227,46 +225,13 @@ class FixedScoring(ScoringEngine):
         mac = normalize_mac(raw)
         if not is_randomized_mac(mac):
             return "mac:" + mac
-        return FixedScoring._fingerprint_key(device) or "mac:" + mac
-
-    @staticmethod
-    def _fingerprint_key(device: dict) -> Optional[str]:
-        """The strong, rotation-stable fingerprint key for a randomized device, or
-        None if it cannot be fingerprinted strongly enough to group safely.
-
-        A *weak* fingerprint (bare vendor id / no named probe SSID) returns None so
-        distinct devices are never merged — the same safeguard the signature modules
-        apply. BLE and WiFi are handled by their respective modules; which one to use
-        is decided by the modality of the record.
-        """
-        if FixedScoring._is_ble_device(device):
-            fp = compute_ble_fingerprint(FixedScoring._ble_advert_view(device))
-        else:
-            fp = compute_wifi_fingerprint(device)
-        return fp.key if (fp is not None and fp.strong) else None
+        # Randomized: a strong content fingerprint (shared with mobile) or the MAC.
+        return device_identity.strong_fingerprint(device) or "mac:" + mac
 
     @staticmethod
     def _is_ble_device(device: dict) -> bool:
-        """True if the record is a BLE advertiser — by its phy/type or by carrying
-        advertisement fields (populated once the BLE scanner feeds the pipeline)."""
-        kind = f"{device.get('type', '')} {device.get('phyname', '')}"
-        if "BTLE" in kind or "BLE" in kind or "Bluetooth" in kind:
-            return True
-        return any(device.get(k) for k in
-                   ("company_ids", "service_uuids", "service_data_uuids", "appearance"))
-
-    @staticmethod
-    def _ble_advert_view(device: dict) -> SimpleNamespace:
-        """Adapt a device record's flat advertisement fields into the attribute view
-        :func:`compute_ble_fingerprint` expects. Absent fields read as empty, so a
-        Kismet BLE record (no advertisement payload) fingerprints weakly -> None."""
-        return SimpleNamespace(
-            company_ids=device.get("company_ids") or [],
-            service_uuids=device.get("service_uuids") or [],
-            service_data_uuids=device.get("service_data_uuids") or [],
-            local_name=device.get("name") or "",
-            appearance=device.get("appearance"),
-        )
+        """True if the record is a BLE advertiser. Delegates to the shared resolver."""
+        return device_identity.is_ble_device(device)
 
     # ------------------------------------------------------------------
     # ScoringEngine interface
@@ -495,20 +460,8 @@ class FixedScoring(ScoringEngine):
             mac_type=get_mac_type(mac),
             ssid=device.get("name", ""),
             fingerprint=str(profile.key),
-            fingerprint_label=self._fingerprint_label(device, str(profile.key)),
+            fingerprint_label=device_identity.fingerprint_label(device),
         )
-
-    @staticmethod
-    def _fingerprint_label(device: dict, key: str) -> str:
-        """Human-readable identity for a fingerprinted device, for the GUI to label
-        the collapsed row. Empty for mac:-keyed devices (the GUI shows the MAC)."""
-        if not (key.startswith("wifi-fp:") or key.startswith("ble-fp:")):
-            return ""
-        if FixedScoring._is_ble_device(device):
-            fp = compute_ble_fingerprint(FixedScoring._ble_advert_view(device))
-        else:
-            fp = compute_wifi_fingerprint(device)
-        return fp.label if fp is not None else ""
 
     def close(self) -> None:
         self._store.close()
