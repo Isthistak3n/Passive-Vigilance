@@ -494,7 +494,21 @@ class FixedScoring(ScoringEngine):
             alert_level=alert_level,
             mac_type=get_mac_type(mac),
             ssid=device.get("name", ""),
+            fingerprint=str(profile.key),
+            fingerprint_label=self._fingerprint_label(device, str(profile.key)),
         )
+
+    @staticmethod
+    def _fingerprint_label(device: dict, key: str) -> str:
+        """Human-readable identity for a fingerprinted device, for the GUI to label
+        the collapsed row. Empty for mac:-keyed devices (the GUI shows the MAC)."""
+        if not (key.startswith("wifi-fp:") or key.startswith("ble-fp:")):
+            return ""
+        if FixedScoring._is_ble_device(device):
+            fp = compute_ble_fingerprint(FixedScoring._ble_advert_view(device))
+        else:
+            fp = compute_wifi_fingerprint(device)
+        return fp.label if fp is not None else ""
 
     def close(self) -> None:
         self._store.close()

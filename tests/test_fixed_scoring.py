@@ -234,6 +234,30 @@ def test_ble_no_advert_not_novelty_flagged():
     assert engine.update([dev]) == []   # persists, but still suppressed
 
 
+def test_event_carries_fingerprint_and_label():
+    # A flagged fingerprinted device exposes its identity key + label for the GUI.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    engine.update([_ble_device("c2:11:11:11:11:11", services=[0x180D], name="Band")])
+    clock[0] = T0 + timedelta(hours=2)
+    new = _ble_device("c2:99:99:99:99:99", services=[0x1234], name="Tracker")
+    engine.update([new])
+    events = engine.update([new])
+    assert events[0].fingerprint.startswith("ble-fp:")
+    assert events[0].fingerprint_label == "Tracker"
+
+
+def test_mac_keyed_event_has_blank_fingerprint_label():
+    # A mac:-keyed device has no special identity label (the GUI shows the MAC).
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    engine.update([_static_device(mac="00:11:22:33:44:55")])
+    clock[0] = T0 + timedelta(hours=2)
+    other = _static_device(mac="00:11:22:33:44:66")
+    engine.update([other])
+    events = engine.update([other])
+    assert events[0].fingerprint == "mac:00:11:22:33:44:66"
+    assert events[0].fingerprint_label == ""
+
+
 # ---------------------------------------------------------------------------
 # Interface robustness
 # ---------------------------------------------------------------------------

@@ -486,6 +486,8 @@ class SensorOrchestrator:
                     "alert_level": event.alert_level, "manufacturer": event.manufacturer,
                     "device_type": event.device_type, "mac_type": event.mac_type,
                     "ssid": event.ssid,
+                    "fingerprint": event.fingerprint,
+                    "fingerprint_label": event.fingerprint_label,
                     # Which signal(s) fired — so a soak can decompose the flag mix.
                     "score_breakdown": event.score_breakdown,
                     "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),

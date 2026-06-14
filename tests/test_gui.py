@@ -54,6 +54,13 @@ class TestGUIServerPushEvent(unittest.TestCase):
         self.gui.push_event("wifi", ev)
         self.assertEqual(self.gui._recent_wifi[0]["ssid"], "NETGEAR13")
 
+    def test_push_wifi_preserves_fingerprint(self):
+        ev = {"mac": "aa:bb:cc:dd:ee:ff", "fingerprint": "ble-fp:abc123",
+              "fingerprint_label": "Apple"}
+        self.gui.push_event("wifi", ev)
+        self.assertEqual(self.gui._recent_wifi[0]["fingerprint"], "ble-fp:abc123")
+        self.assertEqual(self.gui._recent_wifi[0]["fingerprint_label"], "Apple")
+
     def test_push_aircraft_appends_to_recent(self):
         ev = {"icao": "abc123", "callsign": "BA001"}
         self.gui.push_event("aircraft", ev)
