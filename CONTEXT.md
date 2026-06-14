@@ -2,8 +2,8 @@
 
 > **Maintained by:** Claude Code + Cody (updated at session close and on merges to `main`)
 > **Read by:** Claude Code at the start of every session
-> **Last updated:** 2026-06-07
-> **Updated by:** [claude-code] — freshness pass: sprint, architecture status, branches, ports
+> **Last updated:** 2026-06-14
+> **Updated by:** [claude-code] (survkis) — mobile GUI Nearby tab live, Web GUI capability row refreshed
 >
 > **Scope note:** this file holds *live state* only (hardware, ports, branches,
 > handoffs). How-the-code-works lives in `CLAUDE.md`; how-we-work (roles, branch
@@ -127,7 +127,7 @@ authority for what is actually present and working on each node.
 | Entity/observation store | ✅ Complete | — | ✅ Recorded at poll site |
 | Persistence scoring | ✅ Complete | ✅ (runs in orchestrator) | ✅ (fixed-mode FixedScoring) |
 | Alert engine | ✅ Complete | ⚠️ Console only (no backend configured) | ✅ Ntfy active |
-| Web GUI | ✅ Complete | ❌ Disabled (GUI_ENABLED=false) | ✅ Active (`GUI_PORT=8088`) |
+| Web GUI | ✅ Complete | ✅ Active — standalone mobile GUI (`NODE_MODE=mobile`, `GUI_PORT=8088`), Nearby proximity tab, no Leaflet | ✅ Active (`GUI_PORT=8088`) |
 
 ---
 
@@ -155,12 +155,13 @@ stack currently deployed on `chase` for the soak; it PRs after the walk-test.
 |---------|------|-----------|-------|
 | Kismet Web UI | 2501 | 0.0.0.0 | Auth via cookie token |
 | readsb / dump1090 | 8080 | localhost | JSON aircraft feed (`/data/aircraft.json`) |
-| Main orchestrator + Web GUI | 8088 | 0.0.0.0 | `GUI_PORT=8088` on chase — avoids the readsb :8080 collision |
+| Main orchestrator + Web GUI | 8088 | 0.0.0.0 | `GUI_PORT=8088` on both nodes — avoids the readsb :8080 collision on chase |
 
 > **Port note:** readsb/tar1090 and the GUI both *default* to 8080, so co-locating
 > them needs the GUI moved. On `chase` this is resolved with `GUI_PORT=8088` in
 > `.env` (GUI reachable at `http://<chase>:8088`). On `survkis` there is no SDR, so
-> no collision.
+> no collision, but `GUI_PORT=8088` is set the same way for consistency —
+> `GUI_ENABLED=true`, serving the standalone mobile GUI at `http://<survkis>:8088`.
 
 ---
 
@@ -247,6 +248,8 @@ scan). Commit signing is not yet configured on the Pis — see Known Issues.
 [2026-05-30] Branch model simplified to single-tier: all work branches → main directly. `dev` was bypassed in practice (all PRs during this session went to main); retired. Commit-style conflict resolved: AGENTS.md governs agent commit subjects ([agent] type(scope):); CLAUDE.md governs PR titles, release notes, human commits. Version string bumped to 0.4.3-alpha. README/setup.md/CLAUDE.md architecture tree synced. `dev` pending deletion after this PR cycle.
 
 [2026-06-07] chase fixed-node session. Landed P0 endurance hardening (#74), the approaching trigger (#75), Bluetooth reboot durability (#76), reliability fixes — stall watchdog + GUI bind-retry (#79), and the dashboard baseline header + aircraft-panel fixes (#80). Diagnosed and fixed two chase outages: a silent sensor stall (counters frozen while the health banner stayed green — hence the watchdog) and a post-reboot crash loop (NODE_MODE missing from `.env`). Restarted chase clean on a wiped baseline; a 48h soak is running the P0+P1+P2 stack (`feat/egregious-during-baseline`), freezing ~2026-06-09 22:55 UTC, after which the P1 walk-test runs. Bluetooth re-enabled and made durable. Test suite at 417. Docs de-duplicated (#81) and refreshed (this pass); `_VERSION` bumped to 0.6.0-alpha. Open finding: DSI touchscreen still non-functional; DroneRF still disabled on #63.
+
+[2026-06-14] survkis mobile-GUI session. `NODE_MODE=mobile` + `GUI_ENABLED=true`/`GUI_PORT=8088` now active on survkis (previously disabled). Landed a standalone mobile GUI (#113): `gui/templates/mobile.html` + `gui/static/mobile.js`, served instead of the Leaflet `index.html` when `NODE_MODE=mobile`; new `/api/nearby` live proximity feed (independent of the persistence/GPS-cluster gate), with a "Nearby" tab showing RSSI-sorted device cards, proximity dots, and alert-tier accents cross-referenced from the persistence feed. Followed up (#116) with a CSS selector bug fix (`.nearby-feed` never matched `#nearby-feed`, so the feed couldn't scroll past the first screenful) and added floating up/down paging buttons as a touchscreen fallback. Verified end-to-end: service restarted clean, `/api/nearby` serving live data, kiosk on the 800x480 DSI screen rendering and scrolling correctly (`grim` screenshots). Test suite at 537. Planned: a drive test to validate Nearby-feed behavior at speed and mobile persistence scoring (location-diversity) against real traffic.
 
 ---
 
