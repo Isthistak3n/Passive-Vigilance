@@ -10,7 +10,30 @@ import unittest
 from modules.ble_scanner import (
     parse_advertisement_data,
     parse_hci_advertising_report,
+    resolve_hci_index,
 )
+
+
+class TestResolveHciIndex(unittest.TestCase):
+
+    def test_env_override_numeric(self):
+        self.assertEqual(resolve_hci_index(preferred=0, available=[0], env="1"), 1)
+
+    def test_env_override_hci_prefixed(self):
+        self.assertEqual(resolve_hci_index(env="hci2"), 2)
+
+    def test_preferred_when_no_env(self):
+        self.assertEqual(resolve_hci_index(preferred=3, available=[0, 1]), 3)
+
+    def test_lowest_present_when_no_env_or_preferred(self):
+        # dongle re-enumerated to hci1 — auto-detect must find it, not hardcode 0
+        self.assertEqual(resolve_hci_index(available=[1]), 1)
+
+    def test_lowest_of_multiple(self):
+        self.assertEqual(resolve_hci_index(available=[2, 1, 3]), 1)
+
+    def test_default_zero_when_nothing(self):
+        self.assertEqual(resolve_hci_index(), 0)
 
 
 def _ad(*structs: bytes) -> bytes:
