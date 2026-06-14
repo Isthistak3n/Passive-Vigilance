@@ -28,6 +28,7 @@ class TestGUIServerInit(unittest.TestCase):
         self.assertEqual(self.gui._recent_aircraft, [])
         self.assertEqual(self.gui._recent_drone, [])
         self.assertEqual(self.gui._recent_alerts, [])
+        self.assertEqual(self.gui._recent_nearby, [])
 
     def test_clients_list_is_empty_at_init(self):
         self.assertEqual(self.gui._clients, [])
@@ -75,6 +76,18 @@ class TestGUIServerPushEvent(unittest.TestCase):
         ev = {"kind": "wifi", "title": "Test alert", "body": "Details"}
         self.gui.push_event("alert", ev)
         self.assertEqual(len(self.gui._recent_alerts), 1)
+
+    def test_push_nearby_appends_to_recent(self):
+        ev = {"mac": "aa:bb:cc:dd:ee:ff", "name": "Phone", "last_signal": -55}
+        self.gui.push_event("nearby", ev)
+        self.assertEqual(len(self.gui._recent_nearby), 1)
+        self.assertEqual(self.gui._recent_nearby[0]["last_signal"], -55)
+
+    def test_push_nearby_same_mac_dedups_to_one_entry(self):
+        self.gui.push_event("nearby", {"mac": "aa:bb:cc:dd:ee:ff", "last_signal": -70})
+        self.gui.push_event("nearby", {"mac": "aa:bb:cc:dd:ee:ff", "last_signal": -50})
+        self.assertEqual(len(self.gui._recent_nearby), 1)
+        self.assertEqual(self.gui._recent_nearby[0]["last_signal"], -50)
 
     def test_push_aircraft_same_icao_dedups_to_one_entry(self):
         # A plane re-seen every poll must collapse to ONE cache entry (its
@@ -359,8 +372,59 @@ class TestModeEndpoint(unittest.TestCase):
         p = self._env()
         client = self._client("", p)
         for route in ("/api/status", "/api/wifi", "/api/aircraft",
-                      "/api/drone", "/api/alerts"):
+                      "/api/drone", "/api/alerts", "/api/nearby"):
             self.assertEqual(client.get(route).status_code, 200, route)
+
+
+class TestGUIServerNearbyEndpoint(unittest.TestCase):
+    """/api/nearby — live proximity feed for the mobile GUI."""
+
+    def setUp(self):
+        from gui.server import GUIServer
+        self.gui = GUIServer()
+        if self.gui.app is None:
+            self.skipTest("Flask not installed — skipping nearby-endpoint tests")
+        self.client = self.gui.app.test_client()
+
+    def test_empty_by_default(self):
+        self.assertEqual(self.client.get("/api/nearby").get_json(), [])
+
+    def test_returns_pushed_devices(self):
+        self.gui.push_event("nearby", {"mac": "aa:bb:cc:dd:ee:ff", "last_signal": -60})
+        body = self.client.get("/api/nearby").get_json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["mac"], "aa:bb:cc:dd:ee:ff")
+
+
+class TestGUIServerTemplateSelection(unittest.TestCase):
+    """index() serves mobile.html when NODE_MODE=mobile, index.html otherwise."""
+
+    def _env(self, mode):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, ".env")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(f"NODE_MODE={mode}\n")
+        return p
+
+    def _client(self, mode):
+        from gui.server import GUIServer
+        gui = GUIServer(env_path=self._env(mode))
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping template-selection tests")
+        return gui.app.test_client()
+
+    def test_mobile_mode_serves_mobile_template(self):
+        resp = self._client("mobile").get("/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'data-tab="nearby"', resp.data)
+        self.assertNotIn(b'id="map"', resp.data)
+
+    def test_fixed_mode_serves_index_template(self):
+        resp = self._client("fixed").get("/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'id="map"', resp.data)
+        self.assertNotIn(b'data-tab="nearby"', resp.data)
 
 
 class TestGUIServerAuth(unittest.TestCase):

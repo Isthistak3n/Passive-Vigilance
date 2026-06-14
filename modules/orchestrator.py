@@ -498,6 +498,25 @@ class SensorOrchestrator:
             devices = devices + ble_devices
         self._stats["kismet_devices_seen"] += len(devices)
 
+        # Live "nearby" feed for the mobile GUI — every currently-polled device
+        # (WiFi + BLE), independent of the persistence engine's score/GPS-cluster
+        # gate below. That gate is correct for long-term tail detection but means
+        # "what's around me right now" can show nothing for a long time on a
+        # fresh walk, so this feed exists purely for proximity awareness.
+        if self.gui_server is not None:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for d in devices:
+                self.gui_server.push_event("nearby", {
+                    "mac": d.get("macaddr"),
+                    "name": d.get("name"),
+                    "manufacturer": d.get("manuf"),
+                    "device_type": d.get("type"),
+                    "mac_type": d.get("mac_type"),
+                    "last_signal": d.get("last_signal"),
+                    "probe_ssids": d.get("probe_ssids"),
+                    "timestamp": now_iso,
+                })
+
         # Durable entity/observation recording — runs for EVERY node mode,
         # independent of which ScoringEngine processes the poll. Same device list
         # and GPS fix the scorer sees. Guarded: a store failure must never affect
