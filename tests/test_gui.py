@@ -49,6 +49,11 @@ class TestGUIServerPushEvent(unittest.TestCase):
         self.assertEqual(len(self.gui._recent_wifi), 1)
         self.assertEqual(self.gui._recent_wifi[0]["mac"], "aa:bb:cc:dd:ee:ff")
 
+    def test_push_wifi_preserves_ssid(self):
+        ev = {"mac": "aa:bb:cc:dd:ee:ff", "ssid": "NETGEAR13", "score": 0.8}
+        self.gui.push_event("wifi", ev)
+        self.assertEqual(self.gui._recent_wifi[0]["ssid"], "NETGEAR13")
+
     def test_push_aircraft_appends_to_recent(self):
         ev = {"icao": "abc123", "callsign": "BA001"}
         self.gui.push_event("aircraft", ev)

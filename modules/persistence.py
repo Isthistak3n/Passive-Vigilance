@@ -46,6 +46,7 @@ class DetectionEvent:
     device_type: str
     alert_level: str            # "suspicious" (0.5-0.7) | "likely" (0.7-0.9) | "high" (0.9+)
     mac_type: str = "static"    # "static" | "randomized"
+    ssid: str = ""              # AP broadcast SSID / BT device name; "" for probing clients
 
 
 class PersistenceEngine(ScoringEngine):
@@ -261,6 +262,7 @@ class PersistenceEngine(ScoringEngine):
         clusters   = self.cluster_locations(obs_gps) if obs_gps else []
         manuf = next((o["manuf"] for o in reversed(observations) if o.get("manuf")), "")
         dtype = next((o["type"]  for o in reversed(observations) if o.get("type")),  "")
+        ssid  = next((o["name"]  for o in reversed(observations) if o.get("name")),  "")
         return DetectionEvent(
             mac=mac,
             score=score,
@@ -273,6 +275,7 @@ class PersistenceEngine(ScoringEngine):
             device_type=dtype,
             alert_level=self._make_alert_level(score),
             mac_type=get_mac_type(mac),
+            ssid=ssid,
         )
 
     # ------------------------------------------------------------------
