@@ -18,10 +18,12 @@ for randomized MACs — see :mod:`modules.fixed_scoring`). This module is keying
 agnostic: it stores whatever string key it is given.
 """
 
+import functools
 import json
 import logging
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,6 +92,22 @@ def _parse(s: str) -> datetime:
     return dt
 
 
+def _synchronized(method):
+    """Serialize a BaselineStore method on the instance's reentrant lock.
+
+    The store's SQLite connection is opened in the orchestrator's asyncio thread
+    but also read from the GUI's Flask thread (``status()``). The lock makes those
+    accesses safe (paired with ``check_same_thread=False``); it is reentrant so a
+    method that calls another guarded method on the same thread (``upsert`` ->
+    ``get_profile``/``_load_state``) does not deadlock.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class BaselineStore:
     """SQLite-backed durable store for the fixed-mode baseline.
 
@@ -111,7 +129,10 @@ class BaselineStore:
         self._baseline_hours = float(baseline_hours)
         if self._db_path != ":memory:":
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(self._db_path)
+        # Reentrant lock guards all connection access; check_same_thread=False lets
+        # the GUI thread read status() off the connection the asyncio thread owns.
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._create_schema()
         self._init_meta(now or datetime.now(timezone.utc))
@@ -188,6 +209,7 @@ class BaselineStore:
     # ------------------------------------------------------------------
 
     @property
+    @_synchronized
     def learning_start(self) -> datetime:
         row = self._conn.execute(
             "SELECT learning_start FROM baseline_meta WHERE id = 1"
@@ -213,6 +235,7 @@ class BaselineStore:
         "rec_n": 0, "rec_ema": 0.0,
     }
 
+    @_synchronized
     def upsert(
         self,
         key: str,
@@ -313,6 +336,7 @@ class BaselineStore:
             recent_signal_count=rec_n,
         )
 
+    @_synchronized
     def _load_state(self, key: str) -> dict:
         """Return the raw baseline accumulator dict for *key* (defaults if absent)."""
         row = self._conn.execute(
@@ -328,6 +352,7 @@ class BaselineStore:
             state.setdefault(k, v)
         return state
 
+    @_synchronized
     def get_profile(self, key: str) -> Optional[DeviceProfile]:
         row = self._conn.execute(
             "SELECT * FROM device_profiles WHERE key = ?", (key,)
@@ -363,11 +388,13 @@ class BaselineStore:
             recent_signal_count=rec_count,
         )
 
+    @_synchronized
     def profile_count(self) -> int:
         return self._conn.execute(
             "SELECT COUNT(*) AS n FROM device_profiles"
         ).fetchone()["n"]
 
+    @_synchronized
     def baseline_count(self) -> int:
         """Number of profiles first seen during the learning window (the baseline)."""
         return self._conn.execute(
@@ -375,6 +402,7 @@ class BaselineStore:
             (_iso(self.freeze_time),),
         ).fetchone()["n"]
 
+    @_synchronized
     def close(self) -> None:
         try:
             self._conn.close()
