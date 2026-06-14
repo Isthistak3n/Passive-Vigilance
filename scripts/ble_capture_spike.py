@@ -59,7 +59,7 @@ def _parse_ad(data: bytes):
         if length == 0:
             break
         ad_type = data[j + 1] if j + 1 < len(data) else 0
-        value = data[j + 2 : j + 1 + length]
+        value = data[j + 2:j + 1 + length]
         if ad_type == 0xFF and len(value) >= 2:        # manufacturer specific
             company_ids.append(value[0] | (value[1] << 8))
         elif ad_type in (0x02, 0x03):                  # 16-bit service UUIDs
@@ -98,10 +98,10 @@ def run(seconds: int) -> int:
         if len(pkt) < 4 or pkt[0] != 0x04 or pkt[1] != 0x3E or pkt[3] != 0x02:
             continue
         i = 5  # skip type, event code, plen, subevent, num_reports
-        addr = pkt[i + 2 : i + 8][::-1]
+        addr = pkt[i + 2:i + 8][::-1]
         dlen = pkt[i + 8]
-        data = pkt[i + 9 : i + 9 + dlen]
-        rssi = struct.unpack("b", pkt[i + 9 + dlen : i + 10 + dlen])[0]
+        data = pkt[i + 9:i + 9 + dlen]
+        rssi = struct.unpack("b", pkt[i + 9 + dlen:i + 10 + dlen])[0]
         adverts += 1
         seen[":".join("%02X" % b for b in addr)] = (rssi, *_parse_ad(data))
 
