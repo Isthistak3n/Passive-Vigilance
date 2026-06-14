@@ -24,11 +24,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Optional, Protocol
-
-
-class _DeviceLike(Protocol):
-    def get(self, key: str, default=None): ...
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -38,13 +34,13 @@ class WiFiFingerprint:
     label: str      # human-readable identity for the GUI
 
 
-def _named_ssids(device: _DeviceLike) -> list[str]:
+def _named_ssids(device: dict) -> list[str]:
     """Non-empty probed SSIDs (the broadcast/wildcard '' is already excluded upstream)."""
     ssids = device.get("probe_ssids") or []
     return sorted({s for s in ssids if isinstance(s, str) and s.strip()})
 
 
-def compute_wifi_fingerprint(device: _DeviceLike) -> Optional[WiFiFingerprint]:
+def compute_wifi_fingerprint(device: dict) -> Optional[WiFiFingerprint]:
     """Return a :class:`WiFiFingerprint`, or None if there is nothing to fingerprint
     (no named probe SSIDs, no IE fingerprint, no advertised name)."""
     ssids = _named_ssids(device)
@@ -61,7 +57,7 @@ def compute_wifi_fingerprint(device: _DeviceLike) -> Optional[WiFiFingerprint]:
     return WiFiFingerprint(key=key, strong=bool(ssids), label=_label(device, ssids, name))
 
 
-def _label(device: _DeviceLike, ssids: list[str], name: str) -> str:
+def _label(device: dict, ssids: list[str], name: str) -> str:
     """Best human-readable identity: a probed network, else the device/AP name,
     else the manufacturer, else the device type."""
     if ssids:
