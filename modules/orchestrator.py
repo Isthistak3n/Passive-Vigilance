@@ -17,6 +17,7 @@ from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Optional
 
+from modules import contact_designator
 from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
 
 
@@ -509,6 +510,34 @@ class SensorOrchestrator:
         self._ble_adverts = {}
         return drained
 
+    def _contact_designator(self, event) -> str:
+        '''Build the stable CLASS-IDENT-# contact designator for a WiFi/BT event.
+
+        Class + IDENT come from fields already on the DetectionEvent; the instance
+        number is the persisted, rotation-stable assignment keyed by the device's
+        fingerprint (design-contact-designators.md).
+        '''
+        cls = contact_designator.class_token(event.device_type)
+        ident = contact_designator.ident_token(
+            ssid=event.ssid, label=event.fingerprint_label,
+            manufacturer=event.manufacturer, fingerprint=event.fingerprint,
+            mac=event.mac,
+        )
+        group = contact_designator.group_key(cls, ident)
+        identity_key = event.fingerprint or ("mac:" + event.mac)
+        number = self._assign_contact_number(identity_key, group)
+        return contact_designator.designator(cls, ident, number)
+
+    def _assign_contact_number(self, identity_key: str, group_key: str) -> int:
+        '''Persisted-stable instance number via the entity store; a stable hash
+        fallback when the store is unavailable.'''
+        if self.entity_store is not None:
+            try:
+                return self.entity_store.assign_contact_number(identity_key, group_key)
+            except Exception:
+                logger.debug("contact number assignment failed", exc_info=True)
+        return contact_designator.fallback_number(identity_key)
+
     async def _poll_kismet(self) -> None:
         '''Poll Kismet for WiFi/BT devices; run persistence engine; fire alerts.'''
         try:
@@ -604,6 +633,7 @@ class SensorOrchestrator:
                     "ssid": event.ssid,
                     "fingerprint": event.fingerprint,
                     "fingerprint_label": event.fingerprint_label,
+                    "contact": self._contact_designator(event),
                     # Which signal(s) fired — so a soak can decompose the flag mix.
                     "score_breakdown": event.score_breakdown,
                     "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
