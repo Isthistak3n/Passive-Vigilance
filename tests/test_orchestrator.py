@@ -238,12 +238,30 @@ async def test_startup_graceful_when_kismet_unavailable(mock_sdr, orch):
 
 
 @pytest.mark.asyncio
-async def test_startup_graceful_when_readsb_unavailable(orch):
+@patch("main.detect_sdr_count", return_value=0)
+async def test_startup_graceful_when_readsb_unavailable(_sdr, orch):
+    # readsb-only path (DroneRF off): a failed connect leaves ADS-B inactive, and
+    # startup still completes gracefully. Hermetic via DRONE off + sdr_count=0.
     orch.adsb.connect.side_effect = ConnectionError("readsb not running")
-    await orch.startup()
+    with patch.dict(os.environ, {"DRONE_RF_ENABLED": "false"}):
+        await orch.startup()
     assert orch._adsb_active is False
     assert orch._gps_active is True
     assert orch._kismet_active is True
+
+
+@pytest.mark.asyncio
+@patch("main.detect_sdr_count", return_value=1)
+async def test_startup_shared_keeps_adsb_active_despite_startup_connect_failure(_sdr, orch):
+    # In SHARED mode ADS-B is enabled (the coordinator brings readsb up during its
+    # slices), so a racy startup connect() failure must NOT grey the chiclet — the
+    # active flag stays True and sensor_health carries liveness (the P6-adjacent fix).
+    from unittest.mock import AsyncMock
+    orch.adsb.connect.side_effect = ConnectionError("readsb stopped this slice")
+    orch.sdr_coordinator.start = AsyncMock()
+    with patch.dict(os.environ, {"DRONE_RF_ENABLED": "true", "SDR_MODE": "shared"}):
+        await orch.startup()
+    assert orch._adsb_active is True
 
 
 # ---------------------------------------------------------------------------
@@ -1371,3 +1389,27 @@ def test_current_aircraft_missing_timestamp_treated_stale(orch):
     so = orch.sensor_orchestrator
     so._aircraft_index = {"AAA": {"icao": "AAA"}}  # no timestamp
     assert so.current_aircraft() == []
+
+
+# ---------------------------------------------------------------------------
+# DroneRF auto-disable reflected in live status (GUI chiclet accuracy)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_poll_drone_rf_marks_inactive_on_auto_disable(orch):
+    so = orch.sensor_orchestrator
+    so._modules_active["drone_rf"] = True
+    so.drone_rf.auto_disabled = True
+    so.drone_rf.drain_detections.return_value = []
+    await so._poll_drone_rf()
+    assert so._modules_active["drone_rf"] is False
+
+
+@pytest.mark.asyncio
+async def test_poll_drone_rf_leaves_active_when_running(orch):
+    so = orch.sensor_orchestrator
+    so._modules_active["drone_rf"] = True
+    so.drone_rf.auto_disabled = False
+    so.drone_rf.drain_detections.return_value = []
+    await so._poll_drone_rf()
+    assert so._modules_active["drone_rf"] is True

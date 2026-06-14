@@ -154,9 +154,11 @@ class TestDroneRFCrashGuard(unittest.TestCase):
         m._proc.is_alive.return_value = False
         m._stop_evt = MagicMock()
         m._stop_evt.is_set.return_value = False
+        self.assertFalse(m.auto_disabled)  # not yet
         outcomes = [m._monitor_tick() for _ in range(3)]
         self.assertEqual(outcomes, ["respawn", "respawn", "disabled"])
         self.assertFalse(m.can_scan)  # crash loop broken — node stays up, scan off
+        self.assertTrue(m.auto_disabled)  # the unambiguous "gave up" signal for the GUI
 
 
 # ---------------------------------------------------------------------------
