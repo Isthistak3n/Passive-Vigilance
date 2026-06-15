@@ -3,9 +3,9 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-537%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-601%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.5.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
+[![Release](https://img.shields.io/badge/release-v0.6.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
 
 > A passive RF/WiFi/BT/ADS-B sensor platform for counter-surveillance,
@@ -79,6 +79,8 @@ flowchart TD
         ADSB[ADSBModule\\n+ adsb.lol enrichment]
         DRONE[DroneRFModule\\n433/868/915 MHz]
         KIS[KismetModule\\nREST API poll]
+        BLE[BLEScanner\\nraw-HCI adverts]
+        RID[RemoteIDModule\\nFAA Remote ID]
         GPSM[GPSModule\\nfit quality]
         IGNORE[IgnoreList\\nMAC/OUI/SSID filter]
         PERSIST[ScoringEngine\\nMobile or Fixed mode]
@@ -93,21 +95,24 @@ flowchart TD
     RTL --> READSB
     RTL --> DRONE
     WIFI --> KISMET
-    BT --> KISMET
+    BT --> BLE
     GPS --> GPSD
     READSB --> ADSB
     KISMET --> KIS
+    KISMET --> RID
     GPSD --> GPSM
     GPSM -->|GPS stamp| ADSB
     GPSM -->|GPS stamp| KIS
     GPSM -->|GPS stamp| DRONE
     KIS --> IGNORE
+    BLE --> IGNORE
     IGNORE --> PERSIST
     IGNORE --> PROBE
     PERSIST --> ALERT
     PROBE --> ALERT
     ADSB --> ALERT
     DRONE --> ALERT
+    RID --> ALERT
     PERSIST --> SHP
     PERSIST --> DB
     ADSB --> DB
@@ -196,13 +201,14 @@ it is restarted.
 | Device fingerprinting | ✅ Complete | Randomization-resistant BLE + WiFi signatures (vendor/services/name; probed SSIDs + IE hash) with over-merge safeguards — 27 tests |
 | Entity/observation store | ✅ Complete | Durable SQLite (probe evidence, fingerprint, entities, observation history); recorded at the poll site for both modes; thread-safe reads for the GUI |
 | Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 24 tests |
+| Remote ID | ✅ Complete | FAA Remote ID (ASTM F3411-22a) decode via Kismet 802.11 vendor IE; GUI tab + `/api/remote_id` — 22 tests |
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
 | KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
-| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle — 34 tests |
-| Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown — 28 tests |
+| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle, contact designators, current-sky aircraft + Remote ID tabs, durable detection/alert history across refresh & restart — 63 tests |
+| Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown, watchdog, current-sky indexes + bounded tracks — 87 tests |
 
-**537 tests passing** across all modules.
+**601 tests passing** across all modules.
 
 ---
 
@@ -279,6 +285,11 @@ Passive-Vigilance/
 │   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
 │   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures + drain_detections()
 │   ├── remote_id.py                  # RemoteIDModule — FAA Remote ID (ASTM F3411-22a) via Kismet 802.11 vendor IE
+│   ├── ble_scanner.py                # BLEScanner — passive raw-HCI LE advertisement capture (vendor/services/name + real RSSI)
+│   ├── ble_fingerprint.py            # BLE advertisement → rotation-resistant signature (ble-fp:)
+│   ├── wifi_fingerprint.py           # WiFi probe SSIDs + IE-set hash → rotation-resistant signature (wifi-fp:)
+│   ├── device_identity.py            # Shared strong-fingerprint / label helpers used by both scoring engines
+│   ├── contact_designator.py         # CLASS-IDENT-# naval/air-style track labels for WiFi/BT contacts
 │   ├── sdr_manager.py                # SDRManager — RTL-SDR inventory detection; SDRMode resolution
 │   ├── sdr_coordinator.py            # SDRCoordinator — asyncio time-share scheduler for single-dongle setups
 │   ├── sdr_utils.py                  # Shared RTL-SDR hardware detection utilities
@@ -299,7 +310,7 @@ Passive-Vigilance/
 │   ├── __init__.py                   # Empty package marker
 │   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*; mode toggle (/api/mode)
 │   ├── templates/
-│   │   └── index.html                # Dark-theme SPA; 5 tabs; Leaflet map; SSE client
+│   │   └── index.html                # Dark-theme SPA; 6 tabs (incl. Remote ID); Leaflet map; SSE client
 │   └── static/
 │       ├── app.js                    # SSE client; Leaflet markers; table rendering; tab switching
 │       └── style.css                 # Dark theme; KML-matched alert colors; touch-friendly
@@ -323,9 +334,14 @@ Passive-Vigilance/
 │   ├── test_wigle.py                 # 7 tests — WiGLEUploader
 │   ├── test_sdr_manager.py           # SDRManager + SDRCoordinator tests
 │   ├── test_sdr_handoff.py           # SDRCoordinator handoff tests
-│   ├── test_remote_id.py             # RemoteIDModule tests
-│   ├── test_orchestrator.py          # 28 tests — PassiveVigilance orchestrator
-│   ├── test_gui.py                   # 34 tests — GUIServer + mode toggle
+│   ├── test_remote_id.py             # 22 tests — RemoteIDModule
+│   ├── test_ble_scanner.py           # passive raw-HCI BLE advertisement capture
+│   ├── test_ble_fingerprint.py       # BLE signature (ble-fp:)
+│   ├── test_wifi_fingerprint.py      # WiFi signature (wifi-fp:)
+│   ├── test_device_identity.py       # shared fingerprint/label helpers
+│   ├── test_contact_designator.py    # CLASS-IDENT-# track labels
+│   ├── test_orchestrator.py          # 87 tests — PassiveVigilance orchestrator
+│   ├── test_gui.py                   # 63 tests — GUIServer, durable history, mode toggle
 │   └── test_alerts.py                # 24 tests — AlertEngine
 ├── scripts/
 │   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
@@ -337,7 +353,9 @@ Passive-Vigilance/
 │   ├── 99-wlan1-monitor.rules        # udev rule — set wlan1 to monitor mode at boot/plug-in
 │   └── 99-unmanaged-wlan1.conf       # NetworkManager: mark wlan1 as unmanaged
 ├── docs/
-│   └── setup.md                      # Full installation, configuration, and troubleshooting guide
+│   ├── setup.md                      # Full installation, configuration, and troubleshooting guide
+│   ├── roadmap-fixed-node-prototype.md  # Phased plan + live status (P0–P7)
+│   └── design-*.md                   # Design notes: detection modes, fingerprinting, BLE capture, contact designators, aircraft-of-interest
 └── data/
     └── ignore_lists/                 # MAC/OUI/SSID ignore list JSON files (git-ignored)
 ```
@@ -364,7 +382,7 @@ Key variables:
 | `WIGLE_API_NAME` | WiGLE.net account API name | — |
 | `WIGLE_API_KEY` | WiGLE.net account API key | — |
 | `ADSBXLOL_API_KEY` | adsb.lol API key (free by feeding) | — |
-| `ALERT_BACKEND` | `ntfy`, `signal`, or `telegram` | `ntfy` |
+| `ALERT_BACKEND` | `ntfy`, `telegram`, `discord`, or `console` | `ntfy` |
 | `GPS_DEVICE` | GPS dongle device path | `/dev/ttyUSB0` |
 | `WIFI_MONITOR_INTERFACE` | WiFi dongle interface name | `wlan1` |
 | `KISMET_HOST` | Kismet daemon host | `localhost` |
