@@ -656,3 +656,118 @@ class TestGUIStatusModulesActive(unittest.TestCase):
         self.assertTrue(body["sensor_health"]["drone_rf"])
         self.assertFalse(body["modules_active"]["drone_rf"])
         self.assertTrue(body["modules_active"]["kismet"])
+
+
+class _FakeOrch:
+    """Minimal orchestrator stand-in exposing only ``_session_dir`` (a real Path),
+    so GUIServer's durable-history reads resolve a sessions root without MagicMock
+    polluting Path()."""
+
+    def __init__(self, session_dir):
+        self._session_dir = session_dir
+
+
+class TestGUIServerDurableHistory(unittest.TestCase):
+    """P5 — panels rebuild from on-disk session logs, surviving refresh/restart."""
+
+    def setUp(self):
+        from gui.server import GUIServer
+        self._tmp = tempfile.mkdtemp()
+        self._root = os.path.join(self._tmp, "sessions")
+        os.makedirs(self._root)
+        self.GUIServer = GUIServer
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _session(self, name):
+        d = os.path.join(self._root, name)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _write(self, session_name, filename, records):
+        from pathlib import Path
+        path = Path(self._session(session_name)) / filename
+        with open(path, "w", encoding="utf-8") as fh:
+            for rec in records:
+                fh.write(json.dumps(rec) + "\n")
+        return path
+
+    def _gui_for(self, current_session):
+        from pathlib import Path
+        orch = _FakeOrch(Path(self._session(current_session)))
+        return self.GUIServer(orchestrator=orch)
+
+    # --- _read_jsonl_tail -------------------------------------------------
+
+    def test_read_jsonl_tail_bounds_and_skips_torn_line(self):
+        from pathlib import Path
+        path = self._write("20260101_000000", "events.jsonl",
+                           [{"i": n} for n in range(5)])
+        # Append a torn final line (a power-cut leftover).
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write('{"i": 5, "part')
+        # maxlen=3 keeps the last 3 lines (i=3, i=4, torn); the torn one is
+        # skipped on parse, leaving [3, 4] — proves both the bound and tolerance.
+        out = self.GUIServer._read_jsonl_tail(Path(path), 3)
+        self.assertEqual([r["i"] for r in out], [3, 4])
+
+    def test_read_jsonl_tail_missing_file_is_empty(self):
+        from pathlib import Path
+        out = self.GUIServer._read_jsonl_tail(Path(self._tmp) / "nope.jsonl", 10)
+        self.assertEqual(out, [])
+
+    # --- _history ---------------------------------------------------------
+
+    def test_history_reads_current_session(self):
+        self._write("20260101_000000", "drone.jsonl",
+                    [{"freq_mhz": 433.0}, {"freq_mhz": 915.0}])
+        gui = self._gui_for("20260101_000000")
+        hist = gui._history("drone.jsonl", 500)
+        self.assertEqual([r["freq_mhz"] for r in hist], [433.0, 915.0])
+
+    def test_history_accumulates_across_sessions_newest_first(self):
+        self._write("20260101_000000", "drone.jsonl", [{"freq_mhz": 1.0}])  # older
+        self._write("20260102_000000", "drone.jsonl", [{"freq_mhz": 2.0}])  # newer
+        gui = self._gui_for("20260102_000000")
+        hist = gui._history("drone.jsonl", 500)
+        # Oldest -> newest across sessions: old session's event precedes new one.
+        self.assertEqual([r["freq_mhz"] for r in hist], [1.0, 2.0])
+
+    def test_history_dedups_by_key_keeping_latest(self):
+        # Same MAC in an older and a newer session — keep the newer record.
+        self._write("20260101_000000", "events.jsonl",
+                    [{"mac": "aa", "score": 0.1}])
+        self._write("20260102_000000", "events.jsonl",
+                    [{"mac": "aa", "score": 0.9}, {"mac": "bb", "score": 0.5}])
+        gui = self._gui_for("20260102_000000")
+        hist = gui._history("events.jsonl", 500, dedup_key="mac")
+        by_mac = {r["mac"]: r["score"] for r in hist}
+        self.assertEqual(by_mac, {"aa": 0.9, "bb": 0.5})
+        self.assertEqual(len(hist), 2)
+
+    def test_history_returns_none_without_orchestrator(self):
+        gui = self.GUIServer()  # no orchestrator -> caller uses cache
+        self.assertIsNone(gui._history("events.jsonl", 500))
+
+    # --- endpoints --------------------------------------------------------
+
+    def test_api_alerts_serves_disk_history(self):
+        self._write("20260101_000000", "alerts.jsonl",
+                    [{"kind": "wifi", "title": "A", "body": "x"},
+                     {"kind": "drone", "title": "B", "body": "y"}])
+        gui = self._gui_for("20260101_000000")
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        body = gui.app.test_client().get("/api/alerts").get_json()
+        self.assertEqual([a["title"] for a in body], ["A", "B"])
+
+    def test_api_wifi_dedups_disk_history(self):
+        self._write("20260101_000000", "events.jsonl",
+                    [{"mac": "aa", "score": 0.2}, {"mac": "aa", "score": 0.7}])
+        gui = self._gui_for("20260101_000000")
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        body = gui.app.test_client().get("/api/wifi").get_json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["score"], 0.7)

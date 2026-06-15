@@ -428,13 +428,20 @@ class SensorOrchestrator:
                 if self.gui_server is not None:
                     self.gui_server.push_event("aircraft", event)
             emergency = aircraft.get("emergency", False)
+            label = aircraft.get("callsign") or aircraft.get("registration") or icao
+            body = (f"{label}: alt {aircraft.get('altitude', '?')} ft, "
+                    f"spd {aircraft.get('speed', '?')} kt")
             if emergency:
                 self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
                 self._stats["alerts_sent"] += 1
+                self._record_alert("aircraft", f"EMERGENCY — {label}", body,
+                                   severity="high", icao=icao)
             else:
                 if await self.rate_limiter.is_allowed(f"aircraft:{aircraft.get('icao', 'unknown')}"):
                     self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
                     self._stats["alerts_sent"] += 1
+                    self._record_alert("aircraft", f"Aircraft — {label}", body,
+                                       icao=icao)
                 else:
                     self._stats["alerts_rate_limited"] += 1
         # Drop aircraft gone from the sky so the index stays the live picture and
@@ -655,6 +662,15 @@ class SensorOrchestrator:
             if await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
                 self._stats["alerts_sent"] += 1
+                contact = self._contact_designator(event)
+                self._record_alert(
+                    "wifi", f"{contact} — {event.alert_level}",
+                    f"{event.device_type or 'device'} {event.mac}: score "
+                    f"{event.score:.2f}, {event.observation_count} obs",
+                    severity=event.alert_level, mac=event.mac,
+                    alert_level=event.alert_level, score=event.score,
+                    contact=contact,
+                )
             else:
                 self._stats["alerts_rate_limited"] += 1
         self._write_session_summary()
@@ -725,6 +741,11 @@ class SensorOrchestrator:
             if await self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
                 self._dispatch_alert(self.alert_backend.send_drone_alert, alert_detection)
                 self._stats["alerts_sent"] += 1
+                self._record_alert(
+                    "drone", f"Drone RF — {freq:.0f} MHz",
+                    f"{freq:.0f} MHz at {power:.1f} dB",
+                    freq_mhz=freq, power_db=power,
+                )
             else:
                 self._stats["alerts_rate_limited"] += 1
 
@@ -778,6 +799,13 @@ class SensorOrchestrator:
             if await self.rate_limiter.is_allowed(f"remote_id:{uas_id}"):
                 self._dispatch_alert(self.alert_backend.send_remote_id_alert, detection)
                 self._stats["alerts_sent"] += 1
+                self._record_alert(
+                    "aircraft", f"Remote ID — {uas_id}",
+                    f"UAS {uas_id}: "
+                    f"{detection.get('ua_type', 'UAS')} "
+                    f"op {detection.get('operator_id', '?')}",
+                    severity="high", uas_id=uas_id,
+                )
             else:
                 self._stats["alerts_rate_limited"] += 1
 
@@ -816,6 +844,30 @@ class SensorOrchestrator:
             return  # cancelled (e.g. executor shutdown) — nothing to report
         if exc is not None:
             logger.warning("alert send raised off-loop: %s", exc)
+
+    def _record_alert(self, kind: str, title: str, body: str, *,
+                      severity: str = "default", **meta) -> None:
+        '''Persist an alert and push it to the GUI Alerts feed.
+
+        Alerts are otherwise fire-and-forget through the backend
+        (``_dispatch_alert``), so they leave no durable trace and never reach the
+        GUI Alerts tab. This records each alert we decide to send as one line in
+        the session's ``alerts.jsonl`` and live-pushes it (``push_event("alert")``),
+        so the operator surface shows alerts and survives a refresh or a restart
+        (P5 durable history). ``kind`` is one of ``wifi`` / ``aircraft`` / ``drone``
+        / ``system`` (drives the GUI card colour). Guarded — a logging or GUI
+        failure never affects the alert send itself.
+        '''
+        record = {
+            "kind": kind, "title": title, "body": body, "severity": severity,
+            "timestamp": datetime.now(timezone.utc).isoformat(), **meta,
+        }
+        self._append_jsonl(self._session_dir / "alerts.jsonl", record)
+        if self.gui_server is not None:
+            try:
+                self.gui_server.push_event("alert", record)
+            except Exception as exc:
+                logger.debug("alert push to GUI failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Watchdog

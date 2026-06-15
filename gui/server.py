@@ -16,6 +16,7 @@ import queue
 import tempfile
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _MAX_RECENT = 200
+
+# Durable-history bounds (P5): how many events a panel rebuilds from on-disk
+# session logs, and how many session directories to walk back through. Kept
+# bounded so a long-running node's history reads stay cheap; env-overridable.
+_HISTORY_LIMIT = int(os.getenv("GUI_HISTORY_LIMIT", "500"))
+_HISTORY_MAX_SESSIONS = int(os.getenv("GUI_HISTORY_MAX_SESSIONS", "20"))
 
 # Mode values the toggle accepts — must mirror main._VALID_NODE_MODES.
 _VALID_MODES = ("fixed", "mobile")
@@ -205,6 +212,12 @@ class GUIServer:
 
         @app.route("/api/wifi")
         def api_wifi():
+            # Rebuild from the on-disk session logs so a refresh/restart shows the
+            # real history (deduped to one row per device), not the truncated
+            # in-memory cache (P5). Fall back to the cache when no session dir.
+            hist = self._history("events.jsonl", _HISTORY_LIMIT, dedup_key="mac")
+            if hist is not None:
+                return jsonify(hist)
             with self._data_lock:
                 return jsonify(list(self._recent_wifi))
 
@@ -230,11 +243,21 @@ class GUIServer:
 
         @app.route("/api/drone")
         def api_drone():
+            # Disk-backed history (P5); discrete events, no dedup.
+            hist = self._history("drone.jsonl", _HISTORY_LIMIT)
+            if hist is not None:
+                return jsonify(hist)
             with self._data_lock:
                 return jsonify(list(self._recent_drone))
 
         @app.route("/api/alerts")
         def api_alerts():
+            # Disk-backed history (P5) — alerts now persist to alerts.jsonl, so the
+            # Alerts tab survives a refresh and a restart. No dedup (each alert is a
+            # discrete occurrence).
+            hist = self._history("alerts.jsonl", _HISTORY_LIMIT)
+            if hist is not None:
+                return jsonify(hist)
             with self._data_lock:
                 return jsonify(list(self._recent_alerts))
 
@@ -408,6 +431,94 @@ class GUIServer:
         cache.append(data)
         if len(cache) > _MAX_RECENT:
             cache.pop(0)
+
+    # ------------------------------------------------------------------
+    # Durable history (P5) — rebuild panels from on-disk session logs
+    # ------------------------------------------------------------------
+
+    def _sessions_root(self) -> "Path | None":
+        """The ``data/sessions`` root, derived from the orchestrator's session dir.
+
+        Returns ``None`` when there is no orchestrator or no session dir to read
+        (tests, or a node that hasn't started a session) — the caller then falls
+        back to the in-memory cache.
+        """
+        orch = self._orchestrator
+        sdir = getattr(orch, "_session_dir", None) if orch is not None else None
+        if sdir is None:
+            return None
+        try:
+            return Path(sdir).parent
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_jsonl_tail(path: "Path", max_lines: int) -> list:
+        """Up to the last *max_lines* parsed JSON objects from a ``.jsonl`` file.
+
+        Memory is bounded by *max_lines* (a ``deque`` keeps only the tail).
+        Tolerant of a torn final line — a power cut can leave a partial last
+        record — and of any malformed line, which is skipped. Only ever called on
+        a GUI load/refresh, never on the SSE hot path.
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = deque(fh, maxlen=max_lines)
+        except OSError:
+            return []
+        out = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue  # torn or malformed line — skip
+        return out
+
+    def _history(self, filename: str, limit: int,
+                 dedup_key: "str | None" = None) -> "list | None":
+        """Rebuild a panel's history from on-disk session logs, newest-first.
+
+        Walks session directories newest-first (bounded by
+        ``_HISTORY_MAX_SESSIONS``), reading each session's *filename* until
+        *limit* events are gathered — so a page refresh, a reconnect, or a service
+        restart rebuilds the real history instead of the in-memory cache (empty
+        after a restart, truncated at ``_MAX_RECENT`` otherwise). With *dedup_key*
+        set, keeps only the latest record per identity (e.g. one row per MAC).
+        Returns events oldest -> newest, or ``None`` when no session root is
+        resolvable (caller falls back to the cache).
+        """
+        root = self._sessions_root()
+        if root is None:
+            return None
+        try:
+            sessions = sorted(
+                (d for d in root.iterdir() if d.is_dir()),
+                key=lambda d: d.name, reverse=True,
+            )[:_HISTORY_MAX_SESSIONS]
+        except OSError:
+            return None
+
+        events: list = []
+        seen: set = set()
+        for sess in sessions:
+            if len(events) >= limit:
+                break
+            # newest-first within the file so dedup keeps the latest sighting
+            for rec in reversed(self._read_jsonl_tail(sess / filename, limit)):
+                if dedup_key is not None:
+                    ident = rec.get(dedup_key)
+                    if ident is not None:
+                        if ident in seen:
+                            continue
+                        seen.add(ident)
+                events.append(rec)
+                if len(events) >= limit:
+                    break
+        events.reverse()  # oldest -> newest for the client
+        return events
 
     def push_event(self, event_type: str, data: dict) -> None:
         """Broadcast a sensor event to all connected SSE clients.
