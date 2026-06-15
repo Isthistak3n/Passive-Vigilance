@@ -374,6 +374,40 @@ async def test_poll_kismet_dedup_writes_one_jsonl_line_per_device(orch, tmp_path
     assert len(lines) == 1
 
 
+def test_record_alert_persists_and_pushes(orch, tmp_path):
+    """_record_alert writes one line to alerts.jsonl AND pushes to the GUI feed,
+    so alerts are durable (P5) and the Alerts tab is fed for the first time."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so.gui_server = MagicMock()
+    so._record_alert("wifi", "PHONE-LINKSYS-3 — likely", "score 0.80, 12 obs",
+                     severity="likely", mac="aa:bb:cc:dd:ee:ff")
+
+    lines = (so._session_dir / "alerts.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["kind"] == "wifi"
+    assert rec["title"] == "PHONE-LINKSYS-3 — likely"
+    assert rec["severity"] == "likely"
+    assert rec["mac"] == "aa:bb:cc:dd:ee:ff"
+    assert "timestamp" in rec
+
+    so.gui_server.push_event.assert_called_once()
+    evt_type, payload = so.gui_server.push_event.call_args[0]
+    assert evt_type == "alert"
+    assert payload["title"] == "PHONE-LINKSYS-3 — likely"
+
+
+def test_record_alert_survives_no_gui_server(orch, tmp_path):
+    """With no GUI attached, _record_alert still persists to disk and does not raise."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so.gui_server = None
+    so._record_alert("drone", "Drone RF — 915 MHz", "915 MHz at -18.0 dB")
+    lines = (so._session_dir / "alerts.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1
+
+
 # ---------------------------------------------------------------------------
 # shutdown()
 # ---------------------------------------------------------------------------
