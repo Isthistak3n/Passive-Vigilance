@@ -6,6 +6,13 @@
 returning-entity work this mirrors).
 **Audience:** Implementers, reviewers, operators.
 
+> **Prereq progress (2026-06-14).** P6's core shipped: the aircraft panel now serves
+> the live current sky from the per-ICAO index with recency decay on the map and a
+> persistent detection log in the table (`current_aircraft()` / `AIRCRAFT_RETENTION_SECONDS`),
+> and the sensor chiclets read true runtime state. Still owed before P7: the **Remote
+> ID surface** (`/api/remote_id` + tab) — where the loitering-UAS signal must appear —
+> plus bounded per-aircraft tracks and returning-ICAO track-gap identity.
+
 ---
 
 ## The problem

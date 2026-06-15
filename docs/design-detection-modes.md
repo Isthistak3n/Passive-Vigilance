@@ -236,12 +236,21 @@ Modern devices rotate MAC addresses constantly, so "new MAC" is the *default*, n
 exception — most probe requests come from randomized MACs never seen again. Pattern-of-life
 keyed naively on MAC would see endless "new devices" and be useless.
 
-Therefore fixed-mode profiling keys on the **probe-SSID fingerprint** (the existing
-clustering that groups MACs sharing probe behavior — the feature that merged multiple
-randomized MACs into one logical device during live testing), not on the raw MAC. A device's
-identity for pattern-of-life is its fingerprint; its rotating MACs are the same logical
-entity. This makes the existing `mac_utils` fingerprinting (`group_by_fingerprint`)
-load-bearing for fixed-mode anomaly detection rather than a side feature.
+Therefore fixed-mode profiling keys on a **rotation-resistant content fingerprint**, not the
+raw MAC. A device's identity for pattern-of-life is its fingerprint; its rotating MACs are the
+same logical entity.
+
+> **Shipped (2026-06).** This is now the unified fingerprint in
+> [`modules.device_identity`](../modules/device_identity.py): WiFi clients key by
+> `wifi-fp:` (probed SSIDs + Kismet IE-set hash), BLE advertisers by `ble-fp:`
+> (vendor / services / name from passively-captured advertisements — see
+> [design-ble-advertisement-capture.md](design-ble-advertisement-capture.md)). A
+> device with no distinctive content (bare vendor id / no named SSID) is *not*
+> grouped, so distinct devices never merge. Both fixed (`FixedScoring`) and mobile
+> (`PersistenceEngine`) key on it, so randomization resistance applies to both modes.
+> On chase this cut the post-freeze randomized-MAC flood from ~36 flags/cycle to
+> 3–5. The earlier `mac_utils.group_by_fingerprint` (union-find over shared probe
+> SSIDs) was the first cut and is superseded by the per-device signature.
 
 Devices with stable (non-randomized) MACs — most APs and many IoT devices — are profiled by
 MAC directly. The two keying strategies coexist.

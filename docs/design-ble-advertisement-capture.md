@@ -1,5 +1,17 @@
 # Design note: capturing BLE advertisements to fingerprint randomized-MAC devices
 
+> **Status: SHIPPED & deployed (2026-06-14).** Recommended path (A — repurpose the
+> existing dongle) is live: [`modules.ble_scanner`](../modules/ble_scanner.py)
+> passively reads raw-HCI LE Advertising Reports (no SCAN_REQ), wired into the
+> orchestrator behind `BLE_SCANNER_ENABLED`, feeding the unified fingerprint +
+> scoring + GUI. Deploy specifics that emerged: the service unit grants
+> `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` (a `CapabilityBoundingSet` was
+> NOT used — it strips the setuid caps `sudo` needs and broke the SDR coordinator);
+> Kismet's `linuxbluetooth` source must be removed so PV owns `hci0`; and the HCI
+> index is auto-detected (`BLE_HCI_DEVICE`) so a USB re-enumeration to `hci1` still
+> works. On chase, bare advertisers dominate (mostly `mac:`-keyed, few `ble-fp:`),
+> as predicted.
+
 This note resolves the open prerequisite from
 [`design-entity-fingerprinting.md`](design-entity-fingerprinting.md): that note
 specifies *what* a BLE fingerprint is and *why* it survives address rotation, but
