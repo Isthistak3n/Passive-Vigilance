@@ -179,6 +179,7 @@ class SensorOrchestrator:
             "alerts_rate_limited": 0,
             "alerts_dropped": 0,
             "persistent_detections": 0,
+            "aircraft_idless_skipped": 0,
         }
 
         self.all_events: list[dict] = []
@@ -203,6 +204,12 @@ class SensorOrchestrator:
         # the client fades/expires markers by recency (AIRCRAFT_MAP_DECAY_MS) so the
         # map shows what's overhead now while the table keeps the log.
         self._aircraft_retention_s = float(os.getenv("AIRCRAFT_RETENTION_SECONDS", "3600"))
+        # Hard cap on a single track's point count. Thinning (above) keeps points
+        # sparse, but an orbiter/loiterer seen for hours still grows its track
+        # without bound — unbounded memory across a multi-day run, and the whole
+        # track ships to the GUI on every push. Cap it (drop oldest); shared by the
+        # ADS-B and Remote ID flight paths via _extend_track.
+        self._track_max_points = int(os.getenv("AIRCRAFT_TRACK_MAX_POINTS", "500"))
         self.drone_detections: list[dict] = []
         # Index freq-band -> the drone event already in drone_detections, so a
         # persistent emitter heard on every sweep becomes ONE event (refreshed
@@ -410,7 +417,15 @@ class SensorOrchestrator:
         now_iso = datetime.now(timezone.utc).isoformat()
         for aircraft in aircraft_list:
             self._stats["aircraft_seen"] += 1
-            icao = aircraft.get("icao") or "unknown"
+            icao = aircraft.get("icao")
+            if not icao:
+                # No hex address — can't be correlated across sightings. Merging
+                # every ID-less target under one "unknown" key made a single bogus
+                # airframe that teleports around the sky, so skip it from the
+                # per-ICAO log/track entirely.
+                self._stats["aircraft_idless_skipped"] += 1
+                logger.debug("ADS-B: skipping ID-less aircraft (no icao)")
+                continue
             existing = self._aircraft_index.get(icao)
             if existing is not None:
                 # Same plane — refresh current-state fields in place and extend
@@ -484,6 +499,45 @@ class SensorOrchestrator:
             ev for ev in list(self._aircraft_index.values())
             if self._aircraft_age_seconds(ev, now) <= self._aircraft_retention_s
         ]
+
+    def current_remote_id(self) -> list:
+        """The retained Remote ID detection log (one entry per UAS ID, within the
+        retention window).
+
+        Serves /api/remote_id so a refresh rebuilds the panel from the live per-UAS
+        index — an air contact, so the current-sky lens (like /api/aircraft), not the
+        disk-history lens. Read-only snapshot — safe from the GUI thread.
+        """
+        now = datetime.now(timezone.utc)
+        return [
+            ev for ev in list(self._remote_id_index.values())
+            if self._event_age_seconds(ev, now, "timestamp") <= self._aircraft_retention_s
+        ]
+
+    def _event_age_seconds(self, event: dict, now: datetime, *ts_keys: str) -> float:
+        """Seconds since *event* was last seen, reading the first present timestamp
+        key in *ts_keys* (e.g. ``"last_seen"``, ``"timestamp"``). Large if absent."""
+        ts = None
+        for key in ts_keys:
+            ts = event.get(key)
+            if ts:
+                break
+        if not ts:
+            return float("inf")
+        try:
+            return (now - datetime.fromisoformat(ts)).total_seconds()
+        except (ValueError, TypeError):
+            return float("inf")
+
+    def _prune_remote_id_index(self, now: datetime) -> None:
+        """Drop Remote ID contacts past the retention window so the index stays a
+        bounded log across a multi-day run (it was never pruned before)."""
+        stale = [
+            uas_id for uas_id, ev in self._remote_id_index.items()
+            if self._event_age_seconds(ev, now, "timestamp") > self._aircraft_retention_s
+        ]
+        for uas_id in stale:
+            del self._remote_id_index[uas_id]
 
     def _on_ble_advert(self, advert) -> None:
         '''Buffer one passively-captured BLE advertisement as a device record.
@@ -784,18 +838,25 @@ class SensorOrchestrator:
                 # Same drone still broadcasting — refresh state and extend its
                 # flight path in place instead of appending a row per frame.
                 existing.update(detection)
-                self._extend_track(
+                existing["timestamp"] = now_iso
+                moved = self._extend_track(
                     existing, detection.get("drone_lat"),
                     detection.get("drone_lon"), detection.get("drone_alt_m"), now_iso,
                 )
+                # Push only on a track move to keep the live feed bounded (mirrors
+                # the aircraft path).
+                if self.gui_server is not None and moved:
+                    self.gui_server.push_event("remote_id", existing)
             else:
-                event = {**detection, "positions": []}
+                event = {**detection, "positions": [], "timestamp": now_iso}
                 self._extend_track(
                     event, detection.get("drone_lat"),
                     detection.get("drone_lon"), detection.get("drone_alt_m"), now_iso,
                 )
                 self._remote_id_index[uas_id] = event
                 self.remote_id_detections.append(event)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("remote_id", event)
             if await self.rate_limiter.is_allowed(f"remote_id:{uas_id}"):
                 self._dispatch_alert(self.alert_backend.send_remote_id_alert, detection)
                 self._stats["alerts_sent"] += 1
@@ -808,6 +869,8 @@ class SensorOrchestrator:
                 )
             else:
                 self._stats["alerts_rate_limited"] += 1
+        # Expire departed UAS so the index stays the live picture and bounded.
+        self._prune_remote_id_index(datetime.now(timezone.utc))
 
     # ------------------------------------------------------------------
     # Alert dispatch (off the event loop)
@@ -1269,6 +1332,9 @@ class SensorOrchestrator:
             if dist < self._aircraft_track_min_m and dt < self._aircraft_track_min_s:
                 return False
         pts.append({"lat": lat, "lon": lon, "altitude": alt, "timestamp": ts_iso})
+        # Bound the track so a long loiter can't grow it without limit.
+        if len(pts) > self._track_max_points:
+            del pts[: len(pts) - self._track_max_points]
         return True
 
     def _extend_aircraft_track(self, event: dict, aircraft: dict, ts_iso: str) -> bool:

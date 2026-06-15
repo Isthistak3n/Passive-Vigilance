@@ -6,6 +6,7 @@ const state = {
   aircraft: [],
   drone:    [],
   alerts:   [],
+  remoteId: [],   // deduplicated by UAS ID
 };
 
 // ── Leaflet map ──────────────────────────────────────────────────────────────
@@ -208,6 +209,30 @@ function renderDrone() {
     </tr>`).join('');
 }
 
+function renderRemoteId() {
+  const q = document.getElementById('remote-id-search').value.toLowerCase();
+  const rows = state.remoteId
+    .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
+    .slice(-200)
+    .reverse();
+  document.getElementById('remote-id-tbody').innerHTML = rows.map(e => {
+    const lat = e.drone_lat != null ? (+e.drone_lat).toFixed(4) : '—';
+    const lon = e.drone_lon != null ? (+e.drone_lon).toFixed(4) : '—';
+    return `
+    <tr>
+      <td><code>${e.uas_id || '—'}</code></td>
+      <td>${e.id_type || '—'}</td>
+      <td>${e.ua_type || '—'}</td>
+      <td>${e.operator_id || '—'}</td>
+      <td>${lat}</td>
+      <td>${lon}</td>
+      <td>${e.drone_alt_m ?? '—'}</td>
+      <td>${e.rssi ?? '—'}</td>
+      <td>${fmtTime(e.timestamp)}</td>
+    </tr>`;
+  }).join('');
+}
+
 function renderAlerts() {
   document.getElementById('alerts-feed').innerHTML = state.alerts
     .slice(-100)
@@ -224,6 +249,11 @@ function renderAlerts() {
   const el = document.getElementById(`${tab}-search`);
   if (el) el.addEventListener('input', () => window[`render${tab[0].toUpperCase()}${tab.slice(1)}`]());
 });
+// Remote ID: the hyphenated id can't use the window['render…'] trick, wire it directly.
+{
+  const el = document.getElementById('remote-id-search');
+  if (el) el.addEventListener('input', renderRemoteId);
+}
 
 // Clear buttons
 document.getElementById('wifi-clear').addEventListener('click', () => {
@@ -234,6 +264,9 @@ document.getElementById('aircraft-clear').addEventListener('click', () => {
 });
 document.getElementById('drone-clear').addEventListener('click', () => {
   state.drone = []; layers.drone.clearLayers(); renderDrone(); setBadge('badge-drone', 0);
+});
+document.getElementById('remote-id-clear').addEventListener('click', () => {
+  state.remoteId = []; renderRemoteId(); setBadge('badge-remote-id', 0);
 });
 document.getElementById('alerts-clear').addEventListener('click', () => {
   state.alerts = []; renderAlerts(); setBadge('badge-alerts', 0);
@@ -345,6 +378,7 @@ async function seedFromRest() {
     { url: '/api/wifi',     key: 'wifi',     render: renderWifi,     badge: 'badge-wifi',     marker: addWifiMarker },
     { url: '/api/aircraft', key: 'aircraft', render: renderAircraft, badge: 'badge-aircraft', marker: null },
     { url: '/api/drone',    key: 'drone',    render: renderDrone,    badge: 'badge-drone',    marker: addDroneMarker },
+    { url: '/api/remote_id', key: 'remoteId', render: renderRemoteId, badge: 'badge-remote-id', marker: null },
     { url: '/api/alerts',   key: 'alerts',   render: renderAlerts,   badge: 'badge-alerts',   marker: null },
   ];
   for (const ep of endpoints) {
@@ -391,6 +425,12 @@ function connectSSE() {
       setBadge('badge-drone', state.drone.length);
       addDroneMarker(data);
       renderDrone();
+    } else if (type === 'remote_id') {
+      // Deduplicate by UAS ID — a broadcasting drone is re-pushed as its track advances.
+      const idx = state.remoteId.findIndex(e => e.uas_id === data.uas_id);
+      if (idx >= 0) state.remoteId[idx] = data; else state.remoteId.push(data);
+      setBadge('badge-remote-id', state.remoteId.length);
+      renderRemoteId();
     } else if (type === 'alert') {
       state.alerts.push(data);
       setBadge('badge-alerts', state.alerts.length);
