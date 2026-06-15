@@ -91,6 +91,26 @@ GUI/air-picture work merged and is live on chase:
   (`drone_rf.auto_disabled`), not merely when `can_scan` is false under the SDR
   coordinator.
 
+**Update (2026-06-15) — durable GUI history (P5 slice) + P6 remainder shipped.**
+Two more merges, both deployed on chase:
+- **Durable detection/alert history (P5)** — the WiFi/BT, Drone, and Alerts panels
+  now rebuild from the on-disk session logs (`events.jsonl` / `drone.jsonl` /
+  `alerts.jsonl`), walking session directories newest-first, so a page refresh **and
+  a service restart** show the real history instead of the in-memory 200-cap (empty
+  after a restart, truncated otherwise). Crucially, **alerts are now persisted and
+  shown at all** — the orchestrator never pushed `alert` events to the GUI and wrote
+  no `alerts.jsonl`, so the Alerts tab had always been empty despite alerts going out
+  via the backend. `current-sky` panels (aircraft, Remote ID) intentionally stay on
+  the live index, not the disk-history lens.
+- **P6 remainder** — flight tracks are now **bounded** (`AIRCRAFT_TRACK_MAX_POINTS`,
+  default 500; a long loiter no longer grows a track without limit); **ID-less
+  aircraft** are skipped from the per-ICAO log instead of collapsing into one bogus
+  "unknown" airframe; the **Remote ID index is pruned** on the retention window; and
+  the **Remote ID GUI surface** shipped — `/api/remote_id` + a Remote ID tab fed by
+  live `push_event("remote_id", …)`, the prerequisite for P7's loitering-UAS case.
+  (The drone index is band-keyed — ~5 entries max — so it needs no pruning. The
+  returning-ICAO track-gap is the one P6 item deferred.)
+
 ## The one finding that drives the sequencing
 
 The clean 4-hour memory soak was a **learning-phase** result. With a 72h baseline
@@ -114,8 +134,8 @@ new detection features.
 | **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
 | **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live (BLE raw-HCI capture, BLE/WiFi signatures, fingerprint-keyed scoring); cut the flood ~36→3–5/cycle. Cross-session *returning-entity* linkage remains | No |
-| **P5** | Fixed-mode GUI framing + durable history | ◑ Partial — identity-collapse row + **contact designators** (CLASS-IDENT-# track labels replacing the Device column) merged; scoring-panel thread-safety fixed; baseline-state framing + durable-across-refresh history remain | No |
-| **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ◑ Core shipped — current-sky from the per-ICAO index, retained table vs. decaying map, sensor-chiclet accuracy fixed; bounded tracks + ID-less split + returning-ICAO gaps + Remote ID surface remain | No |
+| **P5** | Fixed-mode GUI framing + durable history | ◑ Partial — contact designators + scoring-panel thread-safety + **durable detection/alert history** (panels rebuild from on-disk session logs across refresh/restart; alerts now persisted and shown) merged; baseline-state framing + signal/severity anomaly framing remain | No |
+| **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ◑ Core + remainder shipped — current-sky panel, decay, chiclet accuracy, **bounded tracks**, **ID-less split**, Remote ID index pruning, and the **Remote ID GUI surface** (`/api/remote_id` + tab) merged; only the returning-ICAO track-gap deferred | No |
 | **P7** | Aircraft of interest: orbit/loiter detection | ☐ Not started — design captured | No |
 
 ### P0 — Endurance hardening (blocking)
@@ -259,14 +279,16 @@ an empty or truncated view.
 **Exit gate.** An operator can read node state and anomalies at a glance, and the
 detection/alert history they rely on survives a refresh and a restart.
 
-**Status (2026-06-14): partially shipped.** The identity-collapse row and **contact
-designators** are live — a device shows as a stable `CLASS-IDENT-#` track label whose
-number persists across MAC rotation and restart (entity store, keyed by fingerprint),
-and the redundant Device column was dropped. The scoring panel's cross-thread SQLite
-bug is fixed, so baseline state actually renders. **Still owed:** the
-learning-vs-frozen baseline framing, the anomaly list framed by signal/severity, and
-the **durable-across-refresh detection/alert history** (still backed only by the
-in-memory 200-caps) — the core P5 value.
+**Status (2026-06-15): mostly shipped.** Live: the identity-collapse row and **contact
+designators** (a device shows as a stable `CLASS-IDENT-#` track label whose number
+persists across MAC rotation and restart, entity store keyed by fingerprint; the
+redundant Device column was dropped); the scoring-panel cross-thread SQLite fix so
+baseline state renders; and the **durable detection/alert history** — the WiFi/BT,
+Drone, and Alerts panels rebuild from the on-disk session logs across a refresh and a
+restart (walking session dirs newest-first), and **alerts are persisted and shown for
+the first time** (`alerts.jsonl` + a live `push_event("alert", …)`; the tab had been
+unfed). **Still owed:** the learning-vs-frozen baseline framing (time remaining) and
+the anomaly list framed by signal/severity.
 
 ### P6 — Aircraft panel: serve the live current sky, not a push-log (near-term bug)
 
@@ -325,15 +347,20 @@ under a long orbit; a Remote ID detection appears in its tab.
 **Exit gate.** What readsb holds is in the panel, once per airframe, and stays there
 across a refresh for as long as readsb holds it — fading as it goes stale.
 
-**Status (2026-06-14): core shipped.** `/api/aircraft` serves the current sky from
-the per-ICAO index (once per airframe), the map decays markers by recency while the
-table retains a longer detection log (`AIRCRAFT_RETENTION_SECONDS`), and aircraft and
-drones survive a refresh — the live-reproduced eviction bug is fixed. The
-sensor-chiclet accuracy fix rode along here (ADS-B green when working in SHARED mode;
-DroneRF greys only on real auto-disable). **Still owed:** bounded per-aircraft tracks,
-index expiry on a staleness timeout, not merging ID-less contacts into one airframe,
-returning-ICAO-as-same-identity-with-a-track-gap, and the **Remote ID surface**
-(`/api/remote_id` + tab) — the last being the prerequisite for P7's loitering-UAS case.
+**Status (2026-06-15): core + remainder shipped.** Core: `/api/aircraft` serves the
+current sky from the per-ICAO index (once per airframe), the map decays markers by
+recency while the table retains a longer detection log (`AIRCRAFT_RETENTION_SECONDS`),
+aircraft and drones survive a refresh (the live-reproduced eviction bug is fixed), and
+the sensor-chiclet accuracy fix rode along (ADS-B green when working in SHARED mode;
+DroneRF greys only on real auto-disable). Remainder: **bounded per-aircraft/Remote-ID
+tracks** (`AIRCRAFT_TRACK_MAX_POINTS`, default 500), **ID-less aircraft no longer merge**
+into one "unknown" airframe (skipped from the per-ICAO log, counted in
+`stats.aircraft_idless_skipped`), the **Remote ID index is pruned** on the retention
+window (the aircraft index already was; the drone index is band-keyed and inherently
+bounded), and the **Remote ID surface** shipped — `/api/remote_id` + a Remote ID tab
+fed by live `push_event("remote_id", …)`, the prerequisite for P7's loitering-UAS case.
+**Deferred (only item):** returning-ICAO-as-same-identity-with-a-track-gap — lowest
+value, needs a gap-rendering convention; tracked for a later small PR.
 
 ### P7 — Aircraft of interest: orbit/loiter detection (ADS-B + Remote ID)
 
