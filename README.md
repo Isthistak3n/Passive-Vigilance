@@ -65,35 +65,35 @@ capturing automatically.
 ```mermaid
 flowchart TD
     subgraph Hardware
-        SDR[RTL-SDR / HackRF]
-        WIFI[WiFi Dongle (Monitor Mode)]
-        GPS[GPS Dongle]
-        BT[Bluetooth Dongle]
+        SDR["RTL-SDR / HackRF"]
+        WIFI["WiFi Dongle (Monitor Mode)"]
+        GPS["GNSS Dongle"]
+        BT["Bluetooth Dongle"]
     end
     subgraph Daemons
-        READSB[readsb (ADS-B decoder)]
-        KISMET[Kismet WiFi capture]
-        GPSD[GPSD position + UTC]
+        READSB["readsb (ADS-B decoder)"]
+        KISMET["Kismet WiFi capture"]
+        GPSD["gpsd (position + UTC)"]
     end
-    subgraph Python Orchestrator
-        ADSB[ADSBModule\\n+ adsb.lol enrichment]
-        DRONE[DroneRFModule\\n433/868/915 MHz]
-        KIS[KismetModule\\nREST API poll]
-        BLE[BLEScanner\\nraw-HCI adverts]
-        RID[RemoteIDModule\\nFAA Remote ID]
-        GPSM[GPSModule\\nfit quality]
-        IGNORE[IgnoreList\\nMAC/OUI/SSID filter]
-        PERSIST[ScoringEngine\\nMobile or Fixed mode]
-        PROBE[ProbeAnalyzer\\nSSID patterns]
+    subgraph Orchestrator["Python Orchestrator"]
+        ADSB["ADSBModule<br/>+ adsb.lol enrichment"]
+        DRONE["DroneRFModule<br/>433/868/915 MHz"]
+        KIS["KismetModule<br/>REST API poll"]
+        BLE["BLEScanner<br/>raw-HCI adverts"]
+        RID["RemoteIDModule<br/>FAA Remote ID"]
+        GPSM["GPSModule<br/>fix quality"]
+        IGNORE["IgnoreList<br/>MAC/OUI/SSID filter"]
+        PERSIST["ScoringEngine<br/>Mobile or Fixed mode"]
+        PROBE["ProbeAnalyzer<br/>SSID patterns"]
     end
     subgraph Outputs
-        ALERT[Alert Engine\\nNtfy / Telegram]
-        SHP[Shapefile Writer\\ngeopandas / fiona]
-        WIGLE[WiGLE Uploader\\nsession CSV]
-        DB[(SQLite DB\\nevent log)]
+        ALERT["Alert Engine<br/>Ntfy / Telegram"]
+        SHP["Shapefile Writer<br/>geopandas / fiona"]
+        WIGLE["WiGLE Uploader<br/>session CSV"]
+        DB[("SQLite DB<br/>event log")]
     end
-    RTL --> READSB
-    RTL --> DRONE
+    SDR --> READSB
+    SDR --> DRONE
     WIFI --> KISMET
     BT --> BLE
     GPS --> GPSD
