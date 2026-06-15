@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from modules import device_identity
+from modules import promotion_policy
 from modules.baseline_store import BaselineStore, DeviceProfile, _DEFAULT_DB_PATH
 from modules.mac_utils import (
     get_mac_type,
@@ -196,6 +197,21 @@ class FixedScoring(ScoringEngine):
         # Distinct Wi-Fi APs suppressed from approaching that would otherwise have
         # qualified — observable so a soak can show exactly what the filter caught.
         self._approaching_excluded_aps: set = set()
+        # Rolling-baseline adaptation (P3). Posture selects parameters only; "off"
+        # (the default / fail-safe) leaves the baseline frozen forever — today's
+        # behaviour. A recognised-but-misconfigured posture fails loud here at
+        # construction (resolve_adaptation raises) rather than running unsafely.
+        self._adaptation_posture, self._adaptation_params = (
+            promotion_policy.resolve_adaptation(os.environ)
+        )
+        self._promotion_policy = promotion_policy.SustainedPresencePolicy()
+        if self._adaptation_posture != "off":
+            logger.info(
+                "FixedScoring rolling adaptation: posture=%s params=%s",
+                self._adaptation_posture, self._adaptation_params,
+            )
+        else:
+            logger.info("FixedScoring rolling adaptation: off (baseline frozen)")
         logger.info(
             "FixedScoring active — learning until %s (now %s)",
             self._store.freeze_time.isoformat(), self._clock().isoformat(),
@@ -340,9 +356,14 @@ class FixedScoring(ScoringEngine):
         randomized_no_fp = (
             profile.mac_type == "randomized" and str(profile.key).startswith("mac:")
         )
+        # A promoted fingerprint (P3 rolling adaptation) has earned its way into
+        # the baseline by sustained presence, so it is no longer novel — until it
+        # is demoted on prolonged absence, when it reads novel again. Original
+        # frozen-baseline devices are never promoted (they are already not novel).
         novelty = 0.0
         if (
             is_novel
+            and not profile.promoted
             and not randomized_no_fp
             and profile.observation_count >= _MIN_NOVELTY_OBSERVATIONS
         ):
@@ -430,7 +451,76 @@ class FixedScoring(ScoringEngine):
             "baseline_devices": self._store.baseline_count(),
             "total_profiles": self._store.profile_count(),
             "approaching_excluded_aps": len(self._approaching_excluded_aps),
+            # Rolling adaptation (P3): posture + how many fingerprints have been
+            # promoted into the baseline ("N learned + M promoted").
+            "adaptation_posture": self._adaptation_posture,
+            "promoted_devices": self._store.promoted_count(),
         }
+
+    # ------------------------------------------------------------------
+    # Rolling-baseline adaptation sweep (P3)
+    # ------------------------------------------------------------------
+
+    def _novelty_eligible(self, mac_type: str, key: str) -> bool:
+        """Mirror the novelty-eligibility rule from :meth:`_signals`: a randomized
+        MAC with no strong fingerprint (``mac:``-keyed) can't be tracked across
+        rotations, so it is never novelty-eligible and must never be promoted."""
+        return not (mac_type == "randomized" and str(key).startswith("mac:"))
+
+    def run_adaptation_sweep(self, now: Optional[datetime] = None) -> list:
+        """Run one promotion + demotion pass and return demotion event dicts.
+
+        No-op (returns ``[]``) when the posture is ``off`` — the fail-safe, so a
+        node that never opts in behaves exactly as today. The caller (orchestrator)
+        owns writing the returned demotion events to ``events.jsonl``; this method
+        only touches the store. Promotion is slow (sustained presence), demotion is
+        fast (absent past the window) — the invariant enforced in AdaptationParams.
+        """
+        if self._adaptation_posture == "off" or self._adaptation_params is None:
+            return []
+        now = now or self._clock()
+        params = self._adaptation_params
+        freeze_time = self._store.freeze_time
+
+        promoted = 0
+        for cand in self._store.promotion_candidates(freeze_time):
+            if not self._novelty_eligible(cand["mac_type"], cand["key"]):
+                continue
+            rec = promotion_policy.PresenceRecord(
+                key=cand["key"], mac_type=cand["mac_type"],
+                pf_first=cand["pf_first"], pf_last=cand["pf_last"],
+                distinct_days=cand["distinct_days"],
+                adapt_hour_mask=cand["adapt_hour_mask"],
+                observation_count=cand["observation_count"], now=now,
+            )
+            if self._promotion_policy.should_promote(rec, params):
+                self._store.promote(cand["key"], now)
+                promoted += 1
+
+        events = []
+        demote_after_s = params.demote_after.total_seconds()
+        for prof in self._store.promoted_profiles():
+            absence_s = (now - prof["last_seen"]).total_seconds()
+            if absence_s <= demote_after_s:
+                continue
+            self._store.demote(prof["key"])
+            events.append({
+                "event_type": "baseline_demotion",
+                "fingerprint": prof["key"],
+                "device_type": prof["device_type"],
+                "manufacturer": prof["manufacturer"],
+                "promotion_ts": prof["promotion_ts"].isoformat() if prof["promotion_ts"] else None,
+                "demotion_ts": now.isoformat(),
+                "absence_seconds": round(absence_s),
+                "reason": "absent_past_demotion_window",
+            })
+
+        if promoted or events:
+            logger.info(
+                "Adaptation sweep: promoted %d, demoted %d (posture=%s)",
+                promoted, len(events), self._adaptation_posture,
+            )
+        return events
 
     # ------------------------------------------------------------------
     # Event construction — shaped identically to the mobile path

@@ -79,6 +79,11 @@ class DeviceProfile:
     signal_count: int = 0
     recent_signal_mean: Optional[float] = None
     recent_signal_count: int = 0
+    # Rolling adaptation (P3). ``promoted`` marks a fingerprint that earned its way
+    # into the baseline after the freeze (so FixedScoring stops flagging it novel);
+    # ``promotion_ts`` records when. Original learning entries are never promoted.
+    promoted: bool = False
+    promotion_ts: Optional[datetime] = None
 
 
 def _iso(dt: datetime) -> str:
@@ -170,6 +175,19 @@ class BaselineStore:
             )
             """
         )
+        # Rolling-adaptation provenance (P3). Added via guarded ALTER so existing
+        # baselines on disk migrate in place (CREATE TABLE IF NOT EXISTS won't add
+        # columns to a table that already exists). Both are inert until a non-off
+        # ADAPTATION_POSTURE drives the sweep.
+        existing_cols = {
+            row["name"] for row in cur.execute("PRAGMA table_info(device_profiles)")
+        }
+        if "promoted" not in existing_cols:
+            cur.execute(
+                "ALTER TABLE device_profiles ADD COLUMN promoted INTEGER NOT NULL DEFAULT 0"
+            )
+        if "promotion_ts" not in existing_cols:
+            cur.execute("ALTER TABLE device_profiles ADD COLUMN promotion_ts TEXT")
         self._conn.commit()
 
     def _init_meta(self, now: datetime) -> None:
@@ -233,6 +251,14 @@ class BaselineStore:
     _EMPTY_STATE = {
         "hour_mask": 0, "sig_n": 0, "sig_mean": 0.0, "sig_m2": 0.0,
         "rec_n": 0, "rec_ema": 0.0,
+        # Post-freeze adaptation accumulator (P3) — entirely separate from the
+        # frozen baseline stats above, so promotion judges *post-freeze* presence
+        # without ever mutating the frozen baseline. adapt_hour_mask is a 24-bit
+        # hours-of-day mask; adapt_days counts distinct UTC days (via adapt_last_day,
+        # an ordinal, incremented only on a day change — bounded, no per-day list);
+        # pf_first/pf_last bracket the post-freeze presence span.
+        "adapt_hour_mask": 0, "adapt_days": 0, "adapt_last_day": None,
+        "pf_first": None, "pf_last": None,
     }
 
     @_synchronized
@@ -285,6 +311,18 @@ class BaselineStore:
                     a = _RECENT_SIGNAL_EMA_ALPHA
                     state["rec_ema"] = a * last_signal + (1 - a) * state["rec_ema"]
                 state["rec_n"] = state["rec_n"] + 1
+            # Post-freeze presence accumulator (P3), for rolling promotion. Always
+            # folded (independent of a usable signal) since presence, not RSSI, is
+            # what promotion judges. Never touches the frozen baseline stats above.
+            state["adapt_hour_mask"] |= (1 << now.hour)
+            day_ord = now.toordinal()
+            if state["adapt_last_day"] != day_ord:
+                state["adapt_days"] = state["adapt_days"] + 1
+                state["adapt_last_day"] = day_ord
+            now_iso = _iso(now)
+            if state["pf_first"] is None:
+                state["pf_first"] = now_iso
+            state["pf_last"] = now_iso
 
         hist_json = json.dumps(state)
         sig_n = state["sig_n"]
@@ -305,6 +343,7 @@ class BaselineStore:
             )
             first_seen, obs = now, 1
             manuf_final, dtype_final = manufacturer, device_type
+            promoted_final, promo_ts_final = False, None
         else:
             self._conn.execute(
                 "UPDATE device_profiles SET last_seen = ?, "
@@ -319,6 +358,11 @@ class BaselineStore:
             obs = existing.observation_count + 1
             manuf_final = manufacturer or existing.manufacturer
             dtype_final = device_type or existing.device_type
+            # Carry the promotion provenance through — upsert never changes it
+            # (promote/demote own that), but the returned profile must reflect it
+            # so the scorer's novelty gate sees a promoted device on the same poll.
+            promoted_final = existing.promoted
+            promo_ts_final = existing.promotion_ts
         self._conn.commit()
         return DeviceProfile(
             key=key,
@@ -334,6 +378,8 @@ class BaselineStore:
             signal_count=sig_n,
             recent_signal_mean=rec_mean,
             recent_signal_count=rec_n,
+            promoted=promoted_final,
+            promotion_ts=promo_ts_final,
         )
 
     @_synchronized
@@ -372,6 +418,7 @@ class BaselineStore:
                     rec_mean = float(state.get("rec_ema", 0.0))
             except (ValueError, TypeError):
                 pass
+        promotion_ts = _parse(row["promotion_ts"]) if row["promotion_ts"] else None
         return DeviceProfile(
             key=row["key"],
             first_seen=_parse(row["first_seen"]),
@@ -386,6 +433,8 @@ class BaselineStore:
             signal_count=sig_count,
             recent_signal_mean=rec_mean,
             recent_signal_count=rec_count,
+            promoted=bool(row["promoted"]),
+            promotion_ts=promotion_ts,
         )
 
     @_synchronized
@@ -401,6 +450,103 @@ class BaselineStore:
             "SELECT COUNT(*) AS n FROM device_profiles WHERE first_seen <= ?",
             (_iso(self.freeze_time),),
         ).fetchone()["n"]
+
+    # ------------------------------------------------------------------
+    # Rolling adaptation (P3) — promote/demote provenance + candidate reads
+    # ------------------------------------------------------------------
+
+    @_synchronized
+    def promoted_count(self) -> int:
+        """Number of fingerprints currently promoted into the baseline."""
+        return self._conn.execute(
+            "SELECT COUNT(*) AS n FROM device_profiles WHERE promoted = 1"
+        ).fetchone()["n"]
+
+    @_synchronized
+    def promotion_candidates(self, freeze_time: datetime) -> list:
+        """Post-freeze, not-yet-promoted profiles with their adaptation accumulator.
+
+        Returns a list of plain dicts (the engine maps them to PresenceRecords and
+        applies the novelty-eligibility filter + policy). Only devices first seen
+        after the freeze are candidates — original learning entries are already in
+        the baseline.
+        """
+        rows = self._conn.execute(
+            "SELECT key, mac_type, observation_count, time_histogram "
+            "FROM device_profiles WHERE promoted = 0 AND first_seen > ?",
+            (_iso(freeze_time),),
+        ).fetchall()
+        out = []
+        for row in rows:
+            state = self._parse_state(row["time_histogram"])
+            if state["pf_first"] is None or state["pf_last"] is None:
+                continue  # no post-freeze presence banked yet
+            out.append({
+                "key": row["key"],
+                "mac_type": row["mac_type"] or "static",
+                "observation_count": row["observation_count"],
+                "pf_first": _parse(state["pf_first"]),
+                "pf_last": _parse(state["pf_last"]),
+                "distinct_days": int(state["adapt_days"]),
+                "adapt_hour_mask": int(state["adapt_hour_mask"]),
+            })
+        return out
+
+    @_synchronized
+    def promoted_profiles(self) -> list:
+        """Currently-promoted entries with the fields the demotion check needs."""
+        rows = self._conn.execute(
+            "SELECT key, mac_type, manufacturer, device_type, last_seen, promotion_ts "
+            "FROM device_profiles WHERE promoted = 1"
+        ).fetchall()
+        return [{
+            "key": row["key"],
+            "mac_type": row["mac_type"] or "static",
+            "manufacturer": row["manufacturer"] or "",
+            "device_type": row["device_type"] or "",
+            "last_seen": _parse(row["last_seen"]),
+            "promotion_ts": _parse(row["promotion_ts"]) if row["promotion_ts"] else None,
+        } for row in rows]
+
+    @_synchronized
+    def promote(self, key: str, now: datetime) -> None:
+        """Mark *key* promoted into the baseline (idempotent on promotion_ts:
+        only stamps the first promotion). Never touches frozen-baseline rows —
+        the caller only passes post-freeze candidates."""
+        self._conn.execute(
+            "UPDATE device_profiles SET promoted = 1, "
+            "promotion_ts = COALESCE(promotion_ts, ?) WHERE key = ?",
+            (_iso(now), key),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def demote(self, key: str) -> None:
+        """Clear the promoted flag for *key*; only ever affects promoted rows.
+
+        ``promotion_ts`` is intentionally kept for the demotion event / debugging.
+        The WHERE clause guards that an original-baseline row (never promoted) is
+        structurally untouched.
+        """
+        self._conn.execute(
+            "UPDATE device_profiles SET promoted = 0 WHERE key = ? AND promoted = 1",
+            (key,),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def _parse_state(self, raw) -> dict:
+        """Parse a time_histogram JSON blob into the full accumulator dict."""
+        state = dict(self._EMPTY_STATE)
+        if raw:
+            try:
+                loaded = json.loads(raw)
+                for k in self._EMPTY_STATE:
+                    if k in loaded:
+                        state[k] = loaded[k]
+            except (ValueError, TypeError):
+                pass
+        return state
 
     @_synchronized
     def close(self) -> None:
