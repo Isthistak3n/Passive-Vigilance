@@ -65,15 +65,15 @@ capturing automatically.
 ```mermaid
 flowchart TD
     subgraph Hardware
-        RTL[RTL-SDR / HackRF]
-        WIFI[WiFi Dongle\\nMonitor Mode]
-        BT[Bluetooth Dongle]
+        SDR[RTL-SDR / HackRF]
+        WIFI[WiFi Dongle (Monitor Mode)]
         GPS[GPS Dongle]
+        BT[Bluetooth Dongle]
     end
     subgraph Daemons
-        READSB[readsb\\nADS-B decoder]
-        KISMET[Kismet daemon\\nWiFi + BT capture]
-        GPSD[gpsd\\nposition + UTC]
+        READSB[readsb (ADS-B decoder)]
+        KISMET[Kismet WiFi capture]
+        GPSD[GPSD position + UTC]
     end
     subgraph Python Orchestrator
         ADSB[ADSBModule\\n+ adsb.lol enrichment]
