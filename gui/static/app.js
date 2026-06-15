@@ -210,12 +210,14 @@ function renderDrone() {
 }
 
 function renderRemoteId() {
-  const q = document.getElementById('remote-id-search').value.toLowerCase();
+  const tbody = document.getElementById('remote-id-tbody');
+  if (!tbody) return;   // stale cached DOM without the Remote ID tab — no-op
+  const q = (document.getElementById('remote-id-search')?.value || '').toLowerCase();
   const rows = state.remoteId
     .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
     .slice(-200)
     .reverse();
-  document.getElementById('remote-id-tbody').innerHTML = rows.map(e => {
+  tbody.innerHTML = rows.map(e => {
     const lat = e.drone_lat != null ? (+e.drone_lat).toFixed(4) : '—';
     const lon = e.drone_lon != null ? (+e.drone_lon).toFixed(4) : '—';
     return `
@@ -255,20 +257,23 @@ function renderAlerts() {
   if (el) el.addEventListener('input', renderRemoteId);
 }
 
-// Clear buttons
-document.getElementById('wifi-clear').addEventListener('click', () => {
+// Clear buttons. Wired null-safe (optional chaining): a single missing element —
+// e.g. a browser holding a stale cached index.html that predates a newly added
+// tab — must never throw at top level and halt the rest of init (seedFromRest,
+// connectSSE, status polling), which would blank the whole dashboard.
+document.getElementById('wifi-clear')?.addEventListener('click', () => {
   state.wifi = []; layers.wifi.clearLayers(); renderWifi(); setBadge('badge-wifi', 0);
 });
-document.getElementById('aircraft-clear').addEventListener('click', () => {
+document.getElementById('aircraft-clear')?.addEventListener('click', () => {
   state.aircraft = []; layers.aircraft.clearLayers(); renderAircraft(); setBadge('badge-aircraft', 0);
 });
-document.getElementById('drone-clear').addEventListener('click', () => {
+document.getElementById('drone-clear')?.addEventListener('click', () => {
   state.drone = []; layers.drone.clearLayers(); renderDrone(); setBadge('badge-drone', 0);
 });
-document.getElementById('remote-id-clear').addEventListener('click', () => {
+document.getElementById('remote-id-clear')?.addEventListener('click', () => {
   state.remoteId = []; renderRemoteId(); setBadge('badge-remote-id', 0);
 });
-document.getElementById('alerts-clear').addEventListener('click', () => {
+document.getElementById('alerts-clear')?.addEventListener('click', () => {
   state.alerts = []; renderAlerts(); setBadge('badge-alerts', 0);
 });
 

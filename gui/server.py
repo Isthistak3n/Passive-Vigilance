@@ -178,9 +178,15 @@ class GUIServer:
 
         @app.route("/")
         def index():
-            if self._node_mode == "mobile":
-                return render_template("mobile.html")
-            return render_template("index.html")
+            template = "mobile.html" if self._node_mode == "mobile" else "index.html"
+            # The HTML doc must never be served stale: app.js is `no-cache` (always
+            # revalidated, so always current), and a browser that heuristically
+            # cached an OLDER index.html would then pair stale markup with fresh JS —
+            # a missing element the new JS expects can break the page. Force the doc
+            # to revalidate too so markup and script never drift.
+            resp = app.make_response(render_template(template))
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
 
         @app.route("/api/status")
         def api_status():

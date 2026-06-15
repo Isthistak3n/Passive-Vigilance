@@ -809,3 +809,17 @@ class TestGUIServerRemoteIDEndpoint(unittest.TestCase):
         resp = gui.app.test_client().get("/api/remote_id")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json(), [])
+
+
+class TestGUIServerIndexNoCache(unittest.TestCase):
+    """The HTML doc must revalidate so it never drifts behind the no-cache app.js
+    (a stale cached page + fresh JS broke the dashboard once)."""
+
+    def test_index_sets_no_cache(self):
+        from gui.server import GUIServer
+        gui = GUIServer()
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        resp = gui.app.test_client().get("/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("no-cache", resp.headers.get("Cache-Control", ""))
