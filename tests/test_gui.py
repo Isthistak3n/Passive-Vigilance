@@ -89,6 +89,18 @@ class TestGUIServerPushEvent(unittest.TestCase):
         self.assertEqual(len(self.gui._recent_nearby), 1)
         self.assertEqual(self.gui._recent_nearby[0]["last_signal"], -50)
 
+    def test_push_remote_id_appends_to_recent(self):
+        self.gui.push_event("remote_id", {"uas_id": "UAS-1", "ua_type": "Multirotor"})
+        self.assertEqual(len(self.gui._recent_remote_id), 1)
+        self.assertEqual(self.gui._recent_remote_id[0]["uas_id"], "UAS-1")
+
+    def test_push_remote_id_same_uas_dedups_to_one_entry(self):
+        # A drone re-broadcasting must collapse to ONE cache entry (latest state).
+        self.gui.push_event("remote_id", {"uas_id": "UAS-1", "drone_alt_m": 100})
+        self.gui.push_event("remote_id", {"uas_id": "UAS-1", "drone_alt_m": 150})
+        self.assertEqual(len(self.gui._recent_remote_id), 1)
+        self.assertEqual(self.gui._recent_remote_id[0]["drone_alt_m"], 150)
+
     def test_push_aircraft_same_icao_dedups_to_one_entry(self):
         # A plane re-seen every poll must collapse to ONE cache entry (its
         # latest state), not one entry per sighting — /api/aircraft returns
@@ -771,3 +783,29 @@ class TestGUIServerDurableHistory(unittest.TestCase):
         body = gui.app.test_client().get("/api/wifi").get_json()
         self.assertEqual(len(body), 1)
         self.assertEqual(body[0]["score"], 0.7)
+
+
+class TestGUIServerRemoteIDEndpoint(unittest.TestCase):
+    """/api/remote_id — current-sky lens served from the live per-UAS index (P6)."""
+
+    def test_api_remote_id_serves_current_index(self):
+        from gui.server import GUIServer
+
+        class _Orch:
+            def current_remote_id(self):
+                return [{"uas_id": "UAS-1", "ua_type": "Multirotor"}]
+
+        gui = GUIServer(orchestrator=_Orch())
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        body = gui.app.test_client().get("/api/remote_id").get_json()
+        self.assertEqual([e["uas_id"] for e in body], ["UAS-1"])
+
+    def test_api_remote_id_falls_back_to_cache(self):
+        from gui.server import GUIServer
+        gui = GUIServer()  # no orchestrator -> empty cache, still 200
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        resp = gui.app.test_client().get("/api/remote_id")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json(), [])

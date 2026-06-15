@@ -9,7 +9,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -572,6 +572,36 @@ async def test_aircraft_positionless_sighting_adds_no_track_point(orch):
     assert so.aircraft_detections[0]["positions"] == []
 
 
+@pytest.mark.asyncio
+async def test_aircraft_track_is_bounded(orch):
+    """A long-loitering target's track is capped (oldest dropped), not unbounded."""
+    so = orch.sensor_orchestrator
+    so._track_max_points = 3
+    orch._adsb_active = True
+    lat = 51.50
+    for _ in range(8):
+        lat += 0.02   # keep moving so every poll is a fresh track point
+        orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="ORBIT1", lat=lat, lon=-0.1)])
+        await so._poll_adsb()
+    assert len(so.aircraft_detections[0]["positions"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_poll_adsb_skips_idless_aircraft(orch):
+    """An aircraft with no ICAO is not merged into one bogus 'unknown' airframe."""
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[
+        _make_aircraft(icao="", lat=51.5, lon=-0.1),
+        _make_aircraft(icao=None, lat=52.0, lon=-1.0),
+    ])
+    await so._poll_adsb()
+    assert "unknown" not in so._aircraft_index
+    assert so._aircraft_index == {}
+    assert so.aircraft_detections == []
+    assert so._stats["aircraft_idless_skipped"] == 2
+
+
 # ---------------------------------------------------------------------------
 # _poll_drone_rf() — dedup by frequency band
 # ---------------------------------------------------------------------------
@@ -671,6 +701,46 @@ async def test_poll_remote_id_appends_every_frame_to_jsonl(orch, tmp_path):
     jsonl_path = so._session_dir / "remote_id.jsonl"
     assert len(jsonl_path.read_text().strip().splitlines()) == 3
     assert len(so.remote_id_detections) == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_remote_id_pushes_to_gui(orch):
+    """A Remote ID detection is pushed to the GUI as a 'remote_id' event (P6)."""
+    from unittest.mock import MagicMock
+    so = orch.sensor_orchestrator
+    so.gui_server = MagicMock()
+    so.remote_id.poll = AsyncMock(return_value=[_make_remote_id(uas_id="UAS-9")])
+    await so._poll_remote_id()
+    kinds = [c.args[0] for c in so.gui_server.push_event.call_args_list]
+    assert "remote_id" in kinds
+
+
+def test_prune_remote_id_index_drops_stale(orch):
+    """Departed UAS past the retention window are expired so the index stays bounded."""
+    so = orch.sensor_orchestrator
+    so._aircraft_retention_s = 3600
+    now = datetime.now(timezone.utc)
+    so._remote_id_index = {
+        "FRESH": {"uas_id": "FRESH", "timestamp": now.isoformat()},
+        "STALE": {"uas_id": "STALE",
+                  "timestamp": (now - timedelta(seconds=7200)).isoformat()},
+    }
+    so._prune_remote_id_index(now)
+    assert set(so._remote_id_index) == {"FRESH"}
+
+
+def test_current_remote_id_only_within_window(orch):
+    """current_remote_id() returns only contacts inside the retention window."""
+    so = orch.sensor_orchestrator
+    so._aircraft_retention_s = 3600
+    now = datetime.now(timezone.utc)
+    so._remote_id_index = {
+        "FRESH": {"uas_id": "FRESH", "timestamp": now.isoformat()},
+        "OLD": {"uas_id": "OLD",
+                "timestamp": (now - timedelta(seconds=7200)).isoformat()},
+    }
+    ids = {e["uas_id"] for e in so.current_remote_id()}
+    assert ids == {"FRESH"}
 
 
 # ---------------------------------------------------------------------------

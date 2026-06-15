@@ -129,6 +129,7 @@ class GUIServer:
         self._recent_drone: list[dict] = []
         self._recent_alerts: list[dict] = []
         self._recent_nearby: list[dict] = []
+        self._recent_remote_id: list[dict] = []
 
         # NODE_MODE is only read at startup (a running node keeps its mode until
         # restarted), so resolve it once here and use it to pick which template
@@ -314,8 +315,19 @@ class GUIServer:
                 ),
             })
 
-        # TODO(remote-id): Add /api/remote_id endpoint and a Remote ID tab in
-        # index.html once RemoteIDModule is wired into the SSE push_event stream.
+        @app.route("/api/remote_id")
+        def api_remote_id():
+            # Remote ID is an air contact, so it serves the live per-UAS current-sky
+            # index (like /api/aircraft), not the disk-history lens. Fall back to the
+            # cache if the orchestrator is unavailable.
+            orch = self._orchestrator
+            if orch is not None and hasattr(orch, "current_remote_id"):
+                try:
+                    return jsonify(orch.current_remote_id())
+                except Exception as exc:
+                    logger.debug("current_remote_id() failed, using cache: %s", exc)
+            with self._data_lock:
+                return jsonify(list(self._recent_remote_id))
 
         @app.route("/stream")
         def stream():
@@ -552,6 +564,8 @@ class GUIServer:
                 self._remember(self._recent_alerts, data, None)
             elif event_type == "nearby":
                 self._remember(self._recent_nearby, data, "mac")
+            elif event_type == "remote_id":
+                self._remember(self._recent_remote_id, data, "uas_id")
 
         # Broadcast to all SSE clients
         with self._clients_lock:
