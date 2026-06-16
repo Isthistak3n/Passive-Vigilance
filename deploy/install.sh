@@ -32,7 +32,12 @@ apt update -qq
 DEBIAN_FRONTEND=noninteractive apt install -y \
   gpsd gpsd-clients python3-gps python3-pip python3-venv \
   kismet \
-  rtl-sdr librtlsdr0 librtlsdr-dev
+  rtl-sdr librtlsdr0 librtlsdr-dev \
+  bluez usbutils
+# bluez   -> btmgmt, used by the service ExecStartPre to enable LE on the BLE
+#            controller at boot (BR/EDR-only otherwise starves the raw-HCI scanner).
+# usbutils -> lsusb (DroneRF hardware probe) and usbreset (optional SDR-handoff
+#            wedge recovery, SDR_HANDOFF_USB_RESET=true).
 
 # ── 2b. readsb (wiedehopf build — RTL-SDR enabled) ────────────────────────
 # The Debian Trixie readsb package is compiled without ENABLE_RTLSDR.
