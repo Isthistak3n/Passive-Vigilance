@@ -137,9 +137,11 @@ async def test_coordinator_handoff_to_drone_sets_owner():
     from modules.sdr_coordinator import SDRCoordinator
 
     drone_rf = MagicMock()
+    drone_rf.auto_disabled = False  # a real DroneRF defaults False (not crash-disabled)
     drone_rf.start_scan = AsyncMock()
 
     coordinator = SDRCoordinator(drone_rf)
+    coordinator._handoff_settle = 0  # no real sleep in the test
     with patch.object(coordinator, "_stop_readsb", new_callable=AsyncMock) as mock_stop, \
          patch.object(coordinator, "_is_readsb_active", new_callable=AsyncMock, return_value=False):
         await coordinator._handoff_to_drone()
