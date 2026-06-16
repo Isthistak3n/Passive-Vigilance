@@ -22,6 +22,7 @@ from modules.sdr_coordinator import SDRCoordinator
 def drone_rf():
     m = MagicMock()
     m.can_scan = False
+    m.auto_disabled = False
     m._scan_task = None
     m.stop_scan = AsyncMock()
     m.start_scan = AsyncMock()
@@ -30,7 +31,11 @@ def drone_rf():
 
 @pytest.fixture()
 def coordinator(drone_rf):
-    with patch.dict(os.environ, {"ADSB_SLICE_SECONDS": "1", "DRONE_RF_SLICE_SECONDS": "1"}):
+    with patch.dict(os.environ, {
+        "ADSB_SLICE_SECONDS": "1",
+        "DRONE_RF_SLICE_SECONDS": "1",
+        "SDR_HANDOFF_SETTLE_SECONDS": "0",  # keep tests fast/deterministic
+    }):
         return SDRCoordinator(drone_rf)
 
 
@@ -147,3 +152,55 @@ async def test_stop_restores_readsb(coordinator, drone_rf):
     assert coordinator.healthy is True
     assert drone_rf.can_scan is False
     drone_rf.stop_scan.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Handoff barrier (settle + auto-disable guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_settle_barrier_runs_before_each_handoff(coordinator):
+    """Both handoffs must settle the dongle before opening it for the next owner."""
+    with (
+        patch.object(coordinator, "_settle_sdr", AsyncMock()) as settle,
+        patch.object(coordinator, "_start_readsb_with_handshake", AsyncMock(return_value=True)),
+        patch.object(coordinator, "_stop_readsb_with_handshake", AsyncMock(return_value=True)),
+    ):
+        await coordinator._handoff_to_adsb()
+        await coordinator._handoff_to_drone()
+
+    assert settle.await_count == 2, "settle barrier missing on a handoff"
+
+
+@pytest.mark.asyncio
+async def test_auto_disabled_drone_keeps_readsb(coordinator, drone_rf):
+    """When DroneRF has crash-disabled, the dongle stays with readsb (no thrash)."""
+    drone_rf.auto_disabled = True
+    stop = AsyncMock(return_value=True)
+    with patch.object(coordinator, "_stop_readsb_with_handshake", stop):
+        await coordinator._handoff_to_drone()
+
+    stop.assert_not_awaited()  # readsb never stopped
+    drone_rf.start_scan.assert_not_awaited()  # dead scanner never started
+    assert coordinator.current_owner == "adsb"
+
+
+@pytest.mark.asyncio
+async def test_settle_skips_usbreset_when_disabled(coordinator):
+    """With usb-reset off (default), _settle_sdr must not invoke usbreset."""
+    coordinator._handoff_settle = 0
+    coordinator._usb_reset = False
+    with patch.object(coordinator, "_reset_sdr", AsyncMock()) as reset:
+        await coordinator._settle_sdr()
+    reset.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_settle_invokes_usbreset_when_enabled(coordinator):
+    """With usb-reset on, _settle_sdr must invoke the reset escalation."""
+    coordinator._handoff_settle = 0
+    coordinator._usb_reset = True
+    with patch.object(coordinator, "_reset_sdr", AsyncMock()) as reset:
+        await coordinator._settle_sdr()
+    reset.assert_awaited_once()
