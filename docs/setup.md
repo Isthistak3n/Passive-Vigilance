@@ -385,6 +385,28 @@ hciconfig -a                   # the dongle should appear up (e.g. hci0)
 Leave the `bluetooth` system service **disabled** — the scanner talks to the
 controller directly and `bluetoothd` would compete with it.
 
+### Enable Low Energy on the controller
+
+With `bluetoothd` disabled, **nothing turns LE on at boot** — the controller
+comes up `BR/EDR`-only after a reboot or USB re-plug. The raw-HCI scanner will
+still bind and log "started," but it receives few or no advertisement reports, so
+no `ble-fp:` fingerprints get built. Confirm and fix:
+
+```bash
+sudo btmgmt --index 0 info | grep "current settings"   # want "le" in the list
+sudo btmgmt --index 0 le on                             # runtime only — resets on reboot
+```
+
+To make it durable, the service unit enables LE in an `ExecStartPre` before the
+orchestrator starts (gated on `BLE_SCANNER_ENABLED`, auto-detects the lowest HCI
+index, retries for late USB enumeration, non-fatal if absent). It runs under the
+unit's `CAP_NET_ADMIN`, so no `sudo` is needed:
+
+```ini
+# deploy/passive-vigilance.service  (installed by install.sh)
+ExecStartPre=-/bin/sh -c 'test "$BLE_SCANNER_ENABLED" = "true" || exit 0; for i in 1 2 3 4 5 6 7 8; do idx=$(ls /sys/class/bluetooth/ 2>/dev/null | sed -n "s/^hci\([0-9][0-9]*\)$/\1/p" | sort -n | head -1); if [ -n "$idx" ]; then /usr/bin/btmgmt --index "$idx" power on >/dev/null 2>&1; /usr/bin/btmgmt --index "$idx" le on >/dev/null 2>&1 && exit 0; fi; sleep 2; done'
+```
+
 ### Grant raw-socket capability to the service
 
 A raw HCI socket needs `CAP_NET_RAW` + `CAP_NET_ADMIN`. The service unit grants
