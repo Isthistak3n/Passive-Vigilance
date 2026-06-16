@@ -18,16 +18,13 @@ User=${PI_USER}
 Group=${PI_USER}
 WorkingDirectory=/home/${PI_USER}/Passive-Vigilance
 EnvironmentFile=/home/${PI_USER}/Passive-Vigilance/.env
-# Enable Low Energy on the BLE controller before capture starts. After a reboot
-# or USB re-plug the controller comes up BR/EDR-only (bluetoothd is intentionally
-# not running, so nothing else turns LE on), which silently starves the raw-HCI
-# advertisement scanner — it binds the socket and logs "started" but receives no
-# LE adverts, so no BLE fingerprints are built. Retries to tolerate late USB
-# enumeration and auto-detects the lowest-numbered controller (it may re-enumerate
-# to hci1 after a reset). Non-fatal (leading '-') so a missing/absent controller
-# never blocks orchestrator startup. Runs under the unit's CAP_NET_ADMIN, so
-# btmgmt needs no sudo. Skipped entirely unless BLE_SCANNER_ENABLED=true.
-ExecStartPre=-/bin/sh -c 'test "$BLE_SCANNER_ENABLED" = "true" || exit 0; for i in 1 2 3 4 5 6 7 8; do idx=$(ls /sys/class/bluetooth/ 2>/dev/null | sed -n "s/^hci\\([0-9][0-9]*\\)$/\\1/p" | sort -n | head -1); if [ -n "$idx" ]; then /usr/bin/btmgmt --index "$idx" power on >/dev/null 2>&1; /usr/bin/btmgmt --index "$idx" le on >/dev/null 2>&1 && exit 0; fi; sleep 2; done'
+# Prepare the BLE controller before the raw-HCI scanner opens it: rfkill unblock,
+# bring the lowest hci controller up, and enable Low Energy. With bluetoothd off
+# (PV owns the controller directly) nothing else does this, and the controller
+# comes up BR/EDR-only after a reboot — which silently starves the advert scanner.
+# See deploy/set-bt-up.sh. Leading '+' runs it as root (so it works regardless of
+# User=); '-' makes it non-fatal. The script is best-effort and always exits 0.
+ExecStartPre=-+/usr/local/bin/set-bt-up.sh
 ExecStart=/opt/passive-vigilance/venv/bin/python3 /home/${PI_USER}/Passive-Vigilance/main.py
 # Passive BLE capture (BLE_SCANNER_ENABLED=true) opens a raw HCI socket, which
 # needs CAP_NET_RAW + CAP_NET_ADMIN. Granted as ambient capabilities so they apply

@@ -1,5 +1,6 @@
-# Bring the Bluetooth controller up whenever the kernel registers it, so a USB
-# BT dongle that enumerates late at boot (or is hot-plugged) still gets hci0
-# raised for Kismet's linuxbluetooth source. Mirrors 99-wlan1-monitor.rules.
+# Prepare the Bluetooth controller whenever the kernel registers it, so a USB BT
+# dongle that enumerates late at boot (or is hot-plugged) still gets unblocked,
+# raised, and LE-enabled for PV's raw-HCI BLE scanner. set-bt-up.sh does the work
+# (rfkill unblock + hci up + btmgmt le on). Mirrors 99-wlan1-monitor.rules.
 ACTION=="add", SUBSYSTEM=="bluetooth", KERNEL=="hci[0-9]*", \
   RUN+="/usr/local/bin/set-bt-up.sh"
