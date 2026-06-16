@@ -128,12 +128,12 @@ fi
 udevadm control --reload-rules
 systemctl restart NetworkManager
 
-# ── 3c. Bluetooth controller auto-up ───────────────────────────────────────
-# Kismet's linuxbluetooth source needs hci0 up, but nothing raises it (Kismet
-# runs no bluetoothd) and the USB BT dongle can enumerate after Kismet starts.
-# Install a helper + udev rule so hci0 comes up on boot and hot-plug; the
-# kismet unit also calls it via ExecStartPre.
-echo "$LOG Configuring Bluetooth controller auto-up..."
+# ── 3c. Bluetooth controller bring-up (for PV's raw-HCI BLE scanner) ────────
+# PV's BLE scanner owns the controller directly (no bluetoothd), so nothing else
+# unblocks rfkill, raises the controller, or enables LE — and it can enumerate
+# late at boot. Install a helper + udev rule so the controller is prepared on boot
+# and hot-plug; passive-vigilance.service also calls it via ExecStartPre.
+echo "$LOG Configuring Bluetooth controller bring-up..."
 cp "$REPO_DIR/deploy/set-bt-up.sh" /usr/local/bin/set-bt-up.sh
 chmod +x /usr/local/bin/set-bt-up.sh
 cp "$REPO_DIR/deploy/99-bt-hci-up.rules" /etc/udev/rules.d/99-bt-hci-up.rules

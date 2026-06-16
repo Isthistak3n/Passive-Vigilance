@@ -9,10 +9,9 @@ Group=${PI_USER}
 Environment=KISMET_CAPTURE_INTERFACE=wlan1
 Environment=HOME=/home/${PI_USER}
 WorkingDirectory=/home/${PI_USER}
-# Raise the USB Bluetooth controller (hci0) before Kismet reads its sources, so
-# the linuxbluetooth source in kismet_site.conf opens reliably at boot. Runs as
-# root (the leading +) regardless of User=${PI_USER}; best-effort, never blocks.
-ExecStartPre=+/usr/local/bin/set-bt-up.sh
+# Bluetooth is owned by Passive Vigilance's raw-HCI scanner now (the BLE cutover
+# removed Kismet's linuxbluetooth source), so controller bring-up moved to
+# passive-vigilance.service. Kismet captures WiFi only.
 ExecStart=/usr/bin/kismet --no-ncurses-wrapper -c wlan1
 Restart=on-failure
 RestartSec=5

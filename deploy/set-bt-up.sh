@@ -1,17 +1,35 @@
 #!/bin/bash
-# Raise the USB Bluetooth controller (hci0) for Kismet's linuxbluetooth source.
-#
-# Kismet talks to the BT controller directly and does NOT run bluetoothd, so
-# nothing else raises hci0. The USB dongle can also enumerate AFTER Kismet
-# starts at boot, which leaves the linuxbluetooth source failing and hci0 DOWN.
-# This unblocks rfkill and brings hci0 up, waiting briefly for a late dongle.
-#
-# Always exits 0 — Bluetooth is best-effort and must never block WiFi capture.
+# Prepare the USB Bluetooth controller for Passive Vigilance's passive BLE
+# advertisement scanner (modules/ble_scanner.py), which owns the controller
+# directly through a raw HCI socket. bluetoothd is intentionally NOT running, so
+# nothing else prepares the controller — this script is the single place that does:
+#   - rfkill soft-blocks a fresh dongle until unblocked,
+#   - after a reboot/re-plug the controller comes up BR/EDR-only (LE disabled),
+#     which silently starves the advert scanner (it binds but gets ~no reports),
+#   - a USB dongle can enumerate late at boot.
+# So: unblock rfkill, bring the lowest present hci controller up, and enable LE.
+# Invoked from passive-vigilance.service (ExecStartPre) and the BT-add udev rule
+# (deploy/99-bt-hci-up.rules) so it covers both boot and hot-plug.
+# Always exits 0 — BLE is best-effort and must never block startup.
+
 /usr/sbin/rfkill unblock bluetooth 2>/dev/null || true
+
+# Lowest-numbered present controller — the dongle may re-enumerate to hci1 after a
+# USB reset, matching ble_scanner's own index resolution. Wait briefly for a late
+# dongle at boot.
+_hci_index() {
+  ls /sys/class/bluetooth/ 2>/dev/null \
+    | sed -n 's/^hci\([0-9][0-9]*\)$/\1/p' | sort -n | head -1
+}
+idx=$(_hci_index)
 for _ in $(seq 1 15); do
-  if /usr/bin/hciconfig hci0 >/dev/null 2>&1; then
-    /usr/bin/hciconfig hci0 up 2>/dev/null && break
-  fi
+  [ -n "$idx" ] && break
   sleep 1
+  idx=$(_hci_index)
 done
+[ -n "$idx" ] || exit 0
+
+/usr/bin/hciconfig "hci${idx}" up 2>/dev/null || true
+/usr/bin/btmgmt --index "$idx" power on >/dev/null 2>&1 || true
+/usr/bin/btmgmt --index "$idx" le on >/dev/null 2>&1 || true
 exit 0
