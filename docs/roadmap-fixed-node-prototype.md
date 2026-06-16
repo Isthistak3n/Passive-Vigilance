@@ -136,7 +136,7 @@ new detection features.
 | **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live (BLE raw-HCI capture, BLE/WiFi signatures, fingerprint-keyed scoring); cut the flood ~36→3–5/cycle. Cross-session *returning-entity* linkage remains | No |
 | **P5** | Fixed-mode GUI framing + durable history | ◑ Partial — contact designators + scoring-panel thread-safety + **durable detection/alert history** (panels rebuild from on-disk session logs across refresh/restart; alerts now persisted and shown) merged; baseline-state framing + signal/severity anomaly framing remain | No |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ◑ Core + remainder shipped — current-sky panel, decay, chiclet accuracy, **bounded tracks**, **ID-less split**, Remote ID index pruning, and the **Remote ID GUI surface** (`/api/remote_id` + tab) merged; only the returning-ICAO track-gap deferred | No |
-| **P7** | Aircraft of interest: orbit/loiter detection | ☐ Not started — design captured | No |
+| **P7** | Aircraft of interest: orbit/loiter detection | ◑ In progress — design revised to a **persistence-score** model (mirrors the mobile engine; transit≈0, loiter/return climbs); pure geometry + scoring core (`air_geometry.py` / `air_scoring.py`) + synthetic-track tests landed. Next: reference position + live GUI classifier, then baseline + alert gating | No |
 
 ### P0 — Endurance hardening (blocking)
 
