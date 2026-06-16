@@ -1,8 +1,17 @@
 """WiFi probe request analyzer — detect devices probing suspicious SSID patterns."""
 
 import logging
+import os
+from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
+
+# Bounds on the probe history so a long-running node (esp. a fixed-node soak with
+# constantly-rotating randomized MACs) cannot grow it without limit. The MAC map
+# is LRU — the least-recently-seen MAC is evicted past the cap; each MAC's SSID
+# set is also capped so a single chatty device can't accumulate unboundedly.
+_MAX_TRACKED_MACS = int(os.getenv("PROBE_HISTORY_MAX_MACS", "5000"))
+_MAX_SSIDS_PER_MAC = int(os.getenv("PROBE_MAX_SSIDS_PER_MAC", "256"))
 
 # SSID substrings that may indicate surveillance equipment or deliberate tracking
 _SURVEILLANCE_PATTERNS = [
@@ -39,8 +48,10 @@ class ProbeAnalyzer:
     """
 
     def __init__(self) -> None:
-        # mac → set of SSIDs seen probed by that device
-        self._probe_history: dict = {}
+        # mac → set of SSIDs seen probed by that device. OrderedDict so the map
+        # can be LRU-bounded (see _MAX_TRACKED_MACS); insertion/refresh order is
+        # the recency order.
+        self._probe_history: "OrderedDict[str, set]" = OrderedDict()
 
     # ------------------------------------------------------------------
     # Analysis
@@ -100,7 +111,7 @@ class ProbeAnalyzer:
     # ------------------------------------------------------------------
 
     def _update_history(self, devices: list) -> None:
-        """Accumulate SSIDs from probe-capable device types."""
+        """Accumulate SSIDs from probe-capable device types (LRU- and size-bounded)."""
         for device in devices:
             mac   = device.get("macaddr", "")
             ssid  = device.get("name", "").strip()
@@ -108,8 +119,19 @@ class ProbeAnalyzer:
             if not mac or not ssid:
                 continue
             # WiFi client devices generate probe requests
-            if any(kw in dtype for kw in ("client", "wi-fi", "wifi", "probe")):
-                self._probe_history.setdefault(mac, set()).add(ssid)
+            if not any(kw in dtype for kw in ("client", "wi-fi", "wifi", "probe")):
+                continue
+            ssids = self._probe_history.get(mac)
+            if ssids is None:
+                ssids = set()
+                self._probe_history[mac] = ssids
+            # Mark this MAC most-recently-seen for LRU eviction.
+            self._probe_history.move_to_end(mac)
+            if len(ssids) < _MAX_SSIDS_PER_MAC:
+                ssids.add(ssid)
+        # Evict the least-recently-seen MACs past the cap.
+        while len(self._probe_history) > _MAX_TRACKED_MACS:
+            self._probe_history.popitem(last=False)
 
     def _evaluate(self, mac: str) -> list:
         """Return a list of suspicion indicator strings for *mac*, or []."""
