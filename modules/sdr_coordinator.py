@@ -10,14 +10,11 @@ import logging
 import os
 import subprocess
 
+from modules.sdr_utils import RTL_SDR_VENDOR, RTL_SDR_PRODUCTS
+
 logger = logging.getLogger(__name__)
 
 _READSB_SERVICE = "readsb"
-
-# RTL-SDR USB IDs (Realtek RTL2832U variants) — used to locate the dongle's
-# /dev/bus/usb node for the optional usbreset escalation.
-_RTL_VENDOR = "0bda"
-_RTL_PRODUCTS = {"2832", "2838", "2813"}
 
 
 class SDRCoordinator:
@@ -225,7 +222,7 @@ class SDRCoordinator:
                     product = fh.read().strip()
             except OSError:
                 continue
-            if vendor == _RTL_VENDOR and product in _RTL_PRODUCTS:
+            if vendor == RTL_SDR_VENDOR and product in RTL_SDR_PRODUCTS:
                 try:
                     with open(os.path.join(dev, "busnum")) as fh:
                         bus = int(fh.read().strip())

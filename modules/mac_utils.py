@@ -5,10 +5,8 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-# Second hex digit of first octet values that indicate locally administered (randomized) MACs
-_RANDOMIZED_SECOND_DIGITS = frozenset({"2", "6", "a", "e"})
-
-# Bit mask: bit 1 of first octet = locally administered
+# Bit mask: bit 1 of first octet = locally administered. Equivalently, the second
+# hex digit of the first octet is 2, 6, A, or E.
 _LOCALLY_ADMINISTERED_BIT = 0x02
 
 

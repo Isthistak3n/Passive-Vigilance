@@ -14,7 +14,6 @@ them with the current GPS fix (GPS lives in the parent, not the crash-prone chil
 import asyncio
 import os
 import queue as _queue
-import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -31,7 +30,6 @@ logger = get_logger(__name__)
 _DRONE_FREQUENCIES_MHZ = [433.0, 868.0, 915.0, 2400.0, 5800.0]
 _MAX_RTL_SDR_FREQ_MHZ = 1750.0
 DRONE_POWER_THRESHOLD_DB = float(os.getenv("DRONE_POWER_THRESHOLD_DB", "-20"))
-_RTL_SDR_USB_IDS = frozenset({"0bda:2832", "0bda:2838", "0bda:2813"})
 _SAMPLE_COUNT = 256 * 1024
 _SAMPLE_RATE_HZ = 2.048e6
 
@@ -277,15 +275,8 @@ class DroneRFModule:
     # ------------------------------------------------------------------
 
     def is_hardware_present(self) -> bool:
-        try:
-            result = subprocess.run(["lsusb"], capture_output=True, text=True, timeout=5)
-            for line in result.stdout.splitlines():
-                for part in line.lower().split():
-                    if part in _RTL_SDR_USB_IDS:
-                        return True
-        except Exception:
-            pass
-        return False
+        from modules.sdr_utils import is_rtl_sdr_present
+        return is_rtl_sdr_present()
 
     def drain_detections(self) -> list[dict]:
         '''Atomically return and clear the detection buffer (orchestrator API).'''

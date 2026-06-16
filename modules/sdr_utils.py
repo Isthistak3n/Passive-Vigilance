@@ -6,9 +6,15 @@ from typing import FrozenSet
 
 logger = logging.getLogger(__name__)
 
-_RTL_SDR_USB_IDS: FrozenSet[str] = frozenset({
-    "0bda:2832", "0bda:2838", "0bda:2813"
-})
+# Single source of truth for RTL-SDR (Realtek RTL2832U) USB identity. Callers that
+# match `lsusb` output use the combined vendor:product set; callers that match
+# sysfs idVendor/idProduct separately (e.g. the SDR coordinator's usbreset node
+# lookup) use the components. Keep all RTL-SDR ID matching pointed here.
+RTL_SDR_VENDOR: str = "0bda"
+RTL_SDR_PRODUCTS: FrozenSet[str] = frozenset({"2832", "2838", "2813"})
+_RTL_SDR_USB_IDS: FrozenSet[str] = frozenset(
+    f"{RTL_SDR_VENDOR}:{product}" for product in RTL_SDR_PRODUCTS
+)
 
 
 def is_rtl_sdr_present() -> bool:

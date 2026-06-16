@@ -7,6 +7,8 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
+from modules.mac_utils import normalize_mac as _normalize_mac
+
 logger = logging.getLogger(__name__)
 
 _MAC_FILE = "mac_ignore.json"
@@ -14,15 +16,6 @@ _SSID_FILE = "ssid_ignore.json"
 
 _MAC_SCHEMA_VERSION = 1
 _SSID_SCHEMA_VERSION = 1
-
-
-def _normalize_mac(mac: str) -> str:
-    """Normalize a MAC address to lowercase colon-separated form."""
-    cleaned = mac.strip().lower().replace("-", ":").replace(".", ":")
-    # Handle compact form (no separators) e.g. aabbccddeeff
-    if len(cleaned) == 12 and ":" not in cleaned:
-        cleaned = ":".join(cleaned[i:i+2] for i in range(0, 12, 2))
-    return cleaned
 
 
 def _now_iso() -> str:

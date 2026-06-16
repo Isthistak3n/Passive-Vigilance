@@ -198,7 +198,15 @@ class ShapefileWriter:
                 json.dump({"type": "FeatureCollection", "features": []}, fh)
             return geojson_path
 
-        geometries = [Point(e.get("lon") or 0.0, e.get("lat") or 0.0) for e in events]
+        # Remote ID frames carry their position as drone_lat/drone_lon (the
+        # receiver has no lat/lon for them); every other event type uses lat/lon.
+        # Mirrors the per-type geometry in write_session.
+        def _coords(e: dict):
+            if e.get("event_type") == "remote_id":
+                return (e.get("drone_lon") or 0.0, e.get("drone_lat") or 0.0)
+            return (e.get("lon") or 0.0, e.get("lat") or 0.0)
+
+        geometries = [Point(*_coords(e)) for e in events]
         # Flatten all event fields as string properties (except lat/lon)
         records = [
             {

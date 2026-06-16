@@ -32,19 +32,19 @@ def _mod():
 
 class TestDroneRFHardwareDetection(unittest.TestCase):
 
-    @patch("modules.drone_rf.subprocess.run")
+    @patch("modules.sdr_utils.subprocess.run")
     def test_hardware_present_with_known_usb_id(self, mock_run):
         mock_run.return_value = MagicMock(
             stdout="Bus 001 Device 003: ID 0bda:2832 Realtek Semiconductor Corp.\n", returncode=0)
         self.assertTrue(_mod().is_hardware_present())
 
-    @patch("modules.drone_rf.subprocess.run")
+    @patch("modules.sdr_utils.subprocess.run")
     def test_hardware_not_present_without_rtlsdr(self, mock_run):
         mock_run.return_value = MagicMock(
             stdout="Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub\n", returncode=0)
         self.assertFalse(_mod().is_hardware_present())
 
-    @patch("modules.drone_rf.subprocess.run")
+    @patch("modules.sdr_utils.subprocess.run")
     def test_hardware_present_0bda_2813(self, mock_run):
         mock_run.return_value = MagicMock(
             stdout="Bus 001 Device 004: ID 0bda:2813 Realtek RTL2813U\n", returncode=0)
@@ -57,14 +57,14 @@ class TestDroneRFHardwareDetection(unittest.TestCase):
 
 class TestDroneRFLifecycle(unittest.TestCase):
 
-    @patch("modules.drone_rf.subprocess.run",
+    @patch("modules.sdr_utils.subprocess.run",
            return_value=MagicMock(stdout="ID 1d6b:0002 Linux Foundation\n", returncode=0))
     def test_start_scan_graceful_when_no_hardware(self, _run_mock):
         m = _mod()
         _run(m.start_scan())  # must not raise
         self.assertIsNone(m._scan_task)
 
-    @patch("modules.drone_rf.subprocess.run",
+    @patch("modules.sdr_utils.subprocess.run",
            return_value=MagicMock(stdout="ID 0bda:2838 Realtek\n", returncode=0))
     def test_start_scan_skipped_when_crash_guard_disabled(self, _run_mock):
         from modules.drone_rf import DroneRFModule
@@ -75,7 +75,7 @@ class TestDroneRFLifecycle(unittest.TestCase):
             spawn.assert_not_called()
             self.assertIsNone(m._scan_task)
 
-    @patch("modules.drone_rf.subprocess.run",
+    @patch("modules.sdr_utils.subprocess.run",
            return_value=MagicMock(stdout="ID 0bda:2838 Realtek\n", returncode=0))
     def test_start_then_stop_manages_worker_and_task(self, _run_mock):
         from modules.drone_rf import DroneRFModule
