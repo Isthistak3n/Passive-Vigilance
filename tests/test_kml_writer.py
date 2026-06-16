@@ -221,6 +221,24 @@ class TestKMLWriterAircraftPlacemark(unittest.TestCase):
         # All three points must appear in the LineString coordinates.
         self.assertIn("51.54", content)
 
+    def test_aircraft_track_splits_on_gap(self):
+        """A returning airframe's track (a 'gap' sentinel between two runs) must
+        break into separate LineString legs, not draw straight across the absence."""
+        event = _aircraft_event()
+        event["positions"] = [
+            {"lat": 51.50, "lon": -0.10, "altitude": 10000, "timestamp": "2024-01-01T12:00:00+00:00"},
+            {"lat": 51.52, "lon": -0.12, "altitude": 11000, "timestamp": "2024-01-01T12:00:30+00:00"},
+            {"gap": True, "timestamp": "2024-01-01T12:40:00+00:00"},
+            {"lat": 51.80, "lon": -0.40, "altitude": 9000, "timestamp": "2024-01-01T12:45:00+00:00"},
+            {"lat": 51.82, "lon": -0.42, "altitude": 9000, "timestamp": "2024-01-01T12:45:30+00:00"},
+        ]
+        path = self.kw.write_session(self.session_id, [], [event], [])
+        content = open(path).read()
+        # Two legs -> two LineStrings, and the gap is not bridged into one line.
+        self.assertEqual(content.count("<LineString>"), 2)
+        self.assertIn("leg 1", content)
+        self.assertIn("leg 2", content)
+
     def test_aircraft_track_not_added_for_single_position(self):
         """No flight-path LineString for an aircraft seen at one position."""
         event = _aircraft_event()
