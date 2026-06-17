@@ -119,130 +119,319 @@ function wifiIdentity(e) {
   return (fp.indexOf('wifi-fp:') === 0 || fp.indexOf('ble-fp:') === 0) ? fp : (e.mac || '');
 }
 
-function renderWifi() {
-  const q = document.getElementById('wifi-search').value.toLowerCase();
-  // Collapse rotating addresses: group entries by identity, keep the most recent
-  // sighting as the representative row and count the distinct MACs seen under it.
-  const groups = new Map();
-  for (const e of state.wifi) {
-    const id = wifiIdentity(e);
-    const g = groups.get(id);
-    if (!g) {
-      groups.set(id, { latest: e, macs: new Set(e.mac ? [e.mac] : []) });
-    } else {
-      if (e.mac) g.macs.add(e.mac);
-      const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
-      const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
-      if (t2 >= t1) g.latest = e;
-    }
+// ── Sortable / filterable table controller ───────────────────────────────────
+// Each table tab gets clickable sort headers, dropdown + min-count filters, a live
+// "showing X of Y" count, and CSV export — all composing with the existing search
+// box, and all persisted per tab in localStorage so the view returns as you left it.
+function loadView() { try { return JSON.parse(localStorage.getItem('pv_view') || '{}'); } catch { return {}; } }
+const _view = loadView();
+function saveView() { try { localStorage.setItem('pv_view', JSON.stringify(_view)); } catch { /* quota / private mode */ } }
+
+function _cmp(a, b, type) {
+  if (type === 'num') {
+    const x = parseFloat(a), y = parseFloat(b);
+    return (Number.isNaN(x) ? -Infinity : x) - (Number.isNaN(y) ? -Infinity : y);
   }
-  const alertClass = { high: 'alert-high', likely: 'alert-likely', suspicious: 'alert-suspicious' };
-  const rows = [...groups.values()]
-    .filter(g => !q || JSON.stringify(g.latest).toLowerCase().includes(q))
-    .sort((a, b) => new Date(a.latest.last_seen || a.latest.timestamp || 0)
-                  - new Date(b.latest.last_seen || b.latest.timestamp || 0))
-    .slice(-200)
-    .reverse();
-  document.getElementById('wifi-tbody').innerHTML = rows.map(g => {
-    const e = g.latest;
-    const n = g.macs.size;
-    // Contact designator (CLASS-IDENT-#); its CLASS prefix encodes the device type,
-    // so there is no separate Device column. Fall back to the older label/MAC.
-    const identity = e.contact ? esc(e.contact) : (e.fingerprint_label ? esc(e.fingerprint_label) : '—');
-    const macCell = `<code>${e.mac || '—'}</code>`
-      + (n > 1 ? ` <span class="addr-count" title="${n} rotating addresses">+${n - 1}</span>` : '');
-    return `
-    <tr>
-      <td>${identity}</td>
-      <td>${macCell}</td>
-      <td>${e.ssid ? esc(e.ssid) : '—'}</td>
-      <td>${e.mac_type || '—'}</td>
-      <td class="${alertClass[e.alert_level] || 'alert-new'}">${(e.score || 0).toFixed(2)}</td>
-      <td class="${alertClass[e.alert_level] || 'alert-new'}">${e.alert_level || '—'}</td>
-      <td>${e.observation_count || '—'}</td>
-      <td>${e.manufacturer || '—'}</td>
-      <td>${fmtTime(e.last_seen || e.timestamp)}</td>
-    </tr>`;
-  }).join('');
+  if (type === 'time') {
+    return (new Date(a || 0).getTime() || 0) - (new Date(b || 0).getTime() || 0);
+  }
+  return String(a ?? '').toLowerCase().localeCompare(String(b ?? '').toLowerCase());
 }
 
+function _csv(v) {
+  const s = (v == null ? '' : String(v));
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function downloadCSV(name, columns, rows) {
+  const lines = [columns.map(c => _csv(c.label)).join(',')];
+  for (const r of rows) lines.push(columns.map(c => _csv(r[c.k])).join(','));
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+// cfg: { tab, rows():[obj], cell(obj):'<tr>…', columns:[{k,label}] (CSV schema),
+//        filters:[{k,label}], min:{k,label}|null, defaultSort:{k,dir,type} }
+function createTable(cfg) {
+  const panel = document.getElementById(`tab-${cfg.tab}`);
+  if (!panel) return { render() {} };           // stale cached DOM — no-op, never throw
+  const tbody = panel.querySelector('tbody');
+  const toolbar = panel.querySelector('.toolbar');
+  const searchEl = panel.querySelector('input[type="text"]');
+  const v = (_view[cfg.tab] ||= {});
+  if (!v.sort) v.sort = cfg.defaultSort ? { ...cfg.defaultSort } : null;
+  v.filters ||= {};
+  let lastRows = [];
+
+  // Controls: filter dropdowns, optional min-count, count readout, CSV export.
+  const bar = document.createElement('span');
+  bar.className = 'tbl-controls';
+  const selects = {};
+  for (const f of cfg.filters) {
+    const sel = document.createElement('select');
+    sel.className = 'tbl-filter'; sel.title = f.label;
+    sel.addEventListener('change', () => { v.filters[f.k] = sel.value; saveView(); render(); });
+    selects[f.k] = sel; bar.appendChild(sel);
+  }
+  if (cfg.min) {
+    const minEl = document.createElement('input');
+    minEl.type = 'number'; minEl.min = '0'; minEl.className = 'tbl-min';
+    minEl.placeholder = cfg.min.label;
+    if (v.min != null) minEl.value = v.min;
+    minEl.addEventListener('input', () => { v.min = minEl.value === '' ? null : Number(minEl.value); saveView(); render(); });
+    bar.appendChild(minEl);
+  }
+  const csvBtn = document.createElement('button');
+  csvBtn.className = 'btn-sm'; csvBtn.textContent = 'CSV';
+  csvBtn.title = 'Export the current filtered + sorted view as CSV';
+  csvBtn.addEventListener('click', () => downloadCSV(`${cfg.tab}-${Date.now()}.csv`, cfg.columns, lastRows));
+  bar.appendChild(csvBtn);
+  const countEl = document.createElement('span');
+  countEl.className = 'tbl-count';
+  bar.appendChild(countEl);
+  if (toolbar) toolbar.appendChild(bar);
+
+  // Restore + wire the existing search box (persisted per tab).
+  if (searchEl) {
+    if (v.search) searchEl.value = v.search;
+    searchEl.addEventListener('input', () => { v.search = searchEl.value; saveView(); render(); });
+  }
+
+  // Clickable sort headers (data-col / data-type on each <th>).
+  panel.querySelectorAll('th[data-col]').forEach(th => {
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const k = th.dataset.col, type = th.dataset.type || 'text';
+      if (v.sort && v.sort.k === k) v.sort.dir = v.sort.dir === 'asc' ? 'desc' : 'asc';
+      else v.sort = { k, type, dir: type === 'text' ? 'asc' : 'desc' };
+      saveView(); render();
+    });
+  });
+
+  function refreshOptions(rows) {
+    for (const f of cfg.filters) {
+      const sel = selects[f.k];
+      const cur = v.filters[f.k] || '';
+      const vals = [...new Set(rows.map(r => r[f.k]).filter(x => x != null && x !== ''))]
+        .sort((a, b) => String(a).localeCompare(String(b)));
+      sel.innerHTML = `<option value="">${esc(f.label)}: all</option>`
+        + vals.map(x => `<option value="${esc(x)}"${String(x) === cur ? ' selected' : ''}>${esc(x)}</option>`).join('');
+      sel.value = cur;
+    }
+  }
+  function refreshArrows() {
+    panel.querySelectorAll('th[data-col]').forEach(th => {
+      th.classList.remove('sort-asc', 'sort-desc');
+      if (v.sort && v.sort.k === th.dataset.col) th.classList.add(v.sort.dir === 'asc' ? 'sort-asc' : 'sort-desc');
+    });
+  }
+
+  function render() {
+    const all = cfg.rows();
+    refreshOptions(all);
+    const q = (v.search || '').toLowerCase();
+    let rows = all.filter(r => {
+      if (q && !JSON.stringify(r).toLowerCase().includes(q)) return false;
+      for (const f of cfg.filters) {
+        const fv = v.filters[f.k];
+        if (fv && String(r[f.k] ?? '') !== fv) return false;
+      }
+      if (cfg.min && v.min != null && Number(r[cfg.min.k] || 0) < v.min) return false;
+      return true;
+    });
+    const s = v.sort;
+    if (s && s.k) rows.sort((a, b) => _cmp(a[s.k], b[s.k], s.type || 'text') * (s.dir === 'asc' ? 1 : -1));
+    lastRows = rows;
+    countEl.textContent = `${Math.min(rows.length, 200)} of ${all.length}`;
+    refreshArrows();
+    tbody.innerHTML = rows.slice(0, 200).map(cfg.cell).join('');
+  }
+
+  return { render };
+}
+
+const _ALERT_CLASS = { high: 'alert-high', likely: 'alert-likely', suspicious: 'alert-suspicious' };
+
+const tables = {
+  wifi: createTable({
+    tab: 'wifi',
+    columns: [
+      { k: 'contact', label: 'Contact' }, { k: 'mac', label: 'MAC' }, { k: 'ssid', label: 'SSID' },
+      { k: 'mac_type', label: 'MAC Type' }, { k: 'score', label: 'Score' }, { k: 'alert_level', label: 'Alert' },
+      { k: 'seen', label: 'Seen' }, { k: 'manufacturer', label: 'Manufacturer' }, { k: 'last', label: 'Last' },
+    ],
+    filters: [{ k: 'manufacturer', label: 'Mfr' }, { k: 'mac_type', label: 'MAC type' }, { k: 'alert_level', label: 'Alert' }],
+    min: { k: 'seen', label: 'Seen ≥' },
+    defaultSort: { k: 'seen', dir: 'desc', type: 'num' },
+    rows() {
+      // Collapse rotating addresses: group by rotation-stable identity, keep the
+      // most-recent sighting as the representative and count distinct MACs.
+      const groups = new Map();
+      for (const e of state.wifi) {
+        const id = wifiIdentity(e);
+        const g = groups.get(id);
+        if (!g) groups.set(id, { latest: e, macs: new Set(e.mac ? [e.mac] : []) });
+        else {
+          if (e.mac) g.macs.add(e.mac);
+          const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
+          const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
+          if (t2 >= t1) g.latest = e;
+        }
+      }
+      return [...groups.values()].map(g => {
+        const e = g.latest;
+        return {
+          contact: e.contact || e.fingerprint_label || '',
+          mac: e.mac || '', ssid: e.ssid || '', mac_type: e.mac_type || '',
+          score: e.score != null ? e.score : 0, alert_level: e.alert_level || '',
+          seen: e.observation_count || 0, manufacturer: e.manufacturer || '',
+          last: e.last_seen || e.timestamp || '', _addr: g.macs.size,
+        };
+      });
+    },
+    cell(r) {
+      const cls = _ALERT_CLASS[r.alert_level] || 'alert-new';
+      const macCell = `<code>${r.mac || '—'}</code>`
+        + (r._addr > 1 ? ` <span class="addr-count" title="${r._addr} rotating addresses">+${r._addr - 1}</span>` : '');
+      return `
+    <tr>
+      <td>${r.contact ? esc(r.contact) : '—'}</td>
+      <td>${macCell}</td>
+      <td>${r.ssid ? esc(r.ssid) : '—'}</td>
+      <td>${r.mac_type || '—'}</td>
+      <td class="${cls}">${(r.score || 0).toFixed(2)}</td>
+      <td class="${cls}">${r.alert_level || '—'}</td>
+      <td>${r.seen || '—'}</td>
+      <td>${r.manufacturer ? esc(r.manufacturer) : '—'}</td>
+      <td>${fmtTime(r.last)}</td>
+    </tr>`;
+    },
+  }),
+
+  aircraft: createTable({
+    tab: 'aircraft',
+    columns: [
+      { k: 'callsign', label: 'Callsign' }, { k: 'icao', label: 'ICAO' }, { k: 'registration', label: 'Reg' },
+      { k: 'altitude', label: 'Alt_ft' }, { k: 'speed', label: 'Speed' }, { k: 'lat', label: 'Lat' },
+      { k: 'lon', label: 'Lon' }, { k: 'emergency', label: 'Emergency' }, { k: 'time', label: 'Time' },
+    ],
+    filters: [{ k: 'emergency', label: 'Emergency' }],
+    min: null,
+    defaultSort: { k: 'time', dir: 'desc', type: 'time' },
+    rows() {
+      return state.aircraft.map(e => ({
+        callsign: e.callsign || '', icao: e.icao || '', registration: e.registration || '',
+        altitude: e.altitude ?? '', speed: e.speed ?? '', lat: e.lat ?? '', lon: e.lon ?? '',
+        emergency: e.emergency ? 'Yes' : 'No', time: e.timestamp || '',
+        returning: !!e.returning, return_count: e.return_count || 0,
+      }));
+    },
+    cell(r) {
+      const pos = (r.lat !== '' && r.lat != null && r.lon !== '' && r.lon != null)
+        ? `${(+r.lat).toFixed(3)}, ${(+r.lon).toFixed(3)}`
+        : '<span class="no-pos">no position</span>';
+      const ret = r.returning
+        ? ` <span class="returning" title="Re-seen after an absence — same airframe (${r.return_count || 1}×)">↩ RETURN${(r.return_count || 1) > 1 ? ' ×' + r.return_count : ''}</span>`
+        : '';
+      return `
+    <tr class="${r.returning ? 'returning-row' : ''}">
+      <td>${r.callsign ? esc(r.callsign) : '—'}${ret}</td>
+      <td><code>${r.icao || '—'}</code></td>
+      <td>${r.registration ? esc(r.registration) : '—'}</td>
+      <td>${r.altitude === '' ? '—' : r.altitude}</td>
+      <td>${r.speed === '' ? '—' : r.speed}</td>
+      <td>${pos}</td>
+      <td class="${r.emergency === 'Yes' ? 'emergency-yes' : ''}">${r.emergency === 'Yes' ? '🚨 YES' : 'No'}</td>
+      <td>${fmtTime(r.time)}</td>
+    </tr>`;
+    },
+  }),
+
+  drone: createTable({
+    tab: 'drone',
+    columns: [
+      { k: 'freq_mhz', label: 'Freq_MHz' }, { k: 'power_db', label: 'Power_dBm' },
+      { k: 'lat', label: 'Lat' }, { k: 'lon', label: 'Lon' }, { k: 'time', label: 'Time' },
+    ],
+    filters: [{ k: 'freq_mhz', label: 'Band' }],
+    min: null,
+    defaultSort: { k: 'time', dir: 'desc', type: 'time' },
+    rows() {
+      return state.drone.map(e => ({
+        freq_mhz: e.freq_mhz ?? '', power_db: e.power_db ?? '',
+        lat: e.lat ?? '', lon: e.lon ?? '', time: e.timestamp || '',
+      }));
+    },
+    cell(r) {
+      return `
+    <tr>
+      <td>${r.freq_mhz === '' ? '—' : r.freq_mhz}</td>
+      <td>${r.power_db === '' ? '—' : r.power_db}</td>
+      <td>${r.lat === '' ? '—' : r.lat}</td>
+      <td>${r.lon === '' ? '—' : r.lon}</td>
+      <td>${fmtTime(r.time)}</td>
+    </tr>`;
+    },
+  }),
+
+  remoteId: createTable({
+    tab: 'remote-id',
+    columns: [
+      { k: 'uas_id', label: 'UAS_ID' }, { k: 'id_type', label: 'ID_Type' }, { k: 'ua_type', label: 'UA_Type' },
+      { k: 'operator_id', label: 'Operator' }, { k: 'drone_lat', label: 'Drone_Lat' }, { k: 'drone_lon', label: 'Drone_Lon' },
+      { k: 'drone_alt_m', label: 'Alt_m' }, { k: 'rssi', label: 'RSSI' }, { k: 'time', label: 'Time' },
+    ],
+    filters: [{ k: 'ua_type', label: 'UA type' }, { k: 'id_type', label: 'ID type' }],
+    min: null,
+    defaultSort: { k: 'time', dir: 'desc', type: 'time' },
+    rows() {
+      return state.remoteId.map(e => ({
+        uas_id: e.uas_id || '', id_type: e.id_type || '', ua_type: e.ua_type || '',
+        operator_id: e.operator_id || '', drone_lat: e.drone_lat ?? '', drone_lon: e.drone_lon ?? '',
+        drone_alt_m: e.drone_alt_m ?? '', rssi: e.rssi ?? '', time: e.timestamp || '',
+      }));
+    },
+    cell(r) {
+      const lat = r.drone_lat !== '' && r.drone_lat != null ? (+r.drone_lat).toFixed(4) : '—';
+      const lon = r.drone_lon !== '' && r.drone_lon != null ? (+r.drone_lon).toFixed(4) : '—';
+      return `
+    <tr>
+      <td><code>${r.uas_id ? esc(r.uas_id) : '—'}</code></td>
+      <td>${r.id_type || '—'}</td>
+      <td>${r.ua_type || '—'}</td>
+      <td>${r.operator_id ? esc(r.operator_id) : '—'}</td>
+      <td>${lat}</td>
+      <td>${lon}</td>
+      <td>${r.drone_alt_m === '' ? '—' : r.drone_alt_m}</td>
+      <td>${r.rssi === '' ? '—' : r.rssi}</td>
+      <td>${fmtTime(r.time)}</td>
+    </tr>`;
+    },
+  }),
+};
+
+function renderWifi() { tables.wifi.render(); }
+
 function renderAircraft() {
-  const q = document.getElementById('aircraft-search').value.toLowerCase();
-  // Keep the table as a persistent log (survives refresh, like WiFi/BT), bounded by
-  // the retention window so it doesn't grow without limit. The current-sky decay is
-  // applied to the MAP markers (addAircraftMarker), not the table.
+  // Persistent log bounded by the retention window; the current-sky decay is applied
+  // to the MAP markers (addAircraftMarker), not the table.
   state.aircraft = state.aircraft.filter(e => aircraftAgeMs(e) <= AIRCRAFT_RETENTION_MS);
   setBadge('badge-aircraft', state.aircraft.length);
-  const rows = state.aircraft
-    .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
-    .slice(-200)
-    .reverse();
-  document.getElementById('aircraft-tbody').innerHTML = rows.map(e => {
-    const pos = (e.lat != null && e.lon != null)
-      ? `${(+e.lat).toFixed(3)}, ${(+e.lon).toFixed(3)}`
-      : '<span class="no-pos">no position</span>';
-    const ret = e.returning
-      ? ` <span class="returning" title="Re-seen after an absence — same airframe (${e.return_count || 1}×)">↩ RETURN${(e.return_count || 1) > 1 ? ' ×' + e.return_count : ''}</span>`
-      : '';
-    return `
-    <tr class="${e.returning ? 'returning-row' : ''}">
-      <td>${e.callsign || '—'}${ret}</td>
-      <td><code>${e.icao || '—'}</code></td>
-      <td>${e.registration || '—'}</td>
-      <td>${e.altitude ?? '—'}</td>
-      <td>${e.speed ?? '—'}</td>
-      <td>${pos}</td>
-      <td class="${e.emergency ? 'emergency-yes' : ''}">${e.emergency ? '🚨 YES' : 'No'}</td>
-      <td>${fmtTime(e.timestamp)}</td>
-    </tr>`;
-  }).join('');
-  // Rebuild the aircraft map layer from the (deduped) state so a moving plane
-  // does not pile up duplicate markers; position-less aircraft are omitted from
-  // the map but remain listed in the table above.
+  tables.aircraft.render();
+  // Rebuild the aircraft map layer from the (deduped) state so a moving plane does
+  // not pile up duplicate markers; position-less aircraft are omitted from the map.
   layers.aircraft.clearLayers();
   state.aircraft.forEach(addAircraftMarker);
 }
 
-function renderDrone() {
-  const q = document.getElementById('drone-search').value.toLowerCase();
-  const rows = state.drone
-    .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
-    .slice(-200)
-    .reverse();
-  document.getElementById('drone-tbody').innerHTML = rows.map(e => `
-    <tr>
-      <td>${e.freq_mhz ?? '—'}</td>
-      <td>${e.power_db ?? '—'}</td>
-      <td>${e.lat ?? '—'}</td>
-      <td>${e.lon ?? '—'}</td>
-      <td>${fmtTime(e.timestamp)}</td>
-    </tr>`).join('');
-}
+function renderDrone() { tables.drone.render(); }
 
 function renderRemoteId() {
-  const tbody = document.getElementById('remote-id-tbody');
-  if (!tbody) return;   // stale cached DOM without the Remote ID tab — no-op
-  const q = (document.getElementById('remote-id-search')?.value || '').toLowerCase();
-  const rows = state.remoteId
-    .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
-    .slice(-200)
-    .reverse();
-  tbody.innerHTML = rows.map(e => {
-    const lat = e.drone_lat != null ? (+e.drone_lat).toFixed(4) : '—';
-    const lon = e.drone_lon != null ? (+e.drone_lon).toFixed(4) : '—';
-    return `
-    <tr>
-      <td><code>${e.uas_id || '—'}</code></td>
-      <td>${e.id_type || '—'}</td>
-      <td>${e.ua_type || '—'}</td>
-      <td>${e.operator_id || '—'}</td>
-      <td>${lat}</td>
-      <td>${lon}</td>
-      <td>${e.drone_alt_m ?? '—'}</td>
-      <td>${e.rssi ?? '—'}</td>
-      <td>${fmtTime(e.timestamp)}</td>
-    </tr>`;
-  }).join('');
+  if (!document.getElementById('remote-id-tbody')) return;   // stale cached DOM — no-op
+  tables.remoteId.render();
 }
 
 function renderAlerts() {
@@ -256,16 +445,8 @@ function renderAlerts() {
       </div>`).join('');
 }
 
-// Search filters
-['wifi', 'aircraft', 'drone'].forEach(tab => {
-  const el = document.getElementById(`${tab}-search`);
-  if (el) el.addEventListener('input', () => window[`render${tab[0].toUpperCase()}${tab.slice(1)}`]());
-});
-// Remote ID: the hyphenated id can't use the window['render…'] trick, wire it directly.
-{
-  const el = document.getElementById('remote-id-search');
-  if (el) el.addEventListener('input', renderRemoteId);
-}
+// Search inputs are wired inside createTable (per-tab, persisted), so no separate
+// search-filter wiring is needed here.
 
 // Clear buttons. Wired null-safe (optional chaining): a single missing element —
 // e.g. a browser holding a stale cached index.html that predates a newly added

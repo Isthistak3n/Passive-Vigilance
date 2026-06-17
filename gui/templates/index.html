@@ -75,15 +75,15 @@
         <table>
           <thead>
             <tr>
-              <th>Contact</th>
-              <th>MAC</th>
-              <th>SSID</th>
-              <th>MAC Type</th>
-              <th>Score</th>
-              <th>Alert</th>
-              <th>Seen</th>
-              <th>Manufacturer</th>
-              <th>Last</th>
+              <th data-col="contact" data-type="text">Contact</th>
+              <th data-col="mac" data-type="text">MAC</th>
+              <th data-col="ssid" data-type="text">SSID</th>
+              <th data-col="mac_type" data-type="text">MAC Type</th>
+              <th data-col="score" data-type="num">Score</th>
+              <th data-col="alert_level" data-type="text">Alert</th>
+              <th data-col="seen" data-type="num">Seen</th>
+              <th data-col="manufacturer" data-type="text">Manufacturer</th>
+              <th data-col="last" data-type="time">Last</th>
             </tr>
           </thead>
           <tbody id="wifi-tbody"></tbody>
@@ -101,14 +101,14 @@
         <table>
           <thead>
             <tr>
-              <th>Callsign</th>
-              <th>ICAO</th>
-              <th>Reg</th>
-              <th>Alt (ft)</th>
-              <th>Speed</th>
+              <th data-col="callsign" data-type="text">Callsign</th>
+              <th data-col="icao" data-type="text">ICAO</th>
+              <th data-col="registration" data-type="text">Reg</th>
+              <th data-col="altitude" data-type="num">Alt (ft)</th>
+              <th data-col="speed" data-type="num">Speed</th>
               <th>Position</th>
-              <th>Emergency</th>
-              <th>Time</th>
+              <th data-col="emergency" data-type="text">Emergency</th>
+              <th data-col="time" data-type="time">Time</th>
             </tr>
           </thead>
           <tbody id="aircraft-tbody"></tbody>
@@ -126,11 +126,11 @@
         <table>
           <thead>
             <tr>
-              <th>Freq (MHz)</th>
-              <th>Power (dBm)</th>
-              <th>Lat</th>
-              <th>Lon</th>
-              <th>Time</th>
+              <th data-col="freq_mhz" data-type="num">Freq (MHz)</th>
+              <th data-col="power_db" data-type="num">Power (dBm)</th>
+              <th data-col="lat" data-type="num">Lat</th>
+              <th data-col="lon" data-type="num">Lon</th>
+              <th data-col="time" data-type="time">Time</th>
             </tr>
           </thead>
           <tbody id="drone-tbody"></tbody>
@@ -148,15 +148,15 @@
         <table>
           <thead>
             <tr>
-              <th>UAS ID</th>
-              <th>ID Type</th>
-              <th>UA Type</th>
-              <th>Operator</th>
-              <th>Drone Lat</th>
-              <th>Drone Lon</th>
-              <th>Alt (m)</th>
-              <th>RSSI</th>
-              <th>Time</th>
+              <th data-col="uas_id" data-type="text">UAS ID</th>
+              <th data-col="id_type" data-type="text">ID Type</th>
+              <th data-col="ua_type" data-type="text">UA Type</th>
+              <th data-col="operator_id" data-type="text">Operator</th>
+              <th data-col="drone_lat" data-type="num">Drone Lat</th>
+              <th data-col="drone_lon" data-type="num">Drone Lon</th>
+              <th data-col="drone_alt_m" data-type="num">Alt (m)</th>
+              <th data-col="rssi" data-type="num">RSSI</th>
+              <th data-col="time" data-type="time">Time</th>
             </tr>
           </thead>
           <tbody id="remote-id-tbody"></tbody>
