@@ -201,6 +201,22 @@ main {
 }
 .btn-sm:hover { background: #30363d; color: #c9d1d9; }
 
+/* ── Table controls: filters, min-count, count readout, CSV ── */
+.tbl-controls { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tbl-filter, .tbl-min {
+  background: #0d1117; border: 1px solid #30363d; border-radius: 4px;
+  color: #c9d1d9; font-size: 12px; padding: 4px 6px;
+}
+.toolbar .tbl-min { flex: 0 0 auto; width: 90px; }
+.tbl-filter:focus, .tbl-min:focus { outline: none; border-color: #58a6ff; }
+.tbl-count { color: #6e7681; font-size: 12px; white-space: nowrap; }
+
+/* Clickable sort headers + active-direction arrow. */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: #c9d1d9; }
+th.sort-asc::after  { content: ' \25B2'; color: #58a6ff; font-size: 10px; }
+th.sort-desc::after { content: ' \25BC'; color: #58a6ff; font-size: 10px; }
+
 /* ── Tables ─────────────────────────────────────────────── */
 .table-wrap {
   flex: 1;
