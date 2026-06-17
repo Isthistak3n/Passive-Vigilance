@@ -126,13 +126,16 @@ show_config() {
     fi
 
     local keys=(
+        NODE_MODE FIXED_BASELINE_HOURS
         KISMET_API_KEY WIGLE_API_NAME WIGLE_API_KEY ADSBXLOL_API_KEY
         ALERT_BACKEND NTFY_TOPIC NTFY_SERVER
         TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID DISCORD_WEBHOOK_URL
         WIFI_MONITOR_INTERFACE GPS_DEVICE GPS_DEVICE_TYPE
+        BLE_SCANNER_ENABLED
+        SDR_MODE ADSB_SLICE_SECONDS DRONE_RF_SLICE_SECONDS DRONE_RF_ENABLED
         KISMET_HOST KISMET_PORT DUMP1090_HOST DUMP1090_PORT
         LOG_LEVEL GUI_ENABLED GUI_PORT GUI_TOKEN
-        PERSISTENCE_ALERT_THRESHOLD DRONE_POWER_THRESHOLD_DB
+        PERSISTENCE_ALERT_THRESHOLD WIFI_ALERT_MIN_SCORE DRONE_POWER_THRESHOLD_DB
         HANDLE_MAC_RANDOMIZATION IGNORE_RANDOMIZED_MACS
     )
 
@@ -212,8 +215,29 @@ run_setup() {
         info "Updating existing .env at $ENV_FILE"
     fi
 
-    # ── Section 1: Required API Keys ─────────────────────────────────────────
-    header "1 of 5 — Kismet (Required)"
+    # ── Section 1: Node Mode (Required) ──────────────────────────────────────
+    header "1 of 7 — Node Mode (Required)"
+    echo "  How this node scores devices. REQUIRED — without it the node captures"
+    echo "  but refuses to score (and logs a prominent error)."
+    echo "    fixed   — stationary node: learns a baseline, flags novelty / off-schedule"
+    echo "    mobile  — moving node: scores by persistence / location-diversity"
+    echo
+    local node_mode
+    node_mode="$(prompt_value "Node mode (fixed/mobile)" "NODE_MODE" "fixed")"
+    case "$node_mode" in
+        fixed)
+            echo
+            echo "  Fixed mode learns a baseline for this many hours, then freezes and"
+            echo "  scores deviations against it. 72h is the production default."
+            prompt_value "Baseline learning window (hours)" "FIXED_BASELINE_HOURS" "72" > /dev/null
+            ;;
+        mobile) : ;;
+        *) warn "Unknown mode '$node_mode' — defaulting to fixed"; set_env "NODE_MODE" "fixed" ;;
+    esac
+    success "Node mode: $(get_env NODE_MODE)"
+
+    # ── Section 2: Required API Keys ─────────────────────────────────────────
+    header "2 of 7 — Kismet (Required)"
     echo "  Kismet must be running before generating an API key."
     echo "  Open http://$(hostname -I | awk '{print $1}'):2501 → Settings → API Keys"
     echo
@@ -226,18 +250,24 @@ run_setup() {
         success "Kismet API key saved"
     fi
 
-    # ── Section 2: Alert Backend ──────────────────────────────────────────────
-    header "2 of 5 — Alerts"
+    # ── Section 3: Alert Backend ──────────────────────────────────────────────
+    header "3 of 7 — Alerts"
     echo "  Choose how Passive-Vigilance sends alerts:"
-    echo "    ntfy     — push notifications via ntfy.sh (recommended, free)"
+    echo "    console  — log/journal only, no external service (default; good for"
+    echo "               testing or until a real backend is wired up)"
+    echo "    ntfy     — push notifications via ntfy.sh (free)"
     echo "    telegram — Telegram bot"
     echo "    discord  — Discord webhook"
     echo
 
     local backend
-    backend="$(prompt_value "Alert backend (ntfy/telegram/discord)" "ALERT_BACKEND" "ntfy")"
+    backend="$(prompt_value "Alert backend (console/ntfy/telegram/discord)" "ALERT_BACKEND" "console")"
 
     case "$backend" in
+        console)
+            echo "  Console alerts: printed to the journal only — no external service."
+            success "Console alerts configured"
+            ;;
         ntfy)
             echo
             echo "  Ntfy: create a unique topic name (acts as your private channel)."
@@ -261,13 +291,13 @@ run_setup() {
             success "Discord configured"
             ;;
         *)
-            warn "Unknown backend '$backend' — defaulting to ntfy"
-            set_env "ALERT_BACKEND" "ntfy"
+            warn "Unknown backend '$backend' — defaulting to console"
+            set_env "ALERT_BACKEND" "console"
             ;;
     esac
 
-    # ── Section 3: Optional API Keys ─────────────────────────────────────────
-    header "3 of 5 — Optional Services"
+    # ── Section 4: Optional API Keys ─────────────────────────────────────────
+    header "4 of 7 — Optional Services"
     echo "  These enhance the platform but are not required to run."
     echo
 
@@ -287,8 +317,8 @@ run_setup() {
         success "adsb.lol configured"
     fi
 
-    # ── Section 4: Hardware ───────────────────────────────────────────────────
-    header "4 of 5 — Hardware"
+    # ── Section 5: Hardware ───────────────────────────────────────────────────
+    header "5 of 7 — Hardware"
 
     local detected_wifi
     detected_wifi="$(detect_wifi_interface)"
@@ -305,10 +335,21 @@ run_setup() {
         info "Waveshare SX126X LoRaWAN/GNSS HAT detected (L76K GNSS on ttyAMA0)"
     fi
     prompt_value "GPS device path" "GPS_DEVICE" "$detected_gps" > /dev/null
+
+    echo
+    echo "  Bluetooth/BLE: a USB BT dongle captures BLE advertisements via raw HCI"
+    echo "  (PV owns the controller directly; leave bluetoothd disabled). The"
+    echo "  controller is prepared at boot by set-bt-up.sh (rfkill unblock + LE on)."
+    if confirm "Enable passive BLE advertisement capture?" "y"; then
+        set_env "BLE_SCANNER_ENABLED" "true"
+        success "BLE scanner enabled"
+    else
+        set_env "BLE_SCANNER_ENABLED" "false"
+    fi
     success "Hardware configured"
 
-    # ── Section 5: SDR Sharing ────────────────────────────────────────────────
-    header "5 of 6 — RTL-SDR Sharing"
+    # ── Section 6: SDR Sharing ────────────────────────────────────────────────
+    header "6 of 7 — RTL-SDR Sharing"
 
     local sdr_count=0
     if command -v rtl_test &>/dev/null; then
@@ -336,8 +377,8 @@ run_setup() {
     fi
     success "SDR sharing configured"
 
-    # ── Section 6: Advanced / Tuning ─────────────────────────────────────────
-    header "6 of 6 — Advanced Settings"
+    # ── Section 7: Advanced / Tuning ─────────────────────────────────────────
+    header "7 of 7 — Advanced Settings"
     echo "  Press Enter to accept defaults (recommended for first run)."
     echo
 
@@ -346,7 +387,8 @@ run_setup() {
     echo
     if confirm "Enable web dashboard GUI?" "n"; then
         set_env "GUI_ENABLED" "true"
-        prompt_value "GUI port" "GUI_PORT" "8080" > /dev/null
+        # 8088, not 8080 — readsb's tar1090 already serves on 8080.
+        prompt_value "GUI port" "GUI_PORT" "8088" > /dev/null
         echo
         if confirm "Set a bearer token to restrict dashboard access?" "n"; then
             prompt_value "GUI bearer token" "GUI_TOKEN" "" secret > /dev/null
