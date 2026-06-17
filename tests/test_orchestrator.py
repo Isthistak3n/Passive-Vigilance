@@ -287,13 +287,19 @@ async def test_poll_adsb_emergency_bypasses_rate_limiter(orch):
 
 @pytest.mark.asyncio
 async def test_poll_adsb_rate_limiter_suppresses_repeat_normal_alert(orch):
-    """A normal (non-emergency) aircraft should be rate-limited after first alert."""
+    """An of-interest (non-emergency) aircraft is rate-limited after the first alert.
+
+    (P7: routine transit no longer alerts at all, so the rate-limiter case is now
+    exercised against an aircraft the scorer flags of-interest.)"""
+    from modules.air_scoring import AirScore
     normal_ac = _make_aircraft(emergency=False, icao="NRM001")
     orch.adsb.poll_aircraft = AsyncMock(return_value=[normal_ac])
     orch._adsb_active = True
 
-    await orch.sensor_orchestrator._poll_adsb()   # first poll — alert fires
-    await orch.sensor_orchestrator._poll_adsb()   # second poll — rate-limited, no second alert
+    with patch.object(orch.sensor_orchestrator, "_score_aircraft",
+                      return_value=AirScore(score=0.8, severity="likely", of_interest=True)):
+        await orch.sensor_orchestrator._poll_adsb()   # first poll — alert fires
+        await orch.sensor_orchestrator._poll_adsb()   # second poll — rate-limited
     await _drain_alerts(orch)
 
     orch._mock_backend.send_aircraft_alert.assert_called_once()
@@ -641,6 +647,96 @@ async def test_poll_adsb_skips_idless_aircraft(orch):
 
 
 # ---------------------------------------------------------------------------
+# P7 — air-of-interest persistence scoring + alert gating
+# ---------------------------------------------------------------------------
+
+
+def _orbit_positions(n=12, dt_s=60, alt=1500):
+    import math
+    clat, clon = 21.4, -157.7
+    r = 0.5 / 60.0
+    out = []
+    for i in range(n):
+        ang = 2 * math.pi * i / (n - 1)
+        out.append({
+            "lat": clat + r * math.cos(ang),
+            "lon": clon + r * math.sin(ang) / math.cos(math.radians(clat)),
+            "altitude": alt,
+            "timestamp": (datetime(2026, 6, 16, tzinfo=timezone.utc) + timedelta(seconds=i * dt_s)).isoformat(),
+        })
+    return out
+
+
+@pytest.mark.asyncio
+async def test_score_aircraft_orbit_flags_of_interest(orch):
+    """_score_aircraft stashes an of-interest score for an orbit near the node."""
+    so = orch.sensor_orchestrator
+    so._current_fix = {"lat": 21.4, "lon": -157.7, "utc": "2026-06-16T00:10:00Z"}
+    event = {"callsign": "TEST1", "positions": _orbit_positions()}
+    air = so._score_aircraft(event)
+    assert air.of_interest
+    assert event["air_of_interest"] is True
+    assert event["air_severity"] in ("likely", "high")
+
+
+@pytest.mark.asyncio
+async def test_score_aircraft_no_reference_is_zero(orch):
+    """No GPS/home reference -> no geometry -> score 0, not of-interest."""
+    so = orch.sensor_orchestrator
+    so._current_fix = None
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("AIR_HOME_LAT", None)
+        os.environ.pop("AIR_HOME_LON", None)
+        event = {"callsign": "TEST1", "positions": _orbit_positions()}
+        air = so._score_aircraft(event)
+    assert air.score == 0.0
+    assert not air.of_interest
+
+
+@pytest.mark.asyncio
+async def test_transit_aircraft_does_not_alert(orch):
+    """A not-of-interest aircraft (transit) fires no alert — the P7 reframe."""
+    from modules.air_scoring import AirScore
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    so._stats["alerts_sent"] = 0
+    with patch.object(so, "_score_aircraft", return_value=AirScore(score=0.1, severity=None, of_interest=False)):
+        orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="TRAN01", lat=51.5, lon=-0.1)])
+        await so._poll_adsb()
+    assert so._stats["alerts_sent"] == 0
+    assert so._stats["alerts_rate_limited"] == 0
+
+
+@pytest.mark.asyncio
+async def test_of_interest_aircraft_alerts(orch):
+    """An of-interest aircraft fires an alert at its score severity."""
+    from modules.air_scoring import AirScore
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    so._stats["alerts_sent"] = 0
+    with patch.object(so, "_score_aircraft",
+                      return_value=AirScore(score=0.95, severity="high", of_interest=True)):
+        orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="ORBIT9", lat=51.5, lon=-0.1)])
+        await so._poll_adsb()
+    assert so._stats["alerts_sent"] == 1
+
+
+@pytest.mark.asyncio
+async def test_emergency_alerts_regardless_of_score(orch):
+    """An emergency squawk alerts even when the persistence score is nil."""
+    from modules.air_scoring import AirScore
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    so._stats["alerts_sent"] = 0
+    em = _make_aircraft(icao="EMER01", lat=51.5, lon=-0.1)
+    em["emergency"] = True
+    with patch.object(so, "_score_aircraft", return_value=AirScore(of_interest=False)):
+        orch.adsb.poll_aircraft = AsyncMock(return_value=[em])
+        await so._poll_adsb()
+    assert so._stats["alerts_sent"] == 1
+
+
+# ---------------------------------------------------------------------------
 # _poll_drone_rf() — dedup by frequency band
 # ---------------------------------------------------------------------------
 
@@ -680,6 +776,30 @@ async def test_drone_tracks_peak_and_latest_power(orch):
     event = so.drone_detections[0]
     assert event["power_db"] == -35.0      # latest
     assert event["peak_power_db"] == -20.0  # strongest
+
+
+@pytest.mark.asyncio
+async def test_drone_single_sweep_does_not_alert(orch):
+    """P7: a single fleeting RF blip is shown but not paged (persistence gate)."""
+    so = orch.sensor_orchestrator
+    so._drone_min_sweeps = 2
+    so._stats["alerts_sent"] = 0
+    so.drone_rf.drain_detections = MagicMock(return_value=[_make_drone(freq_mhz=2400.0)])
+    await so._poll_drone_rf()
+    assert len(so.drone_detections) == 1     # still shown
+    assert so._stats["alerts_sent"] == 0     # but not paged
+
+
+@pytest.mark.asyncio
+async def test_drone_sustained_presence_alerts(orch):
+    """P7: a band heard on enough sweeps crosses the persistence gate and alerts."""
+    so = orch.sensor_orchestrator
+    so._drone_min_sweeps = 2
+    so._stats["alerts_sent"] = 0
+    for _ in range(2):
+        so.drone_rf.drain_detections = MagicMock(return_value=[_make_drone(freq_mhz=2400.0)])
+        await so._poll_drone_rf()
+    assert so._stats["alerts_sent"] >= 1
 
 
 @pytest.mark.asyncio
