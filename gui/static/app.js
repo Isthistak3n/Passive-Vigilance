@@ -37,11 +37,15 @@ function addWifiMarker(ev) {
 
 // Two lenses on the aircraft picture:
 //  - the TABLE keeps a persistent detection log (survives a refresh, like WiFi/BT)
-//    up to RETENTION (matches the server's AIRCRAFT_RETENTION_SECONDS=3600);
-//  - the MAP shows the current sky: a marker only appears within MAP_DECAY and
+//    up to RETENTION (matches the server's AIRCRAFT_RETENTION_SECONDS, now 24h);
+//  - the MAP shows the current sky: a marker appears within MAP_DECAY and
 //    shrinks/fades with age, then expires, so it reads what's overhead *now*.
-const AIRCRAFT_RETENTION_MS = 3600000;
-const AIRCRAFT_MAP_DECAY_MS = 120000;
+// MAP_DECAY is 10 min, not seconds: under sparse single-target RTL-SDR reception a
+// plane that's still overhead can go a minute-plus between polls, so a tight window
+// blanked the map (a plane in the table + in readsb but no marker). 10 min keeps a
+// genuinely-present aircraft on the map while still expiring departed ones.
+const AIRCRAFT_RETENTION_MS = 86400000;
+const AIRCRAFT_MAP_DECAY_MS = 600000;
 
 function aircraftAgeMs(e) {
   const t = e.last_seen || e.timestamp;
@@ -55,13 +59,16 @@ function addAircraftMarker(ev) {
   const age = aircraftAgeMs(ev);
   if (age > AIRCRAFT_MAP_DECAY_MS) return;   // left the current sky — off the map
   const frac = Math.max(0, 1 - age / AIRCRAFT_MAP_DECAY_MS);
+  // Returning airframes (re-seen after an absence) draw amber to stand out.
+  const color = ev.emergency ? '#f85149' : (ev.returning ? '#d29922' : '#58a6ff');
+  const ret = ev.returning ? `<br><b class="returning">↩ returned</b> (${ev.return_count || 1}×)` : '';
   L.circleMarker([ev.lat, ev.lon], {
     radius: 4 + 4 * frac,
-    color: ev.emergency ? '#f85149' : '#58a6ff',
+    color,
     opacity: 0.3 + 0.7 * frac,
     fillOpacity: 0.2 + 0.6 * frac,
   }).bindPopup(
-    `<b>${ev.callsign || ev.icao}</b><br>Alt: ${ev.altitude} ft<br>Reg: ${ev.registration || '—'}`
+    `<b>${ev.callsign || ev.icao}</b><br>Alt: ${ev.altitude} ft<br>Reg: ${ev.registration || '—'}${ret}`
   ).addTo(layers.aircraft);
 }
 
@@ -174,9 +181,12 @@ function renderAircraft() {
     const pos = (e.lat != null && e.lon != null)
       ? `${(+e.lat).toFixed(3)}, ${(+e.lon).toFixed(3)}`
       : '<span class="no-pos">no position</span>';
+    const ret = e.returning
+      ? ` <span class="returning" title="Re-seen after an absence — same airframe (${e.return_count || 1}×)">↩ RETURN${(e.return_count || 1) > 1 ? ' ×' + e.return_count : ''}</span>`
+      : '';
     return `
-    <tr>
-      <td>${e.callsign || '—'}</td>
+    <tr class="${e.returning ? 'returning-row' : ''}">
+      <td>${e.callsign || '—'}${ret}</td>
       <td><code>${e.icao || '—'}</code></td>
       <td>${e.registration || '—'}</td>
       <td>${e.altitude ?? '—'}</td>

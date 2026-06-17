@@ -180,6 +180,7 @@ class SensorOrchestrator:
             "alerts_dropped": 0,
             "persistent_detections": 0,
             "aircraft_idless_skipped": 0,
+            "aircraft_returns": 0,
         }
 
         self.all_events: list[dict] = []
@@ -200,10 +201,18 @@ class SensorOrchestrator:
         # How long an aircraft is retained in the panel/index after it was last
         # seen — this is the persistent detection LOG window (so the table survives a
         # refresh, like the WiFi/BT tab), bounded so the index doesn't grow on a
-        # multi-day run. Default 1h. The map is a separate, shorter current-sky lens:
-        # the client fades/expires markers by recency (AIRCRAFT_MAP_DECAY_MS) so the
-        # map shows what's overhead now while the table keeps the log.
-        self._aircraft_retention_s = float(os.getenv("AIRCRAFT_RETENTION_SECONDS", "3600"))
+        # multi-day run. Default 24h: keeping a day of airframes lets a returning
+        # ICAO be recognised as the SAME identity (and flagged of-interest) rather
+        # than re-appearing as a fresh contact. The map is a separate, shorter
+        # current-sky lens — the client fades/expires markers by recency
+        # (AIRCRAFT_MAP_DECAY_MS) so the map shows what's overhead now.
+        self._aircraft_retention_s = float(os.getenv("AIRCRAFT_RETENTION_SECONDS", "86400"))
+        # A re-sighting after a gap longer than this counts as a RETURN: the same
+        # airframe was absent then came back. We mark the track with a gap (so the
+        # flight path doesn't draw a straight line across the absence) and flag the
+        # contact as of-interest. Default 10 min — long enough to clear sparse-
+        # reception poll gaps, short enough to catch a real depart-and-return.
+        self._aircraft_return_gap_s = float(os.getenv("AIRCRAFT_RETURN_GAP_SECONDS", "600"))
         # Hard cap on a single track's point count. Thinning (above) keeps points
         # sparse, but an orbiter/loiterer seen for hours still grows its track
         # without bound — unbounded memory across a multi-day run, and the whole
@@ -437,9 +446,15 @@ class SensorOrchestrator:
             if existing is not None:
                 # Same plane — refresh current-state fields in place and extend
                 # its track (thinned). One event per ICAO, not one per sighting.
+                # A long gap since the last sighting means the airframe left and
+                # came back: same identity, marked track gap, flagged of-interest.
+                prior_gap = self._aircraft_age_seconds(existing, datetime.fromisoformat(now_iso))
+                returned = prior_gap > self._aircraft_return_gap_s
                 existing.update({**aircraft, "event_type": "aircraft", "timestamp": now_iso})
+                if returned:
+                    self._note_aircraft_return(existing, icao, prior_gap, now_iso)
                 moved = self._extend_aircraft_track(existing, aircraft, now_iso)
-                if self.gui_server is not None and moved:
+                if self.gui_server is not None and (moved or returned):
                     self.gui_server.push_event("aircraft", existing)
             else:
                 event = {**aircraft, "event_type": "aircraft", "timestamp": now_iso, "positions": []}
@@ -1347,7 +1362,9 @@ class SensorOrchestrator:
         except (TypeError, ValueError):
             return False
         pts = event.setdefault("positions", [])
-        if pts:
+        # Skip thinning when the last entry is a gap sentinel (a returning airframe):
+        # the first point after an absence is always kept, starting the new leg.
+        if pts and "lat" in pts[-1]:
             last = pts[-1]
             dist = _haversine_m(last["lat"], last["lon"], lat, lon)
             try:
@@ -1390,6 +1407,38 @@ class SensorOrchestrator:
         event["air_of_interest"] = result.of_interest
         event["air_breakdown"] = result.breakdown
         return result
+
+    def _mark_track_gap(self, event: dict, ts_iso: str) -> None:
+        '''Insert a gap sentinel into an aircraft's track so the flight path breaks
+        across an absence instead of drawing a straight line over it. Consecutive
+        gaps are coalesced; the gap respects the track point cap.'''
+        pts = event.setdefault("positions", [])
+        if not pts or pts[-1].get("gap"):
+            return
+        pts.append({"gap": True, "timestamp": ts_iso})
+        if len(pts) > self._track_max_points:
+            del pts[: len(pts) - self._track_max_points]
+
+    def _note_aircraft_return(self, event: dict, icao: str, gap_seconds: float, ts_iso: str) -> None:
+        '''Flag a returning airframe as of-interest: mark a track gap, tag the event,
+        record it to the alerts feed/history, and log. No backend send (avoids alert
+        fatigue) — the operator sees it on the dashboard. Returns are naturally
+        bounded per airframe by the gap threshold.'''
+        self._mark_track_gap(event, ts_iso)
+        event["returning"] = True
+        event["return_count"] = int(event.get("return_count", 0)) + 1
+        event["last_gap_seconds"] = round(gap_seconds)
+        self._stats["aircraft_returns"] = self._stats.get("aircraft_returns", 0) + 1
+        label = event.get("callsign") or event.get("registration") or icao
+        mins = round(gap_seconds / 60)
+        logger.info("Aircraft of interest: %s (%s) returned after ~%d min absence (return #%d)",
+                    label, icao, mins, event["return_count"])
+        self._record_alert(
+            "aircraft", f"Returning aircraft — {label}",
+            f"Re-seen after ~{mins} min absence (return #{event['return_count']})",
+            severity="default", icao=icao, returning=True,
+            return_count=event["return_count"], gap_seconds=round(gap_seconds),
+        )
 
     def _console_alert(self, message: str) -> None:
         '''Send an alert to the console backend (used for sensor health degradation).'''

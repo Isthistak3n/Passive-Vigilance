@@ -135,7 +135,7 @@ new detection features.
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
 | **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live (BLE raw-HCI capture, BLE/WiFi signatures, fingerprint-keyed scoring); cut the flood ~36→3–5/cycle. Cross-session *returning-entity* linkage remains | No |
 | **P5** | Fixed-mode GUI framing + durable history | ◑ Partial — contact designators + scoring-panel thread-safety + **durable detection/alert history** (panels rebuild from on-disk session logs across refresh/restart; alerts now persisted and shown) merged; baseline-state framing + signal/severity anomaly framing remain | No |
-| **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ◑ Core + remainder shipped — current-sky panel, decay, chiclet accuracy, **bounded tracks**, **ID-less split**, Remote ID index pruning, and the **Remote ID GUI surface** (`/api/remote_id` + tab) merged; only the returning-ICAO track-gap deferred | No |
+| **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, **bounded tracks**, **ID-less split**, Remote ID index pruning + **Remote ID GUI surface** merged; the final pass widened the map current-sky window (a too-tight 120 s cutoff blanked the map under sparse reception), set **24 h aircraft retention**, and shipped **returning-ICAO as same identity** with a marked track gap + an of-interest flag (bridges to P7) | No |
 | **P7** | Aircraft of interest: orbit/loiter detection | ◑ Mostly shipped — **persistence-score** model (mirrors the mobile engine; transit≈0, loiter/return climbs): pure geometry + scorer (`air_geometry.py` / `air_scoring.py`), live scoring wired into `_poll_adsb` against a GPS/home reference, and **alerting reframed** — aircraft alert only when *of-interest* (not every airframe), drone-RF alerts only after sustained sweeps. **Deferred (matched pair, validate on soak #3):** durable cross-day per-ICAO baseline + daily-orbiter novelty suppression; GUI severity badge; Remote ID loiter fusion | No |
 
 ### P0 — Endurance hardening (blocking)
@@ -359,8 +359,19 @@ into one "unknown" airframe (skipped from the per-ICAO log, counted in
 window (the aircraft index already was; the drone index is band-keyed and inherently
 bounded), and the **Remote ID surface** shipped — `/api/remote_id` + a Remote ID tab
 fed by live `push_event("remote_id", …)`, the prerequisite for P7's loitering-UAS case.
-**Deferred (only item):** returning-ICAO-as-same-identity-with-a-track-gap — lowest
-value, needs a gap-rendering convention; tracked for a later small PR.
+**Status (2026-06-16): P6 complete.** Final pass:
+- **Map plotting fix** — the `addAircraftMarker` 120 s hard cutoff (added in #123)
+  dropped a still-present plane off the map under sparse single-target RTL-SDR
+  reception (it lingered in the table but vanished from the map). The current-sky
+  window widened to 10 min (`AIRCRAFT_MAP_DECAY_MS`), keeping the recency fade.
+- **24 h retention** — `AIRCRAFT_RETENTION_SECONDS` 1 h → 24 h so a returning
+  airframe is recognised as the SAME identity rather than a fresh contact.
+- **Returning-ICAO (the deferred item) + of-interest signal** — a re-sighting after
+  a gap > `AIRCRAFT_RETURN_GAP_SECONDS` (10 min) marks a track gap (KML flight path
+  breaks into legs instead of drawing straight across the absence), flags the
+  contact `returning` with a count, records it to the alerts feed (no backend send —
+  avoids fatigue), and the GUI shows it amber with a ↩ RETURN badge. This is the
+  near-term bridge into P7's returning-aircraft-of-interest scoring.
 
 ### P7 — Aircraft of interest: orbit/loiter detection (ADS-B + Remote ID)
 
