@@ -587,6 +587,44 @@ async def test_aircraft_track_is_bounded(orch):
 
 
 @pytest.mark.asyncio
+async def test_aircraft_return_after_gap_is_flagged(orch):
+    """A re-sighting after a gap > AIRCRAFT_RETURN_GAP_SECONDS flags the SAME
+    airframe as returning (of-interest), with a count and a marked track gap."""
+    so = orch.sensor_orchestrator
+    so._adsb_active = orch._adsb_active = True
+    so._aircraft_return_gap_s = 600
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="RET001", lat=51.50, lon=-0.1)])
+    await so._poll_adsb()
+    assert so._aircraft_index["RET001"].get("returning") is not True
+    # Backdate last sighting 20 min so the next poll reads as a return.
+    so._aircraft_index["RET001"]["timestamp"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="RET001", lat=51.60, lon=-0.1)])
+    await so._poll_adsb()
+    ev = so._aircraft_index["RET001"]
+    assert ev["returning"] is True
+    assert ev["return_count"] == 1
+    assert ev["last_gap_seconds"] >= 600
+    assert any(p.get("gap") for p in ev["positions"]), "track gap not marked"
+    assert so._stats["aircraft_returns"] == 1
+
+
+@pytest.mark.asyncio
+async def test_aircraft_no_return_within_gap(orch):
+    """Continuous tracking (re-seen within the gap window) is NOT a return."""
+    so = orch.sensor_orchestrator
+    so._adsb_active = orch._adsb_active = True
+    so._aircraft_return_gap_s = 600
+    for la in (51.50, 51.52):
+        orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="CONT01", lat=la, lon=-0.1)])
+        await so._poll_adsb()
+    ev = so._aircraft_index["CONT01"]
+    assert ev.get("returning") is not True
+    assert so._stats["aircraft_returns"] == 0
+    assert not any(p.get("gap") for p in ev["positions"])
+
+
+@pytest.mark.asyncio
 async def test_poll_adsb_skips_idless_aircraft(orch):
     """An aircraft with no ICAO is not merged into one bogus 'unknown' airframe."""
     so = orch.sensor_orchestrator

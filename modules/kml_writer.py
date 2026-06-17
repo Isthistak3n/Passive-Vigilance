@@ -384,9 +384,19 @@ class KMLWriter:
         Each entry in *positions* is a ``{lat, lon, altitude, timestamp}`` dict
         accumulated by the orchestrator (altitude in feet).  Points without a
         coordinate are skipped; fewer than two usable points yields no track.
+
+        A ``{"gap": True}`` sentinel (a returning airframe that was absent then came
+        back) breaks the path: the run of points before it and after it become
+        separate LineString segments, so the track is not drawn straight across the
+        absence. Each segment of 2+ points yields one Placemark.
         """
-        coord_parts: list[str] = []
+        segments: list[list[str]] = []
+        current: list[str] = []
         for pos in positions:
+            if pos.get("gap"):
+                segments.append(current)
+                current = []
+                continue
             lat, lon = pos.get("lat"), pos.get("lon")
             if lat is None or lon is None:
                 continue
@@ -394,21 +404,29 @@ class KMLWriter:
                 alt_m = float(pos.get("altitude") or 0) * 0.3048
             except (TypeError, ValueError):
                 alt_m = 0.0
-            coord_parts.append(f"{lon},{lat},{alt_m}")
-        if len(coord_parts) < 2:
-            return []
-        coords = " ".join(coord_parts)
+            current.append(f"{lon},{lat},{alt_m}")
+        segments.append(current)
+
         style_id = "aircraft-track-emergency" if emergency else "aircraft-track"
-        return [
-            "    <Placemark>",
-            f"      <name>Track — {_xe(name)}</name>",
-            f"      <styleUrl>#{style_id}</styleUrl>",
-            "      <LineString>",
-            "        <altitudeMode>absolute</altitudeMode>",
-            f"        <coordinates>{coords}</coordinates>",
-            "      </LineString>",
-            "    </Placemark>",
-        ]
+        multi = sum(1 for seg in segments if len(seg) >= 2) > 1
+        lines: list[str] = []
+        seg_no = 0
+        for seg in segments:
+            if len(seg) < 2:
+                continue
+            seg_no += 1
+            suffix = f" (leg {seg_no})" if multi else ""
+            lines += [
+                "    <Placemark>",
+                f"      <name>Track — {_xe(name)}{suffix}</name>",
+                f"      <styleUrl>#{style_id}</styleUrl>",
+                "      <LineString>",
+                "        <altitudeMode>absolute</altitudeMode>",
+                f"        <coordinates>{' '.join(seg)}</coordinates>",
+                "      </LineString>",
+                "    </Placemark>",
+            ]
+        return lines
 
     def _drone_placemark(self, event: dict) -> list[str]:
         freq = event.get("freq_mhz", 0)
