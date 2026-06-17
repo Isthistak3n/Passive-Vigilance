@@ -352,8 +352,17 @@ class FixedScoring(ScoringEngine):
         # device's baseline spans enough DISTINCT hours to define a schedule
         # (activation guard); below that it is "insufficient baseline to judge",
         # not "on schedule". Flags when this hour-of-day was never seen in baseline.
+        #
+        # A randomized-no-fp device is ALSO off-schedule-ineligible, for the same
+        # reason it is novelty-ineligible: its identifier rotates, so its "schedule"
+        # cannot be trusted across the rotation, and even a device that holds one
+        # randomized MAC for a while is a weak identity we cannot confirm tomorrow.
+        # The 2026-06 post-freeze read showed this is the dominant false-positive
+        # source — ~50 flags/poll, 97% off-schedule on held-MAC randomized clients
+        # seen in a single new hour. Flagging a device you cannot track across its
+        # own rotation for "appearing in a new hour" is noise, not signal.
         off_schedule = 0.0
-        if not is_novel:
+        if not is_novel and not randomized_no_fp:
             distinct_baseline_hours = bin(profile.hour_mask).count("1")
             if (
                 distinct_baseline_hours >= self._off_schedule_min_hours

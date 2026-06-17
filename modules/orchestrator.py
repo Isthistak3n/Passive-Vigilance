@@ -178,6 +178,7 @@ class SensorOrchestrator:
             "alerts_sent": 0,
             "alerts_rate_limited": 0,
             "alerts_dropped": 0,
+            "alerts_below_threshold": 0,
             "persistent_detections": 0,
             "aircraft_idless_skipped": 0,
             "aircraft_returns": 0,
@@ -226,6 +227,11 @@ class SensorOrchestrator:
         # a single fleeting blip is shown but not paged — sustained presence is the
         # signal. The detection is always logged/displayed regardless.
         self._drone_min_sweeps = int(os.getenv("DRONE_RF_MIN_SWEEPS", "2"))
+        # Paging threshold: a WiFi/BT detection still shows in the panel at any
+        # score, but only one scoring >= this pages (backend send + Alerts feed).
+        # Default 0.7 (likely) — the 2026-06 post-freeze read drowned the operator in
+        # ~50 suspicious (0.5) flags/poll vs 2 high; suspicious is display-only now.
+        self._wifi_page_min_score = float(os.getenv("WIFI_ALERT_MIN_SCORE", "0.7"))
         self.drone_detections: list[dict] = []
         # Index freq-band -> the drone event already in drone_detections, so a
         # persistent emitter heard on every sweep becomes ONE event (refreshed
@@ -750,7 +756,12 @@ class SensorOrchestrator:
                 self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
                 if self.gui_server is not None:
                     self.gui_server.push_event("wifi", event_dict)
-            if await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
+            if event.score < self._wifi_page_min_score:
+                # Below the paging bar — shown in the WiFi panel above, but not paged
+                # (no backend send, no Alerts-feed entry). Keeps low-confidence
+                # suspicious flags visible without drowning the operator.
+                self._stats["alerts_below_threshold"] = self._stats.get("alerts_below_threshold", 0) + 1
+            elif await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
                 self._stats["alerts_sent"] += 1
                 contact = self._contact_designator(event)

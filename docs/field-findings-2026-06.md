@@ -35,6 +35,61 @@ orchestrator appends each to the unbounded `all_events` list — the mobile leak
 re-incarnated, just deferred. **Post-freeze memory is unproven.** This is roadmap
 P0 and the reason the multi-day soak is gated behind it.
 
+---
+
+## Soak #2 — first post-freeze read (2026-06-17)
+
+The validation soak finally **crossed the freeze** (48h→63h window, extended after
+a power-cycle; baseline froze 2026-06-17T02:00Z at ~2,723 devices — `mac:` 2,671 /
+`wifi-fp:` 71 / `ble-fp:` 1). Read ~40 min post-freeze.
+
+**Validated (the wins).**
+- **The fingerprint fix held.** Post-freeze *novelty* is ~2 % of flags. The
+  ~36/cycle randomized-MAC *novelty* flood the BLE/WiFi fingerprinting targeted
+  stayed dead across the freeze — its first real test.
+- **Baseline durability survived abuse.** A power outage, multiple restarts, and a
+  mid-soak window extension — `learning_start` persisted and the baseline resumed
+  every time. The P0 crash-safety property holds under genuinely hostile conditions.
+
+**The finding (the flood moved).** ~50 WiFi `suspicious` flags **per poll**
+(~101/min), and **97 % are `off_schedule`**, not novelty — on **held-MAC randomized
+clients** (`mac:`-keyed, one randomized address held 16 h+, 1,000+ obs) first seen
+*during* learning, each flagging the moment it appears in a single new hour-of-day.
+All at score 0.50; 5,766 suspicious vs **2** high. `alerts_dropped` 3,690 (the
+backlog bound shedding under the flood — masking, not fixing).
+
+**Root causes.**
+1. **Eligibility asymmetry.** A randomized-no-fp device was novelty-ineligible but
+   still *off-schedule-eligible* — we flagged "seen in a new hour" on an identity we
+   cannot track across its own rotation. Off-schedule on a weak identity is noise by
+   construction. **Fix:** make randomized-no-fp off-schedule-ineligible too
+   (symmetry with novelty).
+2. **No gradation.** One hour outside the mask = full signal = 0.50 = page. Off-
+   schedule has no "how far off / how many hours / tolerance" — a cliff.
+3. **Paging at the suspicious floor.** Fixed mode paged at 0.50, so the lowest tier
+   drowned the operator. **Fix:** page likely+ (≥0.7); suspicious is display-only.
+4. **Disrupted learning degrades off-schedule.** Outage/restarts/LE-off left thin,
+   biased hour-masks (the `MIN_BASELINE_HOURS=12` gate was not enough). A clean
+   uninterrupted learn matters; the detector should tolerate a partial baseline.
+
+**Cross-cutting lessons.**
+- Validating one signal doesn't validate the detector — the noise simply moved to
+  the next signal. Each signal needs its own post-freeze FP read.
+- **P3 (rolling adaptation) is not the bottleneck** — it manages novelty, which is
+  already tiny. Lower priority than off-schedule work.
+- **Hardware is a first-class reliability factor.** The single-SDR wedge cost ~a day
+  of ADS-B; the LE-off bug cost BLE capture; the USB3/power/dongle arrangement
+  caused both. Physical fixes rank with code fixes.
+- **BLE-as-identity is confirmed weak here** — 1 `ble-fp` of 2,743, a bare-advertiser
+  environment exactly as the design predicted (worsened by the LE-off window).
+- We had to mine JSONL by hand for the FP rate — **instrument it** (flags/poll by
+  signal × severity) so the next soak's read is a glance.
+
+**Actions taken (this PR).** (1) randomized-no-fp made off-schedule-ineligible;
+(2) WiFi paging gated to likely+ (`WIFI_ALERT_MIN_SCORE=0.7`, suspicious display-
+only, counted in `alerts_below_threshold`). Deferred to validate on soak #3:
+off-schedule gradation, FP-rate instrumentation, P3.
+
 **Disk, not RAM, is the real multi-day budget.** `observations` grew ~14 MB/hr
 (3,769 → 472,763 rows; entity DB 1.5 → 57 MB in 4h) by design, with **no pruning
 yet**. That's ~1 GB/day → ~2–3 GB for a 3-day baseline. chase has ~38 GB free, so
