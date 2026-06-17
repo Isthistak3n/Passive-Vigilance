@@ -17,7 +17,7 @@ from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Optional
 
-from modules import contact_designator
+from modules import air_geometry, air_scoring, contact_designator
 from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
 
 
@@ -210,6 +210,13 @@ class SensorOrchestrator:
         # track ships to the GUI on every push. Cap it (drop oldest); shared by the
         # ADS-B and Remote ID flight paths via _extend_track.
         self._track_max_points = int(os.getenv("AIRCRAFT_TRACK_MAX_POINTS", "500"))
+        # P7 air-of-interest persistence scoring (transit≈0, loiter/return climbs).
+        # Parameters resolved once; the scorer is pure (modules/air_scoring.py).
+        self._air_params = air_scoring.AirParams.from_env(os.environ)
+        # P7: a drone-RF band must be heard on this many sweeps before it alerts, so
+        # a single fleeting blip is shown but not paged — sustained presence is the
+        # signal. The detection is always logged/displayed regardless.
+        self._drone_min_sweeps = int(os.getenv("DRONE_RF_MIN_SWEEPS", "2"))
         self.drone_detections: list[dict] = []
         # Index freq-band -> the drone event already in drone_detections, so a
         # persistent emitter heard on every sweep becomes ONE event (refreshed
@@ -442,6 +449,12 @@ class SensorOrchestrator:
                 self._append_jsonl(self._session_dir / "aircraft.jsonl", event)
                 if self.gui_server is not None:
                     self.gui_server.push_event("aircraft", event)
+            # P7: persistence-score the contact (transit≈0, loiter/orbit/return
+            # climbs). Stashes air_score/air_severity on the event for the GUI.
+            contact = existing if existing is not None else event
+            air = self._score_aircraft(contact)
+            if self.gui_server is not None and air.of_interest:
+                self.gui_server.push_event("aircraft", contact)
             emergency = aircraft.get("emergency", False)
             label = aircraft.get("callsign") or aircraft.get("registration") or icao
             body = (f"{label}: alt {aircraft.get('altitude', '?')} ft, "
@@ -451,14 +464,23 @@ class SensorOrchestrator:
                 self._stats["alerts_sent"] += 1
                 self._record_alert("aircraft", f"EMERGENCY — {label}", body,
                                    severity="high", icao=icao)
-            else:
-                if await self.rate_limiter.is_allowed(f"aircraft:{aircraft.get('icao', 'unknown')}"):
+            elif air.of_interest:
+                # P7: only an aircraft OF INTEREST alerts — a loiterer/orbiter near
+                # the node, or a returner — never routine transit (which used to
+                # alert on every airframe). No geometry reference (GPS down) ->
+                # nothing scores of-interest, so only emergencies alert.
+                if await self.rate_limiter.is_allowed(f"aircraft:{icao}"):
                     self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
                     self._stats["alerts_sent"] += 1
-                    self._record_alert("aircraft", f"Aircraft — {label}", body,
-                                       icao=icao)
+                    self._record_alert(
+                        "aircraft", f"Aircraft of interest — {label}",
+                        f"{body} — {air.severity} (score {air.score})",
+                        severity=air.severity, icao=icao,
+                        air_score=air.score, air_breakdown=air.breakdown,
+                    )
                 else:
                     self._stats["alerts_rate_limited"] += 1
+            # else: transit / not-yet-of-interest — display-only, no alert.
         # Drop aircraft gone from the sky so the index stays the live picture and
         # bounded across a multi-day run (runs in the asyncio thread; the GUI reads
         # a snapshot via current_aircraft()).
@@ -788,6 +810,10 @@ class SensorOrchestrator:
                 self.drone_detections.append(event_dict)
                 if self.gui_server is not None:
                     self.gui_server.push_event("drone", event_dict)
+            # P7: gate on persistence — a band heard only once is a transient blip
+            # (shown above, not paged). Alert once it recurs on enough sweeps.
+            if self._drone_index[band].get("observation_count", 1) < self._drone_min_sweeps:
+                continue
             alert_detection = {
                 "freq_mhz": freq, "power_db": power,
                 "lat": detection.get("gps_lat") or 0.0, "lon": detection.get("gps_lon") or 0.0,
@@ -1343,6 +1369,27 @@ class SensorOrchestrator:
             event, aircraft.get("lat"), aircraft.get("lon"),
             aircraft.get("altitude"), ts_iso,
         )
+
+    def _score_aircraft(self, event: dict) -> "air_scoring.AirScore":
+        '''Persistence-score one aircraft event against the node reference and stash
+        air_score / air_severity / air_of_interest / air_breakdown on it (P7). Pure
+        scorer; no-op-safe when there is no GPS/home reference (score 0). The
+        long-horizon return_count is read from the event (#136) when present.'''
+        reference = air_geometry.resolve_reference(self._current_fix, os.environ)
+        flags = air_scoring.InterestFlags(
+            military=bool(event.get("military")),
+            no_callsign=not (event.get("callsign") or "").strip(),
+        )
+        result = air_scoring.score_air_contact(
+            event.get("positions", []), reference,
+            return_count=int(event.get("return_count", 0) or 0),
+            flags=flags, params=self._air_params,
+        )
+        event["air_score"] = result.score
+        event["air_severity"] = result.severity
+        event["air_of_interest"] = result.of_interest
+        event["air_breakdown"] = result.breakdown
+        return result
 
     def _console_alert(self, message: str) -> None:
         '''Send an alert to the console backend (used for sensor health degradation).'''
