@@ -338,6 +338,24 @@ async def test_poll_kismet_sends_alert_for_high_score_event(orch):
 
 
 @pytest.mark.asyncio
+async def test_poll_kismet_suspicious_is_display_only(orch):
+    """A suspicious (0.5) detection shows in the WiFi panel but does NOT page —
+    the 2026-06 post-freeze noise cut (page likely+ only)."""
+    so = orch.sensor_orchestrator
+    event = _make_detection_event(alert_level="suspicious", score=0.5)
+    orch.persistence.update.return_value = [event]
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
+    orch._kismet_active = True
+
+    await so._poll_kismet()
+    await _drain_alerts(orch)
+
+    orch._mock_backend.send_persistence_alert.assert_not_called()   # not paged
+    assert so._stats["alerts_below_threshold"] >= 1
+    assert len(so.all_events) == 1                                  # still displayed
+
+
+@pytest.mark.asyncio
 async def test_poll_kismet_dedups_repeated_device_into_one_event(orch):
     """A device that re-flags every poll updates ONE ongoing detection in place,
     not a new row each poll — the post-freeze memory-bound fix."""

@@ -396,6 +396,18 @@ def test_novelty_unaffected_by_guard():
     assert events[0].score_breakdown["novelty"] == 1.0
 
 
+def test_off_schedule_ineligible_for_randomized_no_fp():
+    # A randomized MAC with no probe fingerprint keys "mac:" — it rotates and cannot
+    # be tracked across rotation, so off-schedule on it is noise (the dominant
+    # 2026-06 post-freeze flood). Even a rich baseline seen in a never-baselined hour
+    # must NOT flag off-schedule, mirroring its novelty-ineligibility.
+    engine, clock = _clocked_engine(baseline_hours=24.0)
+    dev = {"macaddr": "a2:bb:cc:dd:ee:f0", "name": "", "probe_ssids": []}  # randomized, no fp
+    _seed_distinct_hours(engine, clock, dev, 12)   # rich baseline, hours 0..11
+    clock[0] = T0 + timedelta(hours=37)            # frozen, hour 13 (never baselined)
+    assert engine.update([dev]) == []              # ineligible -> no off-schedule flag
+
+
 def test_off_schedule_not_applied_to_novel():
     # A novel device has no baseline schedule — off-schedule must not apply even
     # when it appears in an hour never seen during baseline.
