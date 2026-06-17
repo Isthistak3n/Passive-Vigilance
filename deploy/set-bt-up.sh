@@ -29,7 +29,12 @@ for _ in $(seq 1 15); do
 done
 [ -n "$idx" ] || exit 0
 
-/usr/bin/hciconfig "hci${idx}" up 2>/dev/null || true
-/usr/bin/btmgmt --index "$idx" power on >/dev/null 2>&1 || true
-/usr/bin/btmgmt --index "$idx" le on >/dev/null 2>&1 || true
+# Every controller call is timeout-bounded: btmgmt can block indefinitely on a
+# wedged controller (observed post-reboot), and as a blocking ExecStartPre that
+# would hang the whole service into its start timeout and crash-loop it. LE still
+# works without these — ble_scanner enables LE scan over its own raw HCI socket —
+# so a timeout here is harmless. Best-effort, always exit 0.
+timeout 5 /usr/bin/hciconfig "hci${idx}" up >/dev/null 2>&1 || true
+timeout 5 /usr/bin/btmgmt --index "$idx" power on >/dev/null 2>&1 || true
+timeout 5 /usr/bin/btmgmt --index "$idx" le on >/dev/null 2>&1 || true
 exit 0
