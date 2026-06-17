@@ -249,6 +249,10 @@ class PassiveVigilance:
             asyncio.create_task(so._health_banner_loop(), name="health-banner"),
             asyncio.create_task(so._watchdog_loop(), name="watchdog"),
         ]
+        # Rolling-baseline adaptation sweep (P3) — only when a fixed engine opts in
+        # via ADAPTATION_POSTURE; off (the default) starts no task.
+        if so._adaptation_sweep_enabled():
+            tasks.append(asyncio.create_task(so._adaptation_sweep_loop(), name="adaptation-sweep"))
         if self.sdr_mode == SDRMode.SHARED and self._drone_active:
             tasks.append(asyncio.create_task(self.sdr_coordinator._coordinator_loop(), name="sdr-coordinator"))
         await self._stop.wait()

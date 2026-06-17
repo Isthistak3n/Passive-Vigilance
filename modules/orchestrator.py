@@ -366,6 +366,81 @@ class SensorOrchestrator:
                 self._log_health_banner()
 
     # ------------------------------------------------------------------
+    # Rolling-baseline adaptation sweep (P3) — separate from entity-prune
+    # ------------------------------------------------------------------
+
+    def _adaptation_sweep_enabled(self) -> bool:
+        """True only when a fixed engine opts in to rolling adaptation.
+
+        Independently disablable from the entity-prune sweep: the env kill-switch
+        ``ADAPTATION_SWEEP_ENABLED`` (default on) AND a non-``off`` posture on a
+        fixed engine that supports the sweep. Posture ``off`` (the fail-safe) or a
+        mobile engine starts no task at all.
+        """
+        if os.getenv("ADAPTATION_SWEEP_ENABLED", "true").strip().lower() == "false":
+            return False
+        if not callable(getattr(self.persistence, "run_adaptation_sweep", None)):
+            return False
+        posture = getattr(self.persistence, "_adaptation_posture", "off")
+        # isinstance guard: a mocked/mobile engine exposes truthy attrs that are not
+        # real posture strings — only a genuine fixed engine's string posture counts.
+        return isinstance(posture, str) and posture != "off"
+
+    async def _adaptation_sweep_loop(self) -> None:
+        """Periodically promote sustained-presence devices into the baseline and
+        demote long-absent promoted ones (P3).
+
+        A SEPARATE task from the entity-prune sweep on purpose — different failure
+        semantics (prune failure = disk; adaptation failure = scoring correctness)
+        — so it is independently guarded and disablable. Any sweep failure is logged
+        and swallowed; it never touches capture or scoring. The engine returns
+        demotion events (it stays DB-only); this loop writes them to events.jsonl.
+        """
+        interval = float(os.getenv("ADAPTATION_SWEEP_INTERVAL_SECONDS", "3600"))
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            if self._stop_event.is_set():
+                break
+            try:
+                events = self.persistence.run_adaptation_sweep()
+                for ev in events or []:
+                    self._emit_demotion_event(ev)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Adaptation sweep error (scoring unaffected): %s", exc)
+
+    def _emit_demotion_event(self, ev: dict) -> None:
+        """Enrich a demotion event with its contact designator and append it to
+        events.jsonl as a first-class ``baseline_demotion`` event. This is the P3
+        producer; the "graveyard" GUI panel is a deferred consumer. Guarded so a
+        write failure never disturbs the sweep."""
+        try:
+            record = dict(ev)
+            record.setdefault("contact", self._demotion_contact(ev))
+            self._append_jsonl(self._session_dir / "events.jsonl", record)
+        except Exception as exc:
+            logger.debug("demotion event emit error: %s", exc)
+
+    def _demotion_contact(self, ev: dict) -> str:
+        """Best-effort CLASS-IDENT-# contact for a demoted fingerprint, from the
+        fields the store retained (device_type, manufacturer, fingerprint). The
+        instance number is the persisted, rotation-stable assignment keyed by the
+        fingerprint, so it matches what was shown while the device was live."""
+        cls = contact_designator.class_token(ev.get("device_type", "") or "")
+        ident = contact_designator.ident_token(
+            manufacturer=ev.get("manufacturer", "") or "",
+            fingerprint=ev.get("fingerprint", "") or "",
+        )
+        group = contact_designator.group_key(cls, ident)
+        identity_key = ev.get("fingerprint") or ""
+        number = self._assign_contact_number(identity_key, group)
+        return contact_designator.designator(cls, ident, number)
+
+    # ------------------------------------------------------------------
     # Inner poll methods
     # ------------------------------------------------------------------
 
