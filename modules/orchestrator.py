@@ -793,9 +793,12 @@ class SensorOrchestrator:
             self._stats["persistent_detections"] += 1
             existing = self._wifi_event_index.get(event.mac)
             if existing is not None:
-                # Same device flagged again — update the ongoing detection in
-                # place (no new list row, no new JSONL line). Push to the GUI
-                # only on an alert-level change to keep the live feed bounded.
+                # Same device flagged again — update the ongoing detection in place
+                # (no new list row). On an alert-LEVEL change, also append a fresh
+                # events.jsonl line and push it: the durable history is dedup-newest
+                # per MAC, so without this a page refresh re-seeds the stale
+                # first-flag level while the live feed shows the current one. Gating
+                # on level-change (not every poll) keeps the file bounded.
                 prev_level = existing["alert_level"]
                 existing.update({
                     "score": event.score, "alert_level": event.alert_level,
@@ -806,8 +809,10 @@ class SensorOrchestrator:
                     "locations": event.locations,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
-                if self.gui_server is not None and event.alert_level != prev_level:
-                    self.gui_server.push_event("wifi", existing)
+                if event.alert_level != prev_level:
+                    self._append_jsonl(self._session_dir / "events.jsonl", existing)
+                    if self.gui_server is not None:
+                        self.gui_server.push_event("wifi", existing)
             else:
                 event_dict = {
                     "event_type": "wifi", "mac": event.mac, "score": event.score,

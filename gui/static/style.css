@@ -278,10 +278,22 @@ tr:hover td { background: #161b22; }
 .alert-card.drone    { border-left-color: #bc8cff; }
 .alert-card.system   { border-left-color: #f85149; }
 
+.alert-card .alert-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
 .alert-card .alert-title {
   font-weight: 600;
   font-size: 13px;
-  margin-bottom: 4px;
+}
+.alert-card .alert-time {
+  color: #6e7681;
+  font-size: 11px;
+  font-family: monospace;
+  white-space: nowrap;
 }
 .alert-card .alert-body {
   font-size: 12px;
