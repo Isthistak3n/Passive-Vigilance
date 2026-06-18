@@ -398,6 +398,26 @@ async def test_poll_kismet_dedup_writes_one_jsonl_line_per_device(orch, tmp_path
     assert len(lines) == 1
 
 
+@pytest.mark.asyncio
+async def test_poll_kismet_persists_on_alert_level_change(orch, tmp_path):
+    """A device whose alert level changes appends a fresh events.jsonl line, so a
+    refresh re-seeds the CURRENT level (dedup-newest) — not the stale first-flag one.
+    Re-flagging at the SAME level adds no line."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
+    orch._kismet_active = True
+    orch.persistence.update.return_value = [_make_detection_event(alert_level="suspicious", score=0.5)]
+    await so._poll_kismet()                                   # first flag -> 1 line
+    orch.persistence.update.return_value = [_make_detection_event(alert_level="suspicious", score=0.55)]
+    await so._poll_kismet()                                   # same level -> no new line
+    orch.persistence.update.return_value = [_make_detection_event(alert_level="likely", score=0.75)]
+    await so._poll_kismet()                                   # level change -> +1 line
+    lines = (so._session_dir / "events.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[-1])["alert_level"] == "likely"
+
+
 def test_record_alert_persists_and_pushes(orch, tmp_path):
     """_record_alert writes one line to alerts.jsonl AND pushes to the GUI feed,
     so alerts are durable (P5) and the Alerts tab is fed for the first time."""

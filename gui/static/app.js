@@ -438,11 +438,17 @@ function renderAlerts() {
   document.getElementById('alerts-feed').innerHTML = state.alerts
     .slice(-100)
     .reverse()
-    .map(a => `
+    .map(a => {
+      const ts = a.timestamp ? new Date(a.timestamp).toLocaleString() : '';
+      return `
       <div class="alert-card ${a.kind || ''}">
-        <div class="alert-title">${a.title || a.type || 'Alert'}</div>
-        <div class="alert-body">${a.body || JSON.stringify(a)}</div>
-      </div>`).join('');
+        <div class="alert-head">
+          <span class="alert-title">${esc(a.title || a.type || 'Alert')}</span>
+          <span class="alert-time">${esc(ts)}</span>
+        </div>
+        <div class="alert-body">${esc(a.body || JSON.stringify(a))}</div>
+      </div>`;
+    }).join('');
 }
 
 // Search inputs are wired inside createTable (per-tab, persisted), so no separate
