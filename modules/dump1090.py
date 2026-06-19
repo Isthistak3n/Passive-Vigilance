@@ -109,8 +109,12 @@ class ADSBModule:
                 fix — the module performs no GPS read of its own.
         """
         if self._session is None:
-            logger.warning("poll_aircraft() called before connect()")
-            return []
+            # Not connected — e.g. the startup connect() lost the race with the SDR
+            # coordinator's readsb cold-start (aircraft.json briefly absent -> 404).
+            # RAISE so the orchestrator's _poll_adsb reconnect path fires; returning
+            # [] here silently strands ADS-B disconnected forever (no aircraft ever
+            # reach the pipeline even once readsb is healthy again).
+            raise ConnectionError("poll_aircraft() called before a successful connect()")
 
         try:
             async with self._session.get(
