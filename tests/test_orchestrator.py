@@ -654,6 +654,29 @@ async def test_aircraft_return_after_gap_is_flagged(orch):
 
 
 @pytest.mark.asyncio
+async def test_aircraft_return_persists_to_jsonl(orch):
+    """A re-acquisition after a gap appends a fresh aircraft.jsonl line (newest has
+    returning=True) so the return survives a restart; continuous sightings do not."""
+    so = orch.sensor_orchestrator
+    so._adsb_active = orch._adsb_active = True
+    so._aircraft_return_gap_s = 600
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="RET777", lat=51.50, lon=-0.1)])
+    await so._poll_adsb()                                   # first contact -> 1 line
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="RET777", lat=51.51, lon=-0.1)])
+    await so._poll_adsb()                                   # continuous -> no new line
+    lines = (so._session_dir / "aircraft.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1
+    # Backdate so the next sighting reads as a return.
+    so._aircraft_index["RET777"]["timestamp"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[_make_aircraft(icao="RET777", lat=51.60, lon=-0.1)])
+    await so._poll_adsb()                                   # return -> +1 line
+    lines = (so._session_dir / "aircraft.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[-1])["returning"] is True
+
+
+@pytest.mark.asyncio
 async def test_aircraft_no_return_within_gap(orch):
     """Continuous tracking (re-seen within the gap window) is NOT a return."""
     so = orch.sensor_orchestrator
