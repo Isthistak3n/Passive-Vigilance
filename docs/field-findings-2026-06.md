@@ -96,6 +96,65 @@ yet**. That's ~1 GB/day → ~2–3 GB for a 3-day baseline. chase has ~38 GB fre
 a 72h run fits, but pruning/rotation is needed before this is a standing
 deployment.
 
+## Soak #3 — post-fix validation (2026-06-17 → 2026-06-19)
+
+The soak-#2 fixes (PR #138, plus the deploy/SDR/BLE hardening of #131–#141) ran on
+the **reused frozen baseline** for ~42.5 h post-freeze with all five sensors up
+(WiFi / BLE / ADS-B / DroneRF / GPS) and DroneRF re-enabled. Concluded ~7 h early to
+swap in a longer-range BT dongle — the validation goals were already met.
+
+**Validated (the fixes held over a multi-hour run, not a spot check).**
+- **The off-schedule flood is gone.** The ~50-per-poll off-schedule flood on
+  held-MAC randomized clients — the soak-#2 finding — did not recur. Routine flagging
+  is now display-only: ~74,600 display-only detections against **240 paged** over the
+  run, **0 dropped**. The likely-only paging gate and off-schedule ineligibility for
+  un-trackable randomized devices behaved exactly as designed.
+- **Paging is meaningful again.** Every unique device that flagged in-session sat at
+  the **suspicious (display-only) tier**, and the signal mix was novelty-dominant —
+  i.e. genuinely new *fingerprints* appearing post-freeze, which is legitimate.
+  Nothing routine reached the pager.
+- **Fingerprinted-device off-schedule is correct behavior.** A randomized device that
+  carries a strong fingerprint still flags off-schedule, and that is intended: it can
+  be tracked across rotation, so its schedule is meaningful. Only un-trackable
+  (no-fingerprint) randomized devices are suppressed.
+- **SDR time-share validated.** ADS-B and DroneRF shared the single SDR for the whole
+  run with **zero "SDR wedged" events** — the settle-barrier handoff (#131) held over
+  many hours.
+- **Returning-aircraft detection is live.** ~105 returning-airframe re-acquisitions
+  were flagged over the run, as feed/display rather than pager noise.
+- **Memory is bounded.** Resident size fluctuated ~116–190 MB (~16 % of 8 GB) with no
+  upward drift — the in-memory detection log de-duplicates per device, not per poll.
+  Not a leak (an earlier mid-soak reading suggested growth; the fuller picture is a
+  bounded fluctuation).
+
+**The standing finding (unchanged): BLE is data-starved here.** Only **one** BLE
+fingerprint exists in the baseline, against ~100 WiFi fingerprints — a
+bare-advertiser environment worsened by a short-range dongle. An environment/hardware
+limit, not a detector fault.
+
+**Action at conclusion — BT dongle upgrade.** Swapped the short-range controller for
+a longer-range one and restarted onto it (the scanner auto-detects the live
+controller; the durable baseline was reused). BLE capture rose immediately — several
+advertisers in the live feed within the first minute, against ~0–1 before. This is
+the prerequisite for actually banking BLE fingerprints.
+
+**Proposed next steps.**
+
+*Testing.* (1) A fresh **BLE-focused read** now that capture works — how many distinct
+advertisers, how many yield a stable fingerprint, and whether they persist into the
+entity store rather than only the live feed. (2) **FP-rate instrumentation** (deferred
+from soak #2): flags-per-poll by signal × severity surfaced in status, so the read is
+a glance, not a hand-mined log. (3) **Off-schedule gradation** (deferred): how-far-off
+/ how-many-hours / tolerance, so a single new hour is not a full-signal cliff — then
+re-read the FP rate.
+
+*Features.* (1) **Cross-PHY correlation** — link a BLE advertiser to a WiFi client by
+co-presence / timing / signal strength, so a contact survives when one radio rotates;
+pairs directly with the new BLE capture. (2) **Disk pruning/rotation** before any
+standing multi-day deployment (the observations table grows by design). (3) **P3
+rolling adaptation** stays lower priority — it manages novelty, which is already
+small; soak #3 reinforces off-schedule and correlation as the higher-value work.
+
 ## Detection-signal behavior on real RF
 
 - **Off-schedule false-positive storm at thin baselines.** A 1-distinct-hour
