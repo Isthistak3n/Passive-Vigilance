@@ -215,6 +215,23 @@ makes it durable. Leave `bluetoothd` disabled — Kismet's BT capture talks to t
 controller directly. Captured 207 BT devices flowing into `poll_devices()`
 alongside WiFi. (Full operational detail in `CLAUDE.md` / `CONTEXT.md`.)
 
+## SDR / DroneRF reliability — isolation exercised in the field (2026-06-19)
+
+The native `librtlsdr`/`libusb` stack segfaults occasionally mid-USB-transfer
+(issue #63) — an upstream C bug we can't patch. The fix (#85) **contains** it: the
+RTL-SDR sampling runs in an isolated "spawn" child process, so a native crash kills
+only the disposable child and the parent respawns it (with backoff) or auto-disables
+DroneRF after repeated crashes in a window.
+
+This is no longer just unit-tested — it has been **exercised live and held**. Over one
+~10 h session (single shared SDR, time-shared with readsb): 388 worker spawns (normal
+per-window cadence; a worker confirmed running as a child of the main process),
+**2 contained crash-respawns** (the native stack exited a child unexpectedly; the
+parent caught it and recovered), **0 auto-disables**, and — the proof — **0
+main-process restarts** (`systemctl … NRestarts: 0`). DroneRF stayed active with live
+detections throughout. Pre-#85, each of those 2 native exits would have crash-looped
+the whole node. The segfault still happens; it is now a harmless, self-healing event.
+
 ## Owed validations (do not claim these as done)
 
 1. **Post-freeze memory** — never exercised (roadmap P0; forced-freeze test).
