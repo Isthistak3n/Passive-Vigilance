@@ -235,18 +235,31 @@ class GUIServer:
 
         @app.route("/api/aircraft")
         def api_aircraft():
-            # Seed from the orchestrator's live per-ICAO current-sky index (the
-            # actual present sky, decayed), not the bounded push-log cache — a
-            # refresh must rebuild what's flying now, not the last ~minute of pushes
-            # (P6). Fall back to the cache if the orchestrator is unavailable.
+            # Durable per-ICAO log (P5) so the table survives a refresh AND a
+            # restart, with the orchestrator's live current-sky index overlaid so
+            # aircraft still overhead show fresh position/age for the map (older
+            # table entries decay off the map client-side by recency). Disk gives
+            # the full retention window; the live index gives current state for
+            # what's flying now. Fall back to live index, then the push cache.
+            hist = self._history("aircraft.jsonl", _HISTORY_LIMIT, dedup_key="icao")
             orch = self._orchestrator
+            live = []
             if orch is not None and hasattr(orch, "current_aircraft"):
                 try:
-                    return jsonify(orch.current_aircraft())
+                    live = orch.current_aircraft()
                 except Exception as exc:
-                    logger.debug("current_aircraft() failed, using cache: %s", exc)
-            with self._data_lock:
-                return jsonify(list(self._recent_aircraft))
+                    logger.debug("current_aircraft() failed: %s", exc)
+            if hist is None:
+                if live:
+                    return jsonify(live)
+                with self._data_lock:
+                    return jsonify(list(self._recent_aircraft))
+            merged = {r["icao"]: r for r in hist if r.get("icao")}
+            for r in live:                 # live record is fresher for a present plane
+                ic = r.get("icao")
+                if ic:
+                    merged[ic] = r
+            return jsonify(list(merged.values()))
 
         @app.route("/api/drone")
         def api_drone():

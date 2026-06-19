@@ -535,6 +535,13 @@ class SensorOrchestrator:
                 if returned:
                     self._note_aircraft_return(existing, icao, prior_gap, now_iso)
                 moved = self._extend_aircraft_track(existing, aircraft, now_iso)
+                if returned:
+                    # Persist the re-acquisition so the durable aircraft log reflects
+                    # it across a restart (the disk history is dedup-newest per ICAO;
+                    # /api/aircraft seeds from it). Mirrors the WiFi level-change
+                    # persistence in _poll_kismet — only this meaningful state change
+                    # is written, never routine position churn.
+                    self._append_jsonl(self._session_dir / "aircraft.jsonl", existing)
                 if self.gui_server is not None and (moved or returned):
                     self.gui_server.push_event("aircraft", existing)
             else:

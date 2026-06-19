@@ -823,3 +823,62 @@ class TestGUIServerIndexNoCache(unittest.TestCase):
         resp = gui.app.test_client().get("/")
         self.assertEqual(resp.status_code, 200)
         self.assertIn("no-cache", resp.headers.get("Cache-Control", ""))
+
+
+class TestGUIServerAircraftEndpoint(unittest.TestCase):
+    """/api/aircraft merges the durable on-disk log (so the table survives a refresh
+    AND a restart) with the live current-sky index overlaid (fresh positions for
+    what's overhead now)."""
+
+    def _client(self, disk_records, live_records):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        sdir = os.path.join(d, "data", "sessions", "20260101_000000")
+        os.makedirs(sdir)
+        with open(os.path.join(sdir, "aircraft.jsonl"), "w", encoding="utf-8") as fh:
+            for rec in disk_records:
+                fh.write(json.dumps(rec) + "\n")
+
+        class _Orch:
+            _session_dir = sdir
+
+            def current_aircraft(self):
+                return live_records
+
+        from gui.server import GUIServer
+        gui = GUIServer(orchestrator=_Orch())
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        return gui.app.test_client()
+
+    def test_disk_aircraft_survive_when_sky_empty(self):
+        # On disk but no longer overhead (empty live index) -> still in the table.
+        client = self._client(
+            [{"icao": "ABC123", "event_type": "aircraft", "lat": 1.0, "lon": 2.0,
+              "timestamp": "2026-01-01T00:00:00+00:00"}],
+            live_records=[],
+        )
+        body = client.get("/api/aircraft").get_json()
+        self.assertIn("ABC123", {r["icao"] for r in body})
+
+    def test_live_overlay_wins_over_stale_disk(self):
+        client = self._client(
+            [{"icao": "DEF456", "event_type": "aircraft", "lat": 0.0, "lon": 0.0,
+              "timestamp": "2026-01-01T00:00:00+00:00"}],
+            live_records=[{"icao": "DEF456", "event_type": "aircraft", "lat": 51.5,
+                           "lon": -0.1, "timestamp": "2026-01-01T01:00:00+00:00"}],
+        )
+        row = [r for r in client.get("/api/aircraft").get_json()
+               if r["icao"] == "DEF456"][0]
+        self.assertEqual(row["lat"], 51.5)  # fresh live position, not the stale disk 0.0
+
+    def test_union_of_past_and_present(self):
+        client = self._client(
+            [{"icao": "OLD", "event_type": "aircraft",
+              "timestamp": "2026-01-01T00:00:00+00:00"}],
+            live_records=[{"icao": "NEW", "event_type": "aircraft",
+                           "timestamp": "2026-01-01T01:00:00+00:00"}],
+        )
+        self.assertEqual(
+            {r["icao"] for r in client.get("/api/aircraft").get_json()},
+            {"OLD", "NEW"})
