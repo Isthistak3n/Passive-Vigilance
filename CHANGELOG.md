@@ -5,6 +5,55 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ---
 
+## [v0.7.0-alpha] — 2026-06
+
+### What's better now
+
+The fixed node now identifies devices by *what they broadcast* (not their rotating
+address), keeps a durable operator view, and survived two multi-day validation soaks.
+
+- **Devices tracked across MAC/address rotation** — a randomizing phone is now keyed
+  by its probe/advertisement fingerprint, so it stays one contact as its address
+  changes. This cut the post-freeze "everything looks brand-new" flood from ~36 to a
+  handful per cycle. Passive Bluetooth capture runs over a raw HCI socket (listen
+  only) and recovers a real signal strength Kismet's BT feed never gave.
+- **Contacts get stable track labels** — WiFi/BT devices show as `CLASS-IDENT-#`
+  (e.g. `PHONE-LINKSYS-3`), with the number persisted against the fingerprint so it
+  survives rotation and restart.
+- **The dashboard remembers** — WiFi/BT, Aircraft, Drone, Remote ID, and Alerts all
+  rebuild from the on-disk history across a page refresh **and** a service restart,
+  including each contact's score. Alerts are persisted and shown for the first time.
+- **Quieter, sharper alerts** — two false-positive floods (post-freeze novelty, then
+  off-schedule on held randomized addresses) are fixed; only confident detections page
+  the operator, lower-confidence ones stay on-screen but silent. Soak #3 ran ~42 h
+  post-freeze with a livable alert rate, zero dropped, and flat memory.
+- **The air picture works** — aircraft show as decaying current-sky markers plus a
+  retained table, tracks are bounded, a returning airframe is recognised as the same
+  contact, and a Remote ID tab surfaces detected UAS. Aircraft are now *scored* —
+  orbit/loiter near the node is flagged while transit traffic is not.
+- **ADS-B and Drone RF share one SDR** — a coordinator time-shares the single dongle
+  cleanly (no more receiver wedging), and a reconnect fix means ADS-B recovers on its
+  own instead of silently going dark after a restart.
+- **Known networks + reconnect signals** — the WiFi/BT tab now shows each contact's
+  accumulated preferred-network list ("former networks") and whether a BT device is
+  calling out to reconnect, both in the CSV export.
+- **Sort, filter, export** — every table tab has sortable columns, dropdown + min-count
+  filters, a live count, CSV export, and sticky per-tab view settings.
+
+### Under the hood
+
+- New modules: `ble_scanner`, `ble_fingerprint`, `wifi_fingerprint`, `device_identity`,
+  `contact_designator`, `air_geometry`, `air_scoring`, `sdr_coordinator`.
+- EntityStore gained per-IE-hash PNL accumulation (`pnl_evidence`); the BLE advert
+  parser keeps directed-advert / solicited-service / 128-bit-UUID / manufacturer-data
+  structure. Fingerprint enrichment is capture/display only — scoring key unchanged.
+- Deploy hardening: SDR handoff settle barrier, BLE controller raised LE-on at boot,
+  refreshed `setup.sh`/service units, `READSB_URL` for the ADS-B JSON endpoint.
+- Validation: soaks #2 and #3 on the node (see `docs/field-findings-2026-06.md`).
+- Test suite grew to 687 passing.
+
+---
+
 ## [v0.6.0-alpha] — 2026-06
 
 ### What's better now

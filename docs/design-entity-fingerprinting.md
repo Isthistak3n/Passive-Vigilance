@@ -141,3 +141,32 @@ needed the raw payload; that capture work is now done:
 **Validate on chase:** a known device must re-identify across a MAC rotation and
 across a service restart; distinct devices must not merge; and the post-freeze
 novelty false-positive rate must drop versus the MAC-keyed baseline.
+
+## Enrichment — PNL + reconnect signals (round 1, 2026-06-19, #146)
+
+The signature above keys on *what's broadcast now*. Round 1 enriches that with the
+things a device reveals about *where it's been* and *what it wants to reconnect to*,
+to make weak fingerprints stronger and more distinctive — **capture + keying + GUI
+only; the live scoring/baseline key is unchanged** until the enriched data is
+validated on real captures (flood-safe, per the soak lessons).
+
+- **WiFi — accumulated PNL ("former networks").** A device emits a *slice* of its
+  preferred-network list per scan, and the per-MAC `probe_evidence` fragments it
+  across rotation. New `pnl_evidence(probe_fingerprint, ssid, …)` accumulates the PNL
+  under the **rotation-stable IE hash**, so the full list ("Home", "Work", that one
+  cafe) accrues into one identity. `compute_pnl_fingerprint` anchors a stable parallel
+  key on the IE hash (stable as the PNL grows) and carries the accumulated list.
+- **BLE — reconnect signals ("calling out to reconnect").** The advert parser now
+  keeps what it used to discard: the advertising PDU type (`ADV_DIRECT_IND` = directed
+  reconnect to a bonded peer), solicited service UUIDs ("looking for this peripheral"),
+  128-bit custom service UUIDs (the distinctive ones), and a **volatile-masked
+  manufacturer-data type prefix** (e.g. Apple message type) instead of only the 2-byte
+  company id. The stable ones fold into `ble-fp` — turning many bare-vendor phones
+  *strong* — while the over-merge guard holds (a company id with no type prefix stays
+  weak). Reconnect *intent* is an evidence/label flag, not part of the identity hash
+  (it flaps), and reconnect *targets* are usually resolvable-private-address-masked
+  (we hold no bond keys), so we capture the behaviour and the advertiser's own
+  fingerprint, not the peer.
+
+**Deferred:** wiring these signals into scoring (after validation); cross-PHY linking
+of a device's `wifi-fp:` and `ble-fp:` identities; AP beacon/evil-twin fingerprinting.

@@ -111,6 +111,44 @@ Two more merges, both deployed on chase:
   (The drone index is band-keyed — ~5 entries max — so it needs no pruning. The
   returning-ICAO track-gap is the one P6 item deferred.)
 
+**Update (2026-06-19) — soaks #2/#3 closed the FP-rate gate; deploy hardened;
+fingerprinting enriched.** A dense run of validation + fixes, all merged and live on
+chase (full test evidence in
+[field-findings-2026-06.md](field-findings-2026-06.md), soaks #2 and #3):
+- **Off-schedule flood found and fixed (soak #2 → #138).** Post-freeze, the novelty
+  flood stayed dead but the noise *moved* to `off_schedule` on held-MAC randomized
+  clients (~50 suspicious/poll). Fix: a randomized device with no fingerprint is now
+  **off-schedule-ineligible** (mirroring novelty), and WiFi pages **likely+ only**
+  (`WIFI_ALERT_MIN_SCORE`), suspicious is display-only. A fingerprinted randomized
+  device still off-schedules — that's correct, it's trackable.
+- **Soak #3 validated the fix over ~42 h** (reused frozen baseline): 240 paged /
+  ~74.6k display-only / **0 dropped**, SDR time-share held with **0 wedges**,
+  returning-aircraft detection live, and **memory bounded** (~116–200 MB, no drift —
+  the post-freeze `all_events` is deduped per device, retiring the P0 leak worry for
+  real). Concluded early to swap in a longer-range BT dongle.
+- **Power-cycle deploy hardening (#131–#141).** Single-SDR coordinator settle barrier
+  (readsb↔DroneRF handoff no longer wedges), BLE controller raised LE-on at boot,
+  refreshed deploy assets (`set-bt-up.sh`, service units, `setup.sh`), single-source
+  RTL IDs, bounded ProbeAnalyzer history.
+- **Durable GUI history completed across ALL panels (P5).** WiFi/BT scoring now
+  persists across a refresh (`#142` — re-flag appends on alert-level change so the
+  disk-seed reflects current state) and the **aircraft table survives a refresh AND a
+  restart** (`#144` — `/api/aircraft` merges the durable on-disk log with the live
+  current-sky index). Every panel now rebuilds from disk.
+- **ADS-B reconnect fix (#145).** `poll_aircraft()` returned `[]` when the session
+  was down, so the orchestrator's reconnect never fired and a startup connect that
+  lost the race with readsb's cold-start stranded ADS-B disconnected forever. Now it
+  raises → reconnect recovers. (Node-local `READSB_URL` also corrected to this box's
+  tar1090 path `…/tar1090/data/aircraft.json`.)
+- **Fingerprinting enriched — round 1 (#146).** WiFi: the preferred-network list
+  ("former networks") now accumulates per **rotation-stable IE hash** (`pnl_evidence`,
+  not per MAC) so it survives rotation; a parallel `compute_pnl_fingerprint` anchors a
+  stable identity on it. BLE: the parser now keeps the **reconnect signals** it used
+  to discard — directed adverts (`ADV_DIRECT_IND`), solicited service UUIDs, 128-bit
+  UUIDs, and a masked manufacturer-data type prefix — folded into `ble-fp`. **Capture
+  + keying + GUI only; the scoring/baseline key is deliberately unchanged** (validated
+  on real data first; flood-safe). New GUI columns: *Known Networks* + *Reconnect*.
+
 ## The one finding that drives the sequencing
 
 The clean 4-hour memory soak was a **learning-phase** result. With a 72h baseline
@@ -133,10 +171,10 @@ new detection features.
 | **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Rebased on `main`, green; walk-test gated on the soak #2 freeze (2026-06-12 07:41 UTC) | No (recommended) |
 | **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
 | **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
-| **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live (BLE raw-HCI capture, BLE/WiFi signatures, fingerprint-keyed scoring); cut the flood ~36→3–5/cycle. Cross-session *returning-entity* linkage remains | No |
-| **P5** | Fixed-mode GUI framing + durable history | ◑ Partial — contact designators + scoring-panel thread-safety + **durable detection/alert history** (panels rebuild from on-disk session logs across refresh/restart; alerts now persisted and shown) merged; baseline-state framing + signal/severity anomaly framing remain | No |
+| **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live; cut the flood ~36→3–5/cycle. **Enriched (round 1, #146):** WiFi PNL accumulated per IE hash; BLE reconnect signals (directed/solicited/128-bit/mfg-structure) — capture+keying+GUI, scoring untouched. Cross-session *returning-entity* linkage + scoring integration remain | No |
+| **P5** | Fixed-mode GUI framing + durable history | ✅ Complete — contact designators, scoring-panel thread-safety, baseline-state header strip (learning/frozen + countdown), sortable/filterable columns + CSV, and **durable history across ALL panels**: WiFi/BT (incl. scoring, #142), Aircraft (refresh+restart, #144), Drone, Remote ID, Alerts all rebuild from disk | No |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, **bounded tracks**, **ID-less split**, Remote ID index pruning + **Remote ID GUI surface** merged; the final pass widened the map current-sky window (a too-tight 120 s cutoff blanked the map under sparse reception), set **24 h aircraft retention**, and shipped **returning-ICAO as same identity** with a marked track gap + an of-interest flag (bridges to P7) | No |
-| **P7** | Aircraft of interest: orbit/loiter detection | ◑ Mostly shipped — **persistence-score** model (mirrors the mobile engine; transit≈0, loiter/return climbs): pure geometry + scorer (`air_geometry.py` / `air_scoring.py`), live scoring wired into `_poll_adsb` against a GPS/home reference, and **alerting reframed** — aircraft alert only when *of-interest* (not every airframe), drone-RF alerts only after sustained sweeps. **Deferred (matched pair, validate on soak #3):** durable cross-day per-ICAO baseline + daily-orbiter novelty suppression; GUI severity badge; Remote ID loiter fusion | No |
+| **P7** | Aircraft of interest: orbit/loiter detection | ◑ Mostly shipped — **persistence-score** model (mirrors the mobile engine; transit≈0, loiter/return climbs): pure geometry + scorer (`air_geometry.py` / `air_scoring.py`), live scoring wired into `_poll_adsb` against a GPS/home reference, and **alerting reframed** — aircraft alert only when *of-interest* (not every airframe), drone-RF alerts only after sustained sweeps. **Soak #3 confirmed the reframe held** (0 paged aircraft flood; returning-aircraft live). **Still deferred:** durable cross-day per-ICAO baseline + daily-orbiter novelty suppression; GUI severity badge; Remote ID loiter fusion | No |
 
 ### P0 — Endurance hardening (blocking)
 
@@ -454,6 +492,25 @@ Soak #2 runs the fix-stack (above changes) to confirm the FP rate is livable; th
 walk-test is held until then. This is the alert-fatigue risk below, realized — it
 elevates **P3 (rolling baseline)** from "later" toward "needed for usability."
 
+### Soak #2 — chase, 2026-06-17 (first post-freeze read)
+
+The novelty flood stayed dead (~2% of flags) ✓ — but the noise **moved to
+`off_schedule`**: ~50 WiFi suspicious/poll, 97% on held-MAC randomized (`mac:`)
+clients flagging on one new hour-of-day, all at 0.50; `alerts_dropped` shedding under
+the load. Root cause: a randomized-no-fp device was novelty-ineligible but still
+*off-schedule-eligible*. Fixed (#138): off-schedule-ineligible for randomized-no-fp +
+page likely+ only. Full record: [field-findings-2026-06.md](field-findings-2026-06.md).
+
+### Soak #3 — chase, 2026-06-17 → 19 (~42 h, post-fix validation)
+
+The #138 fix held over a multi-hour run: **240 paged / ~74.6k display-only / 0
+dropped**, SDR time-share clean (**0 wedges** with ADS-B + DroneRF sharing the SDR),
+returning-aircraft live, and **memory bounded** (~116–200 MB, no drift). The
+deferred-from-soak-#2 memory worry (post-freeze `all_events` growth, the old P0
+concern) is retired: the list dedups per device. BLE remains data-starved (1 `ble-fp`)
+— addressed at conclusion by the longer-range dongle. Concluded early for that swap.
+Full record + next steps: [field-findings-2026-06.md](field-findings-2026-06.md).
+
 ## Sequencing
 
 P0 → (P1, P2 in parallel) → **first multi-day soak** → P3 → P4 → P5, iterating the
@@ -473,10 +530,17 @@ origin-geofencing (§10); multi-node correlation (§11.8). All genuinely later.
 
 ## Standing risks
 
-- Treating the 4h memory pass as sufficient and finding the post-freeze leak only
-  during the multi-day run — P0 plus the forced-freeze test exists to retire this.
-- Alert fatigue without P3 — **CONFIRMED in soak #1**: post-freeze novelty floods
-  (~969/poll, ~60% randomized MACs). Mitigated by the sustained-presence guard for
-  fingerprint-less randomized MACs; P3 (rolling baseline) is the durable fix.
-- Every recent PR is blocked on **commit signing** (verified-signatures ruleset) —
-  resolve so these merges don't stall at the gate.
+- Post-freeze memory leak — **RETIRED**. Soak #3 ran ~42 h post-freeze with RSS
+  bounded (~116–200 MB, no drift); the `all_events` stream dedups per device.
+- Alert fatigue — **largely addressed**. Soak #1's novelty flood and soak #2's
+  off-schedule flood are both fixed (fingerprint keying; randomized-no-fp made
+  off-schedule-ineligible; page likely+ only). Soak #3 was livable (240 paged over
+  ~42 h, 0 dropped). **P3 (rolling baseline) remains the durable fix** for benign
+  newcomers going stale-novel over many days — still worth doing, no longer the only
+  thing between us and a usable stream.
+- **Fingerprint over-merge** (new, with the #146 enrichment): content fingerprints
+  aren't unique per device, so widening coverage risks fusing distinct devices. The
+  enriched identities stay capture/display-only until validated; the over-merge guard
+  (bare vendor / no-named-SSID stays ungroupable) is preserved.
+- BLE-as-identity is environment-limited here (mostly bare advertisers); the new
+  longer-range dongle improves capture but linking BLE↔WiFi (cross-PHY) is unbuilt.
