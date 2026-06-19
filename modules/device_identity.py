@@ -43,6 +43,10 @@ def _ble_advert_view(device: dict) -> SimpleNamespace:
         service_data_uuids=device.get("service_data_uuids") or [],
         local_name=device.get("name") or "",
         appearance=device.get("appearance"),
+        service_uuids_128=device.get("service_uuids_128") or [],
+        solicited_uuids=device.get("solicited_uuids") or [],
+        solicited_uuids_128=device.get("solicited_uuids_128") or [],
+        mfg_structures=device.get("mfg_structures") or [],
     )
 
 

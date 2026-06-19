@@ -6,13 +6,18 @@ from modules.ble_fingerprint import compute_ble_fingerprint
 
 
 def _adv(company_ids=None, service_uuids=None, service_data_uuids=None,
-         local_name="", appearance=None):
+         local_name="", appearance=None, service_uuids_128=None,
+         solicited_uuids=None, solicited_uuids_128=None, mfg_structures=None):
     return SimpleNamespace(
         company_ids=company_ids or [],
         service_uuids=service_uuids or [],
         service_data_uuids=service_data_uuids or [],
         local_name=local_name,
         appearance=appearance,
+        service_uuids_128=service_uuids_128 or [],
+        solicited_uuids=solicited_uuids or [],
+        solicited_uuids_128=solicited_uuids_128 or [],
+        mfg_structures=mfg_structures or [],
     )
 
 
@@ -39,6 +44,28 @@ class TestStrength(unittest.TestCase):
 
     def test_completely_empty_returns_none(self):
         self.assertIsNone(compute_ble_fingerprint(_adv()))
+
+    def test_mfg_type_structure_makes_vendor_strong(self):
+        # Apple with a message-type prefix (not bare company id) is now groupable
+        fp = compute_ble_fingerprint(_adv(company_ids=[0x004C], mfg_structures=["004c:t10"]))
+        self.assertTrue(fp.strong)
+
+    def test_bare_mfg_structure_stays_weak(self):
+        # company id with no type byte == bare vendor — must NOT become groupable
+        fp = compute_ble_fingerprint(_adv(company_ids=[0x004C], mfg_structures=["004c"]))
+        self.assertFalse(fp.strong)
+
+    def test_solicited_uuid_makes_it_strong(self):
+        self.assertTrue(compute_ble_fingerprint(_adv(solicited_uuids=[0xFD6F])).strong)
+
+    def test_service_uuid128_makes_it_strong(self):
+        fp = compute_ble_fingerprint(_adv(company_ids=[0x004C], service_uuids_128=["0102" * 8]))
+        self.assertTrue(fp.strong)
+
+    def test_mfg_type_changes_key(self):
+        a = compute_ble_fingerprint(_adv(company_ids=[0x004C], mfg_structures=["004c:t10"]))
+        b = compute_ble_fingerprint(_adv(company_ids=[0x004C], mfg_structures=["004c:t07"]))
+        self.assertNotEqual(a.key, b.key)
 
 
 class TestStability(unittest.TestCase):

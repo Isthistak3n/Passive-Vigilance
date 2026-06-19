@@ -1624,13 +1624,18 @@ async def test_dispatch_alert_drops_when_backlog_is_full(orch):
 # ---------------------------------------------------------------------------
 
 def _advert(address, rssi=-60, company_ids=None, service_uuids=None,
-            service_data_uuids=None, local_name="", appearance=None):
+            service_data_uuids=None, local_name="", appearance=None,
+            directed=False, service_uuids_128=None, solicited_uuids=None,
+            solicited_uuids_128=None, mfg_structures=None):
     from types import SimpleNamespace
     return SimpleNamespace(
         address=address, rssi=rssi,
         company_ids=company_ids or [], service_uuids=service_uuids or [],
         service_data_uuids=service_data_uuids or [], local_name=local_name,
         appearance=appearance,
+        directed=directed, service_uuids_128=service_uuids_128 or [],
+        solicited_uuids=solicited_uuids or [], solicited_uuids_128=solicited_uuids_128 or [],
+        mfg_structures=mfg_structures or [],
     )
 
 
@@ -1670,6 +1675,37 @@ def test_buffered_ble_device_is_fingerprintable(orch):
     so._on_ble_advert(_advert("c2:aa:bb:cc:dd:ee", service_uuids=[0x180D], local_name="Band"))
     device = so._drain_ble_adverts()[0]
     assert FixedScoring._device_key(device).startswith("ble-fp:")
+
+
+# ---------------------------------------------------------------------------
+# Enriched identity fields (PNL + reconnect) — capture/display only, not scoring
+# ---------------------------------------------------------------------------
+
+def test_enriched_identity_fields_wifi_pnl(orch):
+    so = orch.sensor_orchestrator
+    so.entity_store = MagicMock()
+    so.entity_store.accumulated_pnl.return_value = ["Home", "Work"]
+    fields = so._enriched_identity_fields({"probe_fingerprint": 777})
+    assert set(fields["probe_ssids_all"]) == {"Home", "Work"}
+    assert fields["fingerprint_pnl"].startswith("wifi-pnl:")
+    assert fields["reconnect"] is False
+
+
+def test_enriched_identity_fields_ble_reconnect(orch):
+    so = orch.sensor_orchestrator
+    so.entity_store = MagicMock()
+    so.entity_store.accumulated_pnl.return_value = []
+    fields = so._enriched_identity_fields(
+        {"ble_directed": True, "solicited_uuids": [0xFD6F]})
+    assert fields["reconnect"] is True
+    assert "fd6f" in fields["solicited"]
+
+
+def test_enriched_identity_fields_none_device(orch):
+    so = orch.sensor_orchestrator
+    fields = so._enriched_identity_fields(None)
+    assert fields == {"probe_ssids_all": [], "fingerprint_pnl": "",
+                      "reconnect": False, "solicited": []}
 
 
 # ---------------------------------------------------------------------------

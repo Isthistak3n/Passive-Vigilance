@@ -82,6 +82,31 @@ class TestParseAdvertisementData(unittest.TestCase):
         self.assertEqual(p.tx_power, -12)
         self.assertEqual(p.appearance, 0x0180)
 
+    def test_service_uuid128_parsed(self):
+        # complete 128-bit UUID list (AD 0x07): 16 bytes little-endian
+        raw = bytes(range(16))
+        data = _ad(bytes([0x11, 0x07]) + raw)
+        p = parse_advertisement_data(data)
+        self.assertEqual(p.service_uuids_128, [raw[::-1].hex()])
+
+    def test_service_uuid32_parsed(self):
+        data = _ad(b"\x05\x05\x0d\x18\x00\x00")  # 32-bit UUID 0x0000180D
+        p = parse_advertisement_data(data)
+        self.assertEqual(p.service_uuids_32, [0x0000180D])
+
+    def test_solicited_uuid16_parsed(self):
+        # AD 0x14 solicited 16-bit UUID 0xFD6F (Exposure Notification)
+        data = _ad(b"\x03\x14\x6f\xfd")
+        p = parse_advertisement_data(data)
+        self.assertEqual(p.solicited_uuids, [0xFD6F])
+
+    def test_manufacturer_structure_keeps_type_masks_payload(self):
+        # Apple (0x004C), message type byte 0x10, then rotating data 0xAA (masked)
+        data = _ad(b"\x05\xff\x4c\x00\x10\xaa")
+        p = parse_advertisement_data(data)
+        self.assertEqual(p.company_ids, [0x004C])
+        self.assertEqual(p.mfg_structures, ["004c:t10"])
+
     def test_empty(self):
         p = parse_advertisement_data(b"")
         self.assertEqual(p.company_ids, [])
@@ -110,6 +135,25 @@ class TestParseHciAdvertisingReport(unittest.TestCase):
         self.assertEqual(adv.address, "E0:4E:4B:0F:31:50")
         self.assertEqual(adv.rssi, -58)
         self.assertEqual(adv.company_ids, [0x004C])
+
+    def test_directed_advertisement_flagged(self):
+        # evt_type 0x01 = ADV_DIRECT_IND — a reconnect-to-bonded-peer signal
+        pkt = _hci_adv_report("AA:BB:CC:DD:EE:FF", b"", rssi=-60, evt_type=0x01)
+        adv = parse_hci_advertising_report(pkt)
+        self.assertTrue(adv.directed)
+        self.assertEqual(adv.adv_type, 0x01)
+
+    def test_undirected_not_flagged(self):
+        pkt = _hci_adv_report("AA:BB:CC:DD:EE:FF", b"", rssi=-60, evt_type=0x00)
+        adv = parse_hci_advertising_report(pkt)
+        self.assertFalse(adv.directed)
+
+    def test_enriched_fields_pass_through(self):
+        data = _ad(b"\x03\x14\x6f\xfd", b"\x05\xff\x4c\x00\x07\xbb")  # solicited + Apple mfg
+        pkt = _hci_adv_report("E0:4E:4B:0F:31:50", data, rssi=-58)
+        adv = parse_hci_advertising_report(pkt)
+        self.assertEqual(adv.solicited_uuids, [0xFD6F])
+        self.assertEqual(adv.mfg_structures, ["004c:t07"])
 
     def test_non_event_packet_returns_none(self):
         self.assertIsNone(parse_hci_advertising_report(b"\x02\x00\x00\x00"))

@@ -54,12 +54,24 @@ OCF_LE_SET_SCAN_ENABLE = 0x000C
 AD_FLAGS = 0x01
 AD_INCOMPLETE_UUID16 = 0x02
 AD_COMPLETE_UUID16 = 0x03
+AD_INCOMPLETE_UUID32 = 0x04
+AD_COMPLETE_UUID32 = 0x05
+AD_INCOMPLETE_UUID128 = 0x06
+AD_COMPLETE_UUID128 = 0x07
 AD_SHORT_NAME = 0x08
 AD_COMPLETE_NAME = 0x09
 AD_TX_POWER = 0x0A
+AD_SOLICIT_UUID16 = 0x14
+AD_SOLICIT_UUID128 = 0x15
 AD_SERVICE_DATA_UUID16 = 0x16
 AD_APPEARANCE = 0x19
 AD_MANUFACTURER_SPECIFIC = 0xFF
+
+# Advertising PDU type (LE Advertising Report evt_type). ADV_DIRECT_IND means the
+# device is directed-advertising to reconnect with a specific (usually RPA-masked)
+# bonded peer — the BLE "calling out to reconnect" signal.
+ADV_TYPE_DIRECT_IND = 0x01
+ADV_TYPE_SCAN_RSP = 0x04
 
 
 @dataclass
@@ -67,8 +79,15 @@ class AdvertParse:
     """Fingerprint-relevant fields extracted from one advertisement payload."""
 
     company_ids: list[int] = field(default_factory=list)
-    service_uuids: list[int] = field(default_factory=list)       # 16-bit
-    service_data_uuids: list[int] = field(default_factory=list)  # 16-bit
+    service_uuids: list[int] = field(default_factory=list)        # 16-bit
+    service_uuids_32: list[int] = field(default_factory=list)     # 32-bit
+    service_uuids_128: list[str] = field(default_factory=list)    # 128-bit, hex
+    service_data_uuids: list[int] = field(default_factory=list)   # 16-bit
+    solicited_uuids: list[int] = field(default_factory=list)      # 16-bit, AD 0x14
+    solicited_uuids_128: list[str] = field(default_factory=list)  # 128-bit, AD 0x15
+    # "<company hex>:t<first payload byte>" per manufacturer-specific structure — the
+    # stable type prefix (e.g. Apple message type) with the rotating payload masked off.
+    mfg_structures: list[str] = field(default_factory=list)
     local_name: str = ""
     appearance: Optional[int] = None
     tx_power: Optional[int] = None
@@ -88,6 +107,14 @@ class BLEAdvert:
     appearance: Optional[int]
     tx_power: Optional[int]
     timestamp: datetime
+    # Enriched reconnect/identity signals (default-empty for back-compat).
+    adv_type: int = 0
+    directed: bool = False              # ADV_DIRECT_IND — reconnecting to a bonded peer
+    service_uuids_32: list[int] = field(default_factory=list)
+    service_uuids_128: list[str] = field(default_factory=list)
+    solicited_uuids: list[int] = field(default_factory=list)
+    solicited_uuids_128: list[str] = field(default_factory=list)
+    mfg_structures: list[str] = field(default_factory=list)
 
 
 def parse_advertisement_data(data: bytes) -> AdvertParse:
@@ -106,10 +133,30 @@ def parse_advertisement_data(data: bytes) -> AdvertParse:
         ad_type = data[j + 1] if j + 1 < n else 0
         value = data[j + 2:j + 1 + length]
         if ad_type == AD_MANUFACTURER_SPECIFIC and len(value) >= 2:
-            out.company_ids.append(value[0] | (value[1] << 8))
+            company = value[0] | (value[1] << 8)
+            out.company_ids.append(company)
+            # Keep the stable type prefix (first payload byte, e.g. Apple message
+            # type) and mask the rotating remainder — turns "bare vendor" into a
+            # real discriminator without hashing volatile bytes.
+            if len(value) >= 3:
+                out.mfg_structures.append(f"{company:04x}:t{value[2]:02x}")
+            else:
+                out.mfg_structures.append(f"{company:04x}")
         elif ad_type in (AD_INCOMPLETE_UUID16, AD_COMPLETE_UUID16):
             for k in range(0, len(value) - 1, 2):
                 out.service_uuids.append(value[k] | (value[k + 1] << 8))
+        elif ad_type in (AD_INCOMPLETE_UUID32, AD_COMPLETE_UUID32):
+            for k in range(0, len(value) - 3, 4):
+                out.service_uuids_32.append(int.from_bytes(value[k:k + 4], "little"))
+        elif ad_type in (AD_INCOMPLETE_UUID128, AD_COMPLETE_UUID128):
+            for k in range(0, len(value) - 15, 16):
+                out.service_uuids_128.append(value[k:k + 16][::-1].hex())
+        elif ad_type == AD_SOLICIT_UUID16:
+            for k in range(0, len(value) - 1, 2):
+                out.solicited_uuids.append(value[k] | (value[k + 1] << 8))
+        elif ad_type == AD_SOLICIT_UUID128:
+            for k in range(0, len(value) - 15, 16):
+                out.solicited_uuids_128.append(value[k:k + 16][::-1].hex())
         elif ad_type == AD_SERVICE_DATA_UUID16 and len(value) >= 2:
             out.service_data_uuids.append(value[0] | (value[1] << 8))
         elif ad_type in (AD_SHORT_NAME, AD_COMPLETE_NAME):
@@ -136,6 +183,7 @@ def parse_hci_advertising_report(pkt: bytes) -> Optional[BLEAdvert]:
         return None
     # pkt: [type, evt_code, plen, subevent, num_reports, evt_type, addr_type, addr(6), len, data..., rssi]
     i = 5  # at evt_type of the first report
+    adv_type = pkt[i]
     addr_type = pkt[i + 1]
     addr = pkt[i + 2:i + 8][::-1]
     dlen = pkt[i + 8]
@@ -156,6 +204,13 @@ def parse_hci_advertising_report(pkt: bytes) -> Optional[BLEAdvert]:
         appearance=parsed.appearance,
         tx_power=parsed.tx_power,
         timestamp=datetime.now(timezone.utc),
+        adv_type=adv_type,
+        directed=(adv_type == ADV_TYPE_DIRECT_IND),
+        service_uuids_32=parsed.service_uuids_32,
+        service_uuids_128=parsed.service_uuids_128,
+        solicited_uuids=parsed.solicited_uuids,
+        solicited_uuids_128=parsed.solicited_uuids_128,
+        mfg_structures=parsed.mfg_structures,
     )
 
 

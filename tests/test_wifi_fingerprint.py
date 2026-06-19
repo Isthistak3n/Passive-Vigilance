@@ -1,7 +1,7 @@
 """Unit tests for modules/wifi_fingerprint.py — the WiFi randomization-resistant signature."""
 import unittest
 
-from modules.wifi_fingerprint import compute_wifi_fingerprint
+from modules.wifi_fingerprint import compute_pnl_fingerprint, compute_wifi_fingerprint
 
 
 def _dev(probe_ssids=None, probe_fingerprint=None, name="", manuf="", type="Wi-Fi Client"):
@@ -82,6 +82,33 @@ class TestLabel(unittest.TestCase):
     def test_unknown_manuf_falls_through_to_type(self):
         fp = compute_wifi_fingerprint(_dev(probe_fingerprint=7, manuf="Unknown", type="Wi-Fi Client"))
         self.assertEqual(fp.label, "Wi-Fi Client")
+
+
+class TestPNLFingerprint(unittest.TestCase):
+
+    def test_ie_anchor_stable_as_pnl_grows(self):
+        # Same IE hash, growing accumulated PNL -> SAME key (anchored on the IE hash,
+        # not the SSID set), so the identity survives rotation and PNL accrual.
+        a = compute_pnl_fingerprint(_dev(probe_fingerprint=777), accumulated_pnl=["Home"])
+        b = compute_pnl_fingerprint(_dev(probe_fingerprint=777),
+                                    accumulated_pnl=["Home", "Work", "Cafe"])
+        self.assertEqual(a.key, b.key)
+        self.assertEqual(b.pnl, ("Cafe", "Home", "Work"))  # carried, sorted
+        self.assertTrue(b.strong)
+
+    def test_different_ie_hash_different_key(self):
+        a = compute_pnl_fingerprint(_dev(probe_fingerprint=111), accumulated_pnl=["Home"])
+        b = compute_pnl_fingerprint(_dev(probe_fingerprint=222), accumulated_pnl=["Home"])
+        self.assertNotEqual(a.key, b.key)
+
+    def test_no_ie_and_no_pnl_returns_none(self):
+        self.assertIsNone(compute_pnl_fingerprint(_dev(), accumulated_pnl=[]))
+
+    def test_pnl_only_fallback_when_no_ie(self):
+        fp = compute_pnl_fingerprint(_dev(probe_fingerprint=None), accumulated_pnl=["HomeNet"])
+        self.assertIsNotNone(fp)
+        self.assertTrue(fp.strong)
+        self.assertEqual(fp.pnl, ("HomeNet",))
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from typing import Optional
 
 from modules import air_geometry, air_scoring, contact_designator
 from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
+from modules.wifi_fingerprint import compute_pnl_fingerprint
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -688,6 +689,12 @@ class SensorOrchestrator:
                 "service_uuids": advert.service_uuids,
                 "service_data_uuids": advert.service_data_uuids,
                 "appearance": advert.appearance,
+                # Enriched reconnect/identity signals (Phase: capture + display).
+                "service_uuids_128": advert.service_uuids_128,
+                "solicited_uuids": advert.solicited_uuids,
+                "solicited_uuids_128": advert.solicited_uuids_128,
+                "mfg_structures": advert.mfg_structures,
+                "ble_directed": advert.directed,
             }
         except Exception:  # a malformed advert must never disturb capture
             logger.debug("BLE advert buffering failed", exc_info=True)
@@ -699,6 +706,34 @@ class SensorOrchestrator:
         drained = list(self._ble_adverts.values())
         self._ble_adverts = {}
         return drained
+
+    def _enriched_identity_fields(self, device) -> dict:
+        '''Enriched identity/reconnect signals for the GUI + analysis ONLY — not used
+        for scoring or the live fingerprint key (this round is capture + display).
+
+        WiFi: the accumulated preferred-network list ("former networks") under the
+        rotation-stable IE hash, plus a stable PNL-anchored key. BLE: the
+        directed-advert / solicited-service "calling out to reconnect" signals.'''
+        empty = {"probe_ssids_all": [], "fingerprint_pnl": "",
+                 "reconnect": False, "solicited": []}
+        if not device:
+            return empty
+        probe_fp = device.get("probe_fingerprint")
+        pnl = []
+        if self.entity_store is not None and probe_fp:
+            try:
+                pnl = self.entity_store.accumulated_pnl(probe_fp)
+            except Exception:
+                logger.debug("accumulated_pnl lookup failed", exc_info=True)
+        pnl_fp = compute_pnl_fingerprint(device, pnl)
+        solicited = [f"{u:04x}" for u in (device.get("solicited_uuids") or [])]
+        solicited += list(device.get("solicited_uuids_128") or [])
+        return {
+            "probe_ssids_all": list(pnl_fp.pnl) if pnl_fp else [],
+            "fingerprint_pnl": pnl_fp.key if pnl_fp else "",
+            "reconnect": bool(device.get("ble_directed")) or bool(solicited),
+            "solicited": solicited,
+        }
 
     def _contact_designator(self, event) -> str:
         '''Build the stable CLASS-IDENT-# contact designator for a WiFi/BT event.
@@ -796,8 +831,10 @@ class SensorOrchestrator:
         except Exception as exc:
             logger.warning("PersistenceEngine update error: %s", exc)
             return
+        dev_by_mac = {d.get("macaddr"): d for d in devices}
         for event in detection_events:
             self._stats["persistent_detections"] += 1
+            enriched = self._enriched_identity_fields(dev_by_mac.get(event.mac))
             existing = self._wifi_event_index.get(event.mac)
             if existing is not None:
                 # Same device flagged again — update the ongoing detection in place
@@ -837,6 +874,7 @@ class SensorOrchestrator:
                     "lon": event.locations[0]["lon"] if event.locations else None,
                     "locations": event.locations,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                    **enriched,
                 }
                 self._wifi_event_index[event.mac] = event_dict
                 self.all_events.append(event_dict)
