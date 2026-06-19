@@ -75,6 +75,31 @@ def test_multiple_named_ssids_are_distinct_rows():
 
 
 # ---------------------------------------------------------------------------
+# pnl_evidence — PNL accumulates per IE hash, ACROSS MAC rotation
+# ---------------------------------------------------------------------------
+
+def test_pnl_accumulates_across_rotated_macs_sharing_ie_hash():
+    s = _store()
+    # Same device (probe_fingerprint 777), two different (rotated) MACs, each probing
+    # a different slice of its preferred-network list.
+    s.record_poll([_device(mac="aa:11:11:11:11:11", probe_ssids=["Home", "Work"], fp=777)], now=T0)
+    s.record_poll([_device(mac="bb:22:22:22:22:22", probe_ssids=["Work", "Cafe"], fp=777)],
+                  now=T0 + timedelta(minutes=5))
+    # Union of the PNL is recovered under the single stable anchor.
+    assert set(s.accumulated_pnl(777)) == {"Home", "Work", "Cafe"}
+    assert s.count("pnl_evidence") == 3   # one row per distinct ssid, not per mac
+    s.close()
+
+
+def test_pnl_empty_without_ie_hash():
+    s = _store()
+    _poll(s, [_device(probe_ssids=["Home"], fp=0)], 3)   # no IE fingerprint
+    assert s.count("pnl_evidence") == 0
+    assert s.accumulated_pnl(0) == []
+    s.close()
+
+
+# ---------------------------------------------------------------------------
 # device_fingerprint — one row per mac, fields updated
 # ---------------------------------------------------------------------------
 

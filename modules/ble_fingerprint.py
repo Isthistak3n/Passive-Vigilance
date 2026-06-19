@@ -51,6 +51,12 @@ class _AdvertLike(Protocol):
     service_data_uuids: list[int]
     local_name: str
     appearance: Optional[int]
+    # Enriched discriminators (optional — accessed via getattr with defaults so
+    # older advert views without them still fingerprint).
+    service_uuids_128: list[str]
+    solicited_uuids: list[int]
+    solicited_uuids_128: list[str]
+    mfg_structures: list[str]
 
 
 @dataclass(frozen=True)
@@ -60,14 +66,29 @@ class BLEFingerprint:
     label: str      # human-readable identity for the GUI
 
 
+def _mfg_structures(advert: _AdvertLike) -> list[str]:
+    return list(getattr(advert, "mfg_structures", None) or [])
+
+
+def _has_mfg_structure(advert: _AdvertLike) -> bool:
+    """A manufacturer-data *type* prefix (``…:t<byte>``) beyond the bare company id —
+    a real discriminator (e.g. Apple message type), unlike the company id alone."""
+    return any(":t" in s for s in _mfg_structures(advert))
+
+
 def _canonical(advert: _AdvertLike) -> str:
     """Deterministic string of the stable, identity-bearing fields."""
     vendor = ",".join(f"{c:04x}" for c in sorted(set(advert.company_ids)))
     svc = ",".join(f"{u:04x}" for u in sorted(set(advert.service_uuids)))
+    svc128 = ",".join(sorted(set(getattr(advert, "service_uuids_128", None) or [])))
     svcdata = ",".join(f"{u:04x}" for u in sorted(set(advert.service_data_uuids)))
+    sol = ",".join(f"{u:04x}" for u in sorted(set(getattr(advert, "solicited_uuids", None) or [])))
+    sol128 = ",".join(sorted(set(getattr(advert, "solicited_uuids_128", None) or [])))
+    mfg = ",".join(sorted(set(_mfg_structures(advert))))
     appearance = "" if advert.appearance is None else f"{advert.appearance:04x}"
     name = advert.local_name or ""
-    return f"v:{vendor}|s:{svc}|d:{svcdata}|a:{appearance}|n:{name}"
+    return (f"v:{vendor}|s:{svc}|s128:{svc128}|d:{svcdata}"
+            f"|sol:{sol}|sol128:{sol128}|m:{mfg}|a:{appearance}|n:{name}")
 
 
 def compute_ble_fingerprint(advert: _AdvertLike) -> Optional[BLEFingerprint]:
@@ -79,6 +100,10 @@ def compute_ble_fingerprint(advert: _AdvertLike) -> Optional[BLEFingerprint]:
         or advert.service_data_uuids
         or advert.local_name
         or advert.appearance is not None
+        or getattr(advert, "service_uuids_128", None)
+        or getattr(advert, "solicited_uuids", None)
+        or getattr(advert, "solicited_uuids_128", None)
+        or _has_mfg_structure(advert)  # mfg *type* prefix, not bare company id
     )
     if not has_vendor and not has_discriminator:
         return None

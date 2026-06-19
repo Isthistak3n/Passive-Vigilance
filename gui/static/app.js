@@ -261,25 +261,28 @@ const tables = {
     columns: [
       { k: 'contact', label: 'Contact' }, { k: 'mac', label: 'MAC' }, { k: 'ssid', label: 'SSID' },
       { k: 'mac_type', label: 'MAC Type' }, { k: 'score', label: 'Score' }, { k: 'alert_level', label: 'Alert' },
-      { k: 'seen', label: 'Seen' }, { k: 'manufacturer', label: 'Manufacturer' }, { k: 'last', label: 'Last' },
+      { k: 'seen', label: 'Seen' }, { k: 'manufacturer', label: 'Manufacturer' },
+      { k: 'pnl', label: 'Known Networks' }, { k: 'reconnect', label: 'Reconnect' }, { k: 'last', label: 'Last' },
     ],
     filters: [{ k: 'manufacturer', label: 'Mfr' }, { k: 'mac_type', label: 'MAC type' }, { k: 'alert_level', label: 'Alert' }],
     min: { k: 'seen', label: 'Seen ≥' },
     defaultSort: { k: 'seen', dir: 'desc', type: 'num' },
     rows() {
       // Collapse rotating addresses: group by rotation-stable identity, keep the
-      // most-recent sighting as the representative and count distinct MACs.
+      // most-recent sighting as the representative and count distinct MACs. The
+      // preferred-network list ("known networks") and reconnect intent accumulate
+      // across the whole group, since they're observed a slice at a time.
       const groups = new Map();
       for (const e of state.wifi) {
         const id = wifiIdentity(e);
-        const g = groups.get(id);
-        if (!g) groups.set(id, { latest: e, macs: new Set(e.mac ? [e.mac] : []) });
-        else {
-          if (e.mac) g.macs.add(e.mac);
-          const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
-          const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
-          if (t2 >= t1) g.latest = e;
-        }
+        let g = groups.get(id);
+        if (!g) { g = { latest: e, macs: new Set(), pnl: new Set(), reconnect: false }; groups.set(id, g); }
+        if (e.mac) g.macs.add(e.mac);
+        for (const s of (e.probe_ssids_all || [])) g.pnl.add(s);
+        if (e.reconnect) g.reconnect = true;
+        const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
+        const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
+        if (t2 >= t1) g.latest = e;
       }
       return [...groups.values()].map(g => {
         const e = g.latest;
@@ -288,7 +291,8 @@ const tables = {
           mac: e.mac || '', ssid: e.ssid || '', mac_type: e.mac_type || '',
           score: e.score != null ? e.score : 0, alert_level: e.alert_level || '',
           seen: e.observation_count || 0, manufacturer: e.manufacturer || '',
-          last: e.last_seen || e.timestamp || '', _addr: g.macs.size,
+          pnl: [...g.pnl].sort().join(', '), reconnect: g.reconnect ? 'yes' : '',
+          last: e.last_seen || e.timestamp || '', _addr: g.macs.size, _pnlCount: g.pnl.size,
         };
       });
     },
@@ -296,6 +300,12 @@ const tables = {
       const cls = _ALERT_CLASS[r.alert_level] || 'alert-new';
       const macCell = `<code>${r.mac || '—'}</code>`
         + (r._addr > 1 ? ` <span class="addr-count" title="${r._addr} rotating addresses">+${r._addr - 1}</span>` : '');
+      const pnlCell = r.pnl
+        ? `<span title="${esc(r.pnl)}">${esc(r.pnl)}</span> <span class="addr-count">${r._pnlCount}</span>`
+        : '—';
+      const reconnectCell = r.reconnect
+        ? '<span class="reconnect-badge" title="directed advert / solicited service — calling out to reconnect">↩ yes</span>'
+        : '—';
       return `
     <tr>
       <td>${r.contact ? esc(r.contact) : '—'}</td>
@@ -306,6 +316,8 @@ const tables = {
       <td class="${cls}">${r.alert_level || '—'}</td>
       <td>${r.seen || '—'}</td>
       <td>${r.manufacturer ? esc(r.manufacturer) : '—'}</td>
+      <td class="pnl-cell">${pnlCell}</td>
+      <td>${reconnectCell}</td>
       <td>${fmtTime(r.last)}</td>
     </tr>`;
     },

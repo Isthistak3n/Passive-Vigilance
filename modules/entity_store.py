@@ -89,6 +89,22 @@ class EntityStore:
             )
             """
         )
+        # pnl_evidence — the preferred-network list accumulated per ROTATION-STABLE
+        # anchor (the IE-set hash), not per MAC. A device's probed SSIDs accrue here
+        # across its MAC rotations, so the full PNL ("former networks") survives
+        # rotation instead of fragmenting into per-MAC rows like probe_evidence.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pnl_evidence (
+                probe_fingerprint INTEGER NOT NULL,
+                ssid        TEXT    NOT NULL,
+                first_seen  TEXT    NOT NULL,
+                last_seen   TEXT    NOT NULL,
+                probe_count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (probe_fingerprint, ssid)
+            )
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS entities (
@@ -180,6 +196,7 @@ class EntityStore:
             )
 
             # probe_evidence — one row per NAMED ssid; wildcard/blank excluded.
+            probe_fp = device.get("probe_fingerprint")
             for ssid in device.get("probe_ssids", []) or []:
                 if not isinstance(ssid, str) or not ssid.strip():
                     continue
@@ -192,6 +209,18 @@ class EntityStore:
                     "  probe_count = probe_count + 1",
                     (mac, ssid, ts, ts),
                 )
+                # Accumulate the PNL under the rotation-stable IE hash so it survives
+                # MAC rotation. Only when the device has an IE fingerprint to key on.
+                if probe_fp:
+                    cur.execute(
+                        "INSERT INTO pnl_evidence "
+                        "(probe_fingerprint, ssid, first_seen, last_seen, probe_count) "
+                        "VALUES (?, ?, ?, ?, 1) "
+                        "ON CONFLICT(probe_fingerprint, ssid) DO UPDATE SET "
+                        "  last_seen = excluded.last_seen, "
+                        "  probe_count = probe_count + 1",
+                        (probe_fp, ssid, ts, ts),
+                    )
 
             # entities — upsert the wifi entity, then read its id for the FK.
             cur.execute(
@@ -263,9 +292,21 @@ class EntityStore:
 
     def count(self, table: str) -> int:
         if table not in ("probe_evidence", "device_fingerprint", "entities",
-                         "observations", "contact_designator"):
+                         "observations", "contact_designator", "pnl_evidence"):
             raise ValueError(f"unknown table {table!r}")
         return self._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+
+    def accumulated_pnl(self, probe_fingerprint) -> list:
+        """The preferred-network list (named SSIDs) accumulated under this IE-set
+        hash across MAC rotations, most-probed first. Empty when the fingerprint is
+        falsy or unseen. Read-only — safe from the poll thread."""
+        if not probe_fingerprint:
+            return []
+        rows = self._conn.execute(
+            "SELECT ssid FROM pnl_evidence WHERE probe_fingerprint = ? "
+            "ORDER BY probe_count DESC, ssid ASC", (probe_fingerprint,),
+        ).fetchall()
+        return [r["ssid"] for r in rows]
 
     def assign_contact_number(self, identity_key: str, group_key: str,
                               now: Optional[datetime] = None) -> int:

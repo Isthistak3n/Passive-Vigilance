@@ -352,6 +352,16 @@ tr.returning-row { background: rgba(210, 153, 34, 0.08); }
   border-radius: 8px;
 }
 
+/* Accumulated preferred-network list ("Known Networks") — let it use more width
+   but still ellipsis-truncate; the full list is in the cell's title tooltip. */
+.pnl-cell { max-width: 280px; }
+
+.reconnect-badge {
+  color: #58a6ff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 /* ── Nearby (mobile) proximity cards ─────────────────────────────────────── */
 #tab-nearby {
   position: relative;

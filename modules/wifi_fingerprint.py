@@ -69,3 +69,40 @@ def _label(device: dict, ssids: list[str], name: str) -> str:
     if manuf and manuf.lower() != "unknown":
         return manuf
     return device.get("type") or "Wi-Fi"
+
+
+@dataclass(frozen=True)
+class PNLFingerprint:
+    key: str           # "wifi-pnl:<12 hex>" — anchored on the rotation-stable IE hash
+    strong: bool       # True when a named preferred-network list exists
+    label: str         # best human-readable network from the accumulated PNL
+    pnl: tuple         # the accumulated preferred-network list ("former networks")
+
+
+def compute_pnl_fingerprint(device: dict,
+                            accumulated_pnl: Optional[list] = None) -> Optional[PNLFingerprint]:
+    """An enriched identity that anchors on the IE-set hash (stable across rotation
+    AND as the PNL grows) and carries the device's *accumulated* preferred-network
+    list — the networks it remembers/searches for — supplied by the caller from
+    :meth:`EntityStore.accumulated_pnl`.
+
+    This is a PARALLEL identity for analysis/GUI; it does NOT replace the scoring
+    key (``compute_wifi_fingerprint``). Returns None when there's nothing to anchor
+    on (no IE hash and no named PNL).
+    """
+    pnl = sorted({s for s in (accumulated_pnl or [])
+                  if isinstance(s, str) and s.strip()})
+    probe_fp = device.get("probe_fingerprint")
+    has_ie = bool(probe_fp)
+    if not pnl and not has_ie:
+        return None
+    # Anchor on the IE hash when present so the key is stable as the PNL accrues;
+    # else fall back to the accumulated-PNL set (weaker, set-based).
+    anchor = f"f:{probe_fp}" if has_ie else "p:" + ",".join(pnl)
+    key = "wifi-pnl:" + hashlib.blake2b(anchor.encode("utf-8"), digest_size=6).hexdigest()
+    if pnl:
+        label = pnl[0] + (f" +{len(pnl) - 1}" if len(pnl) > 1 else "")
+    else:
+        label = ((device.get("name") or "").strip()
+                 or (device.get("manuf") or "").strip() or "Wi-Fi")
+    return PNLFingerprint(key=key, strong=bool(pnl), label=label, pnl=tuple(pnl))
