@@ -182,12 +182,14 @@ class TestADSBModulePollAircraft(unittest.TestCase):
         _run(m.close())
 
     @patch("modules.dump1090.aiohttp.ClientSession")
-    def test_poll_aircraft_returns_empty_before_connect(self, MockSession):
-        """poll_aircraft() should return [] gracefully before connect()."""
+    def test_poll_aircraft_raises_before_connect(self, MockSession):
+        """poll_aircraft() before connect() must RAISE so the orchestrator's
+        reconnect path fires — returning [] would strand ADS-B disconnected
+        forever (the bug that left the GUI showing 0 aircraft)."""
         from modules.dump1090 import ADSBModule
         m = ADSBModule()
-        result = _run(m.poll_aircraft())
-        self.assertEqual(result, [])
+        with self.assertRaises(ConnectionError):
+            _run(m.poll_aircraft())
 
     @patch("modules.dump1090.aiohttp.ClientSession")
     def test_poll_aircraft_no_gps_module_required(self, MockSession):
