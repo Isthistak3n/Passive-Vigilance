@@ -589,11 +589,11 @@ initModeControl();
 // ── Seed from REST on load ───────────────────────────────────────────────────
 async function seedFromRest() {
   const endpoints = [
-    { url: '/api/wifi',     key: 'wifi',     render: renderWifi,     badge: 'badge-wifi',     marker: addWifiMarker },
-    { url: '/api/aircraft', key: 'aircraft', render: renderAircraft, badge: 'badge-aircraft', marker: null },
-    { url: '/api/drone',    key: 'drone',    render: renderDrone,    badge: 'badge-drone',    marker: addDroneMarker },
-    { url: '/api/remote_id', key: 'remoteId', render: renderRemoteId, badge: 'badge-remote-id', marker: null },
-    { url: '/api/alerts',   key: 'alerts',   render: renderAlerts,   badge: 'badge-alerts',   marker: null },
+    { url: '/api/wifi',     key: 'wifi',     render: renderWifi,     badge: 'badge-wifi',     marker: addWifiMarker,  layer: layers.wifi },
+    { url: '/api/aircraft', key: 'aircraft', render: renderAircraft, badge: 'badge-aircraft', marker: null,           layer: null },
+    { url: '/api/drone',    key: 'drone',    render: renderDrone,    badge: 'badge-drone',    marker: addDroneMarker, layer: layers.drone },
+    { url: '/api/remote_id', key: 'remoteId', render: renderRemoteId, badge: 'badge-remote-id', marker: null,         layer: null },
+    { url: '/api/alerts',   key: 'alerts',   render: renderAlerts,   badge: 'badge-alerts',   marker: null,           layer: null },
   ];
   for (const ep of endpoints) {
     try {
@@ -601,6 +601,9 @@ async function seedFromRest() {
       if (!r.ok) continue;
       const items = await r.json();
       state[ep.key] = items;
+      // Idempotent: this runs repeatedly (periodic resync + on every SSE reconnect),
+      // so clear the marker layer before re-adding or markers pile up on the map.
+      if (ep.layer) ep.layer.clearLayers();
       if (ep.marker) items.forEach(ep.marker);
       setBadge(ep.badge, items.length);
       ep.render();
@@ -613,6 +616,14 @@ seedFromRest();
 // ── SSE listener ─────────────────────────────────────────────────────────────
 function connectSSE() {
   const es = new EventSource('/stream');
+
+  es.onopen = function() {
+    // Re-seed from REST on every (re)connect. The stream drops on a server restart
+    // or a network/proxy blip, and the old code reconnected WITHOUT re-seeding — so
+    // anything that appeared during the gap was missing from the live view until a
+    // manual refresh (the 18→24 aircraft / 500→504 wifi jump). Backfill on connect.
+    seedFromRest();
+  };
 
   es.onmessage = function(evt) {
     let data;
@@ -660,6 +671,14 @@ function connectSSE() {
 }
 
 connectSSE();
+
+// Safety-net resync: periodically re-seed every tab from REST so the view reflects
+// current state even when (a) SSE is gated — updates to an existing contact within
+// the same alert level are not pushed — or (b) the stream has silently stalled
+// without firing onerror (no reconnect). Together with the on-connect re-seed this
+// makes the dashboard a live mirror of the JSON, not a refresh-to-update snapshot.
+// Cheap full re-seed; markers are rebuilt idempotently (see seedFromRest).
+setInterval(seedFromRest, 15000);
 
 // Re-render the aircraft panel on a timer so recency decay applies (and stale
 // contacts expire) even during quiet periods with no new SSE pushes — e.g. while
