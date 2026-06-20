@@ -22,6 +22,30 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def local_interface_macs(net_root: str = "/sys/class/net") -> set:
+    """The node's own network-interface MAC addresses, read from sysfs (no
+    subprocess, so it's cheap and testable). Skips loopback and all-zero
+    placeholders. Used by :meth:`IgnoreList.add_self_macs` to auto-suppress the
+    sensor's own radios. *net_root* is injectable for tests."""
+    macs: set = set()
+    try:
+        names = os.listdir(net_root)
+    except OSError:
+        return macs
+    for name in names:
+        if name == "lo":
+            continue
+        try:
+            with open(os.path.join(net_root, name, "address"), encoding="utf-8") as fh:
+                raw = fh.read().strip()
+        except OSError:
+            continue
+        if not raw or set(raw) <= {"0", ":"}:   # empty or 00:00:00:00:00:00
+            continue
+        macs.add(_normalize_mac(raw))
+    return macs
+
+
 class IgnoreList:
     """Persistent filter for known-benign MACs, OUIs, and SSIDs.
 
@@ -242,6 +266,24 @@ class IgnoreList:
             self.add_mac(norm, label=name.strip())
             added += 1
         logger.info("Bulk-added %d devices from Kismet to ignore list", added)
+        return added
+
+    def add_self_macs(self, macs: Optional[set] = None) -> int:
+        """Auto-ignore the node's OWN interface MACs so the sensor never detects
+        itself — most importantly the management WiFi, which sits at the sensor (zero
+        distance = maximum signal) and would otherwise trip egregious-during-baseline
+        and be baked into the baseline. Idempotent; saves only if something new was
+        added. *macs* is injectable for tests; defaults to :func:`local_interface_macs`.
+        Returns the count newly added."""
+        macs = macs if macs is not None else local_interface_macs()
+        added = 0
+        for mac in macs:
+            norm = _normalize_mac(mac)
+            if norm and norm not in self._macs:
+                self.add_mac(norm, label="node self (auto)")
+                added += 1
+        if added:
+            self.save()
         return added
 
     # ------------------------------------------------------------------
