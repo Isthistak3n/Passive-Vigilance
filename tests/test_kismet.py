@@ -320,5 +320,117 @@ class TestKismetProbeExtraction(unittest.TestCase):
         self.assertEqual(r["num_probed_ssids"], 2)
 
 
+# ---------------------------------------------------------------------------
+# KISMET_ACTIVE_WINDOW_SECONDS filtering
+# Kismet's device list is permanent — it retains every device heard in the
+# session. On a mobile node, a device passed 10 min ago still appears in
+# every poll; the persistence engine stamps it with the node's current GPS
+# position, creating spurious "following" clusters. The active-window filter
+# drops devices whose last_time is older than the configured threshold so
+# only currently-in-range devices reach the scoring engine.
+# ---------------------------------------------------------------------------
+
+def _device_entry(mac="AA:BB:CC:DD:EE:FF", last_time=None):
+    """Minimal Kismet device entry with a controllable last_time."""
+    return {
+        "kismet.device.base.macaddr": mac,
+        "kismet.device.base.type": "Wi-Fi Device",
+        "kismet.device.base.name": "",
+        "kismet.device.base.manuf": "Acme",
+        "kismet.device.base.phyname": "IEEE802.11",
+        "kismet.device.base.first_time": 1700000000,
+        "kismet.device.base.last_time": last_time if last_time is not None else 1700000000,
+        "kismet.common.signal.last_signal": -60,
+    }
+
+
+class TestKismetActiveWindow(unittest.TestCase):
+    """KISMET_ACTIVE_WINDOW_SECONDS controls stale-device filtering."""
+
+    def _poll(self, MockSession, devices, env_override=None):
+        import os
+        from modules.kismet import KismetModule
+
+        with patch("modules.kismet.KISMET_API_KEY", "valid-key"):
+            MockSession.return_value = _mock_session(
+                get_status=200, post_status=200, post_json=devices,
+            )
+            km = KismetModule()
+            _run(km.connect())
+
+        env = env_override or {}
+        with patch.dict(os.environ, env):
+            result = _run(km.poll_devices())
+        _run(km.close())
+        return result
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_window_disabled_by_default(self, MockSession):
+        """Default (0) keeps all devices regardless of last_time."""
+        import time
+        stale_time = int(time.time()) - 3600  # 1 hour ago
+        devices = [
+            _device_entry("AA:BB:CC:DD:EE:01", last_time=stale_time),
+            _device_entry("AA:BB:CC:DD:EE:02", last_time=stale_time),
+        ]
+        result = self._poll(MockSession, devices)
+        self.assertEqual(len(result), 2)
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_fresh_device_kept(self, MockSession):
+        """A device heard within the window is returned."""
+        import time
+        fresh_time = int(time.time()) - 10  # 10 s ago
+        devices = [_device_entry("AA:BB:CC:DD:EE:01", last_time=fresh_time)]
+        result = self._poll(
+            MockSession, devices,
+            env_override={"KISMET_ACTIVE_WINDOW_SECONDS": "90"},
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["macaddr"], "AA:BB:CC:DD:EE:01")
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_stale_device_dropped(self, MockSession):
+        """A device last heard outside the window is excluded."""
+        import time
+        stale_time = int(time.time()) - 300  # 5 min ago — outside 90 s window
+        devices = [_device_entry("AA:BB:CC:DD:EE:FF", last_time=stale_time)]
+        result = self._poll(
+            MockSession, devices,
+            env_override={"KISMET_ACTIVE_WINDOW_SECONDS": "90"},
+        )
+        self.assertEqual(result, [])
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_mixed_fresh_and_stale(self, MockSession):
+        """Only devices within the window survive; stale ones are dropped."""
+        import time
+        now = int(time.time())
+        devices = [
+            _device_entry("AA:BB:CC:DD:EE:01", last_time=now - 30),   # fresh
+            _device_entry("AA:BB:CC:DD:EE:02", last_time=now - 200),  # stale
+            _device_entry("AA:BB:CC:DD:EE:03", last_time=now - 5),    # fresh
+        ]
+        result = self._poll(
+            MockSession, devices,
+            env_override={"KISMET_ACTIVE_WINDOW_SECONDS": "90"},
+        )
+        macs = [r["macaddr"] for r in result]
+        self.assertIn("AA:BB:CC:DD:EE:01", macs)
+        self.assertNotIn("AA:BB:CC:DD:EE:02", macs)
+        self.assertIn("AA:BB:CC:DD:EE:03", macs)
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_zero_last_time_kept_when_window_set(self, MockSession):
+        """Devices with last_time=0 (field absent) bypass the filter — they
+        can't be compared reliably and should not be silently dropped."""
+        devices = [_device_entry("AA:BB:CC:DD:EE:FF", last_time=0)]
+        result = self._poll(
+            MockSession, devices,
+            env_override={"KISMET_ACTIVE_WINDOW_SECONDS": "90"},
+        )
+        self.assertEqual(len(result), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
