@@ -582,7 +582,12 @@ class GUIServer:
             elif event_type == "alert":
                 self._remember(self._recent_alerts, data, None)
             elif event_type == "nearby":
-                self._remember(self._recent_nearby, data, "mac")
+                # Only mobile nodes serve the Nearby tab; skip the cache on a
+                # fixed node so the 200-slot _recent_nearby isn't occupied by
+                # events no client reads. (SSE broadcast below still works — the
+                # fixed-node app.js simply ignores the "nearby" type.)
+                if self._node_mode == "mobile":
+                    self._remember(self._recent_nearby, data, "mac")
             elif event_type == "remote_id":
                 self._remember(self._recent_remote_id, data, "uas_id")
 

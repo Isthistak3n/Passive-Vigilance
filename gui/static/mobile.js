@@ -159,10 +159,14 @@ function proximityClass(dbm) {
 }
 
 function renderNearby() {
-  // Cross-reference the persistence/alert feed (state.wifi) by MAC so a device
-  // that has already been flagged shows its alert tier as a card accent.
+  // Cross-reference the persistence/alert feed (state.wifi) by fingerprint then
+  // by MAC so a flagged device's alert tier appears on its nearby card even when
+  // its MAC has rotated since the score event was recorded.
+  const alertByFp  = new Map();
   const alertByMac = new Map();
   for (const e of state.wifi) {
+    const fp = e.fingerprint || '';
+    if (fp) alertByFp.set(fp, e.alert_level);
     if (e.mac) alertByMac.set(e.mac, e.alert_level);
   }
   const alertClass = { high: 'high', likely: 'likely', suspicious: 'suspicious' };
@@ -174,11 +178,14 @@ function renderNearby() {
   });
 
   document.getElementById('nearby-feed').innerHTML = rows.map(e => {
-    const tier = alertClass[alertByMac.get(e.mac)] || '';
+    const fp = e.fingerprint || '';
+    const tier = alertClass[(fp && alertByFp.get(fp)) || alertByMac.get(e.mac)] || '';
     const name = e.name ? esc(e.name)
-      : (e.probe_ssids && e.probe_ssids.length ? esc(e.probe_ssids[0]) : '(no name)');
+      : (e.fingerprint_label ? esc(e.fingerprint_label)
+        : (e.probe_ssids && e.probe_ssids.length ? esc(e.probe_ssids[0]) : '(no name)'));
     const sig = (e.last_signal != null && e.last_signal !== 0) ? `${e.last_signal} dBm` : '—';
-    const meta = [e.manufacturer || e.device_type || '—', e.mac, fmtTime(e.timestamp)]
+    const ident = e.fingerprint_label ? `${esc(e.fingerprint_label)} · ${e.mac}` : e.mac;
+    const meta = [e.manufacturer || e.device_type || '—', ident, fmtTime(e.timestamp)]
       .filter(Boolean).join(' · ');
     return `
       <div class="nearby-card ${tier}">
@@ -357,6 +364,15 @@ seedFromRest();
 function connectSSE() {
   const es = new EventSource('/stream');
 
+  es.onopen = function() {
+    // Re-seed from REST on every (re)connect. The stream drops on a server
+    // restart or a network/proxy blip; without this the mobile client resumes
+    // SSE but misses everything that happened during the gap — nearby devices
+    // seen while disconnected are gone until a manual refresh. Backfill on
+    // every reconnect so the Nearby tab reflects current state after any gap.
+    seedFromRest();
+  };
+
   es.onmessage = function(evt) {
     let data;
     try { data = JSON.parse(evt.data); } catch { return; }
@@ -400,6 +416,13 @@ function connectSSE() {
 }
 
 connectSSE();
+
+// Safety-net resync: periodically re-seed every tab from REST so the view
+// reflects current state even when SSE is gated (a device updating within the
+// same alert level is not re-pushed) or the stream silently stalls without
+// firing onerror. Together with the onopen re-seed this keeps the Nearby feed
+// a live mirror rather than a freeze-on-reconnect snapshot.
+setInterval(seedFromRest, 15000);
 
 // ── Baseline-state header ─────────────────────────────────────────────────────
 function fmtDuration(secs) {
