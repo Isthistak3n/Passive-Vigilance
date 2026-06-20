@@ -46,7 +46,7 @@ _GUI_PORT    = int(os.getenv("GUI_PORT", "8080"))
 if _GUI_ENABLED:
     from gui.server import GUIServer
 
-_VERSION = "0.6.0-alpha"
+_VERSION = "0.7.0-alpha"
 _SESSION_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
 _RATE_LIMIT_PERSIST = "data/rate_limits.json"
 
