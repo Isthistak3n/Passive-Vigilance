@@ -1709,6 +1709,46 @@ def test_enriched_identity_fields_none_device(orch):
 
 
 # ---------------------------------------------------------------------------
+# Graceful startup — radio preflight + degraded-sensor alerting
+# ---------------------------------------------------------------------------
+
+def test_startup_health_report_alerts_down_radio(orch):
+    so = orch.sensor_orchestrator
+    so._modules_active = {"kismet": True, "gps": True, "remote_id": True, "ble": False}
+    so._record_alert = MagicMock()
+    so._console_alert = MagicMock()
+    so.startup_health_report({"kismet", "gps", "remote_id", "ble"})
+    # exactly one down-alert, for the down radio (ble), none for the healthy ones
+    assert so._record_alert.call_count == 1
+    assert so._record_alert.call_args.kwargs["sensor"] == "ble"
+    assert "ble" in so._radio_down_alerted
+
+
+def test_startup_health_report_silent_when_all_up(orch):
+    so = orch.sensor_orchestrator
+    so._modules_active = {"kismet": True, "gps": True}
+    so._record_alert = MagicMock()
+    so._console_alert = MagicMock()
+    so.startup_health_report({"kismet", "gps"})
+    so._record_alert.assert_not_called()
+
+
+def test_radio_health_debounced_then_recovers(orch):
+    so = orch.sensor_orchestrator
+    so._expected_radios = {"ble"}
+    so._modules_active = {"ble": False}
+    so._record_alert = MagicMock()
+    so._console_alert = MagicMock()
+    so._check_radio_health()              # down -> alert
+    so._check_radio_health()              # still down -> debounced, no 2nd alert
+    assert so._record_alert.call_count == 1
+    so._modules_active["ble"] = True
+    so._check_radio_health()              # recovered -> recovery alert, clears state
+    assert so._record_alert.call_count == 2
+    assert "ble" not in so._radio_down_alerted
+
+
+# ---------------------------------------------------------------------------
 # P6 — aircraft panel: live current sky (decay + index pruning)
 # ---------------------------------------------------------------------------
 

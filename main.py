@@ -309,13 +309,26 @@ class PassiveVigilance:
             logger.warning("RemoteID: unavailable (%s) — Remote ID detection disabled", exc)
 
         if self.ble_scanner is not None:
-            try:
-                ok = await self.ble_scanner.connect()
-                self._modules_active["ble"] = ok
-                if ok:
-                    logger.info("BLE scanner: passive advertisement capture active on hci0")
-            except Exception as exc:
-                logger.warning("BLE scanner: unavailable (%s) — BLE capture disabled", exc)
+            # Bounded SAFE retry: set-bt-up.sh (ExecStartPre) raises a merely-down
+            # controller before we start, but it can enumerate slightly late, so
+            # retry the connect a few times with a short pause. Deliberately NO
+            # usbreset / unbind-rebind — those kernel-oopsed a wedged Realtek
+            # controller (2026-06-20); a wedged radio needs a physical replug/reboot,
+            # which the startup health alert below surfaces.
+            ok = False
+            for attempt in range(int(os.getenv("BLE_CONNECT_RETRIES", "3"))):
+                try:
+                    ok = await self.ble_scanner.connect()
+                    if ok:
+                        break
+                except Exception as exc:
+                    logger.warning("BLE scanner connect attempt %d failed (%s)", attempt + 1, exc)
+                await asyncio.sleep(2)
+            self._modules_active["ble"] = ok
+            if ok:
+                logger.info("BLE scanner: passive advertisement capture active")
+            else:
+                logger.warning("BLE scanner: unavailable after retries — BLE capture disabled")
 
         sdr_env = os.getenv("SDR_MODE", "auto")
         _valid_sdr_modes = {"auto", "shared", "dedicated"}
@@ -379,6 +392,21 @@ class PassiveVigilance:
 
         self._validate_config()
         self._log_startup_banner()
+
+        # Graceful-startup preflight: assess the radios we tried to bring up and fire
+        # an operator alert for any that came up DOWN (instead of a silent warning).
+        # adsb/drone_rf are "expected" whenever an SDR is configured (DRONE_RF_ENABLED)
+        # OR one was detected — so a DROPPED SDR (sdr_count 0 but expected) still
+        # alerts, the 2026-06-20 case. ADS-B in SHARED mode is optimistically active
+        # at startup, so it only alerts if it later stays down (watchdog re-check).
+        expected = {"gps", "kismet", "remote_id"}
+        if self.ble_scanner is not None:
+            expected.add("ble")
+        if drone_enabled or sdr_count > 0:
+            expected.add("adsb")
+        if drone_enabled:
+            expected.add("drone_rf")
+        self.sensor_orchestrator.startup_health_report(expected)
 
     def _validate_config(self) -> None:
         issues = []

@@ -163,6 +163,14 @@ class SensorOrchestrator:
         # Sensors that have already tripped a data/loop stall this episode, so a
         # re-trip after a reconnect (within the window) escalates to self-restart.
         self._stalled_since_reconnect: set[str] = set()
+        # Graceful-startup / radio-health alerting: the radios main.py expected to
+        # bring up, and the ones we've already alerted as DOWN (debounce, so a
+        # persistently-down radio alerts once, not every watchdog tick). A radio
+        # that comes up disabled at startup, or drops mid-run (a USB unplug like the
+        # 2026-06-20 incident), fires one operator alert here — the stall watchdog
+        # only catches *running* loops that go silent, never a disabled sensor.
+        self._expected_radios: set[str] = set()
+        self._radio_down_alerted: set[str] = set()
         # Self-restart crash-guard (persisted, since os._exit wipes memory).
         self._max_restarts = int(os.getenv("WATCHDOG_MAX_RESTARTS", "5"))
         self._restart_window_s = float(os.getenv("WATCHDOG_RESTART_WINDOW_S", "1800"))
@@ -1141,6 +1149,62 @@ class SensorOrchestrator:
                 logger.debug("alert push to GUI failed: %s", exc)
 
     # ------------------------------------------------------------------
+    # Graceful startup / radio-health alerting
+    # ------------------------------------------------------------------
+
+    _RADIO_LABELS = {"kismet": "WiFi", "ble": "BLE", "adsb": "ADS-B",
+                     "drone_rf": "DroneRF", "gps": "GPS", "remote_id": "Remote ID"}
+
+    def startup_health_report(self, expected: set) -> None:
+        '''Assess each expected radio after startup bring-up: log a one-line health
+        summary and fire an operator ALERT for any that came up DOWN. Called once from
+        main.py at the end of startup. *expected* is what main.py tried to bring up
+        (kismet/gps/remote_id always; ble/adsb/drone_rf per config + SDR detection).'''
+        self._expected_radios = set(expected)
+        summary = " ".join(
+            f"{self._RADIO_LABELS.get(n, n)}{'✓' if self._modules_active.get(n) else '✗'}"
+            for n in sorted(self._expected_radios)
+        )
+        logger.info("Startup health: %s", summary)
+        self._check_radio_health()
+
+    def _check_radio_health(self) -> None:
+        '''Alert (once, debounced) on any expected radio that is DOWN and note when a
+        previously-down one RECOVERS. Shared by startup_health_report and the watchdog,
+        so a startup-disabled radio and a mid-run drop are handled identically — the
+        gap that let the 2026-06-20 USB drop go unnoticed for ~7 h.'''
+        for name in self._expected_radios:
+            up = bool(self._modules_active.get(name))
+            if not up and name not in self._radio_down_alerted:
+                self._radio_down_alerted.add(name)
+                self._alert_radio_down(name)
+            elif up and name in self._radio_down_alerted:
+                self._radio_down_alerted.discard(name)
+                label = self._RADIO_LABELS.get(name, name)
+                logger.info("Sensor recovered: %s back online", label)
+                self._record_alert("system", f"{label} recovered",
+                                   f"{label} is back online.", severity="default",
+                                   sensor=name)
+
+    def _alert_radio_down(self, name: str) -> None:
+        '''One loud operator alert (console + GUI Alerts tab + persisted) that a radio
+        is down. A wedged USB radio is not software-recoverable (a PV restart does not
+        fix it), so this surfaces it for a physical replug/reboot rather than looping.'''
+        label = self._RADIO_LABELS.get(name, name)
+        hint = {
+            "ble": "BT controller unavailable — replug the dongle or reboot",
+            "adsb": "no RTL-SDR detected — reseat the SDR or reboot",
+            "drone_rf": "no RTL-SDR detected — reseat the SDR or reboot",
+        }.get(name, "sensor unavailable — check the device")
+        body = f"{label} is DOWN: {hint}."
+        logger.warning("Sensor down: %s", body)
+        try:
+            self._console_alert(body)
+        except Exception:
+            logger.debug("console alert failed", exc_info=True)
+        self._record_alert("system", f"{label} down", body, severity="high", sensor=name)
+
+    # ------------------------------------------------------------------
     # Watchdog
     # ------------------------------------------------------------------
 
@@ -1273,6 +1337,11 @@ class SensorOrchestrator:
                 tripped = self._check_watchdog()
                 if tripped:
                     await self._handle_stall(tripped)
+                # Alert on a radio that came up disabled or dropped mid-run (a USB
+                # unplug cleanly disables a sensor without stalling a poll loop, so
+                # the stall check above misses it). Debounced; no auto-restart — a
+                # wedged USB radio isn't fixed by restarting.
+                self._check_radio_health()
                 # Beat systemd's hardware-style watchdog ONLY while capture is
                 # genuinely progressing. If the primary sensor's data has frozen,
                 # heartbeats stop and systemd restarts us after WatchdogSec — the
