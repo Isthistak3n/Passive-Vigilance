@@ -116,6 +116,17 @@ class PassiveVigilance:
 
         self.gps = GPSModule()
         self.ignore_list = IgnoreList(data_dir="data/ignore_lists")
+        # Auto-ignore the node's own interface MACs so it never self-detects — the
+        # management WiFi sits at the sensor (max signal) and would otherwise trip
+        # egregious-during-baseline and pollute the baseline. Set IGNORE_SELF_MACS=false
+        # to disable. Guarded: a sysfs read failure must never block startup.
+        if os.getenv("IGNORE_SELF_MACS", "true").strip().lower() != "false":
+            try:
+                n_self = self.ignore_list.add_self_macs()
+                if n_self:
+                    logger.info("Auto-ignored %d of the node's own interface MAC(s)", n_self)
+            except Exception:
+                logger.debug("self-MAC auto-ignore failed (non-fatal)", exc_info=True)
         # Kismet and ADS-B are GPS-stamped by the orchestrator from its own fresh
         # fix (poll_devices/poll_aircraft gps_fix=); they no longer read the
         # shared gpsd socket on the poll loop, which is what coupled the two

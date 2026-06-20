@@ -205,5 +205,42 @@ class TestIgnoreListRandomizedMACs(unittest.TestCase):
         self.assertFalse(il.is_ignored_randomized("a4:c3:f0:11:22:33"))
 
 
+class TestSelfMacAutoIgnore(unittest.TestCase):
+    """Auto-suppression of the node's own interface MACs (so it never self-detects)."""
+
+    def _fake_sysfs(self, ifaces):
+        root = tempfile.mkdtemp()
+        for name, mac in ifaces.items():
+            os.makedirs(os.path.join(root, name))
+            with open(os.path.join(root, name, "address"), "w", encoding="utf-8") as fh:
+                fh.write(mac + "\n")
+        return root
+
+    def test_local_interface_macs_skips_loopback_and_zero(self):
+        from modules.ignore_list import local_interface_macs
+        root = self._fake_sysfs({
+            "wlan0": "d8:3a:dd:f0:4f:71",
+            "eth0":  "d8:3a:dd:f0:4f:6f",
+            "lo":    "00:00:00:00:00:00",   # loopback — skipped
+        })
+        macs = local_interface_macs(net_root=root)
+        self.assertEqual(macs, {"d8:3a:dd:f0:4f:71", "d8:3a:dd:f0:4f:6f"})
+
+    def test_add_self_macs_ignores_and_persists(self):
+        tmp = tempfile.mkdtemp()
+        il = IgnoreList(data_dir=tmp)
+        n = il.add_self_macs(macs={"d8:3a:dd:f0:4f:71", "00:c0:ca:b6:d7:8a"})
+        self.assertEqual(n, 2)
+        self.assertTrue(il.is_ignored_mac("d8:3a:dd:f0:4f:71"))
+        # persisted: a fresh instance loads them
+        self.assertTrue(IgnoreList(data_dir=tmp).is_ignored_mac("00:c0:ca:b6:d7:8a"))
+
+    def test_add_self_macs_idempotent(self):
+        tmp = tempfile.mkdtemp()
+        il = IgnoreList(data_dir=tmp)
+        il.add_self_macs(macs={"d8:3a:dd:f0:4f:71"})
+        self.assertEqual(il.add_self_macs(macs={"d8:3a:dd:f0:4f:71"}), 0)  # nothing new
+
+
 if __name__ == "__main__":
     unittest.main()
