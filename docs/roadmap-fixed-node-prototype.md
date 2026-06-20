@@ -9,14 +9,26 @@ evidence behind these decisions) and
 
 ---
 
-## North star — what "working prototype" means
+## North star — and where the bar moved (2026-06-19)
 
-A node you can leave at a location for several days that learns the place's
-normal RF pattern of life, then reliably surfaces genuine anomalies — a new
-device that shows up and stays, a known device behaving off-pattern, something
-physically closing in — at a false-positive rate an operator can live with,
-while staying up and bounded in memory and disk for the whole run. The multi-day
-soak is the **validation gate** for that, not a build step.
+The original north star: *a node you can leave at a location for several days that
+learns the place's normal RF pattern of life, then reliably surfaces genuine
+anomalies — a new device that shows up and stays, a known device behaving
+off-pattern, something physically closing in — at a false-positive rate an operator
+can live with, while staying up and bounded in memory and disk for the whole run.*
+
+**That bar has been cleared.** Soak #3 ran ~42 h post-freeze on the node: learn →
+freeze → detect end-to-end, memory bounded (no leak), a livable alert rate (240 paged
+/ ~74.6k display-only / **0 dropped**), all five sensors up, the SDR time-share clean.
+The multi-day soak was the validation gate, and the prototype passed it.
+
+**So this document pivots.** It is no longer a road *to* a working prototype; the
+prototype works. The bar is now **deployable trustworthiness + counter-surveillance
+depth**: a detector you'd actually trust at an unknown location (it doesn't bake a
+present threat into "normal," and it doesn't fatigue you over many days), and the
+identity/air-picture intelligence that makes its alerts *mean* something. The
+remaining work, re-sequenced for that bar, is in **Forward roadmap** below; the
+shipped phases are summarised under **Validated & shipped**.
 
 ## Where we are (2026-06)
 
@@ -149,32 +161,67 @@ chase (full test evidence in
   + keying + GUI only; the scoring/baseline key is deliberately unchanged** (validated
   on real data first; flood-safe). New GUI columns: *Known Networks* + *Reconnect*.
 
-## The one finding that drives the sequencing
+## What drives the sequencing now
 
-The clean 4-hour memory soak was a **learning-phase** result. With a 72h baseline
-window the soak never froze, so `FixedScoring` returned no detections (WiFi:0
-events) and the orchestrator's unbounded `all_events` list stayed empty. The
-moment a real run crosses the baseline freeze, novelty and off-schedule re-fire
-on every poll for every qualifying device, and the orchestrator appends each to
-`all_events` and pushes it to the GUI — the mobile leak re-incarnated, just
-deferred past the freeze. **The prototype's memory profile is currently unproven
-for the half of its life that matters.** Hence: endurance hardening first, not
-new detection features.
+The endurance question that drove the *original* sequencing — the unproven
+post-freeze memory leak — is **settled**: soak #3 ran ~42 h past the freeze with
+memory bounded. The new driver is the gap between *"works in a soak"* and
+*"trustworthy at an unknown location."* Two things stand between the validated
+prototype and a tool you'd deploy cold, and they set the lead priority
+(**detection-quality completion**):
+
+1. **It's blind during learning (P2).** A 48–72 h baseline that flags nothing while
+   it learns will quietly bake an already-present surveillance device into "normal."
+   A real deployment can't assume a clean environment.
+2. **It fatigues over days (P3).** Post-freeze, every benign newcomer (a neighbour's
+   new phone, a visitor) reads novel forever. Soak #1's novelty flood and soak #2's
+   off-schedule flood are fixed, but the *durable* answer to slow novelty accrual is
+   a rolling baseline that promotes consistently-present devices without absorbing an
+   intermittent or patient adversary.
+
+Identity and air-picture depth (the fingerprinting program, cross-session linkage,
+AP evil-twin) follow detection-quality — they make alerts *mean more*, but a
+detector you can't trust during learning isn't deployable regardless.
+
+## Forward roadmap (post-validation)
+
+Priority order, re-sequenced for the deployable-trustworthiness bar:
+
+1. **Detection-quality completion (lead).** P2 egregious-during-baseline + P3 rolling
+   adaptation + the owed P1 approaching walk-test. Closes the "blind while learning"
+   and "fatigues over days" gaps — the two things between a soak-validated detector
+   and a cold-deployable one. Detail: P1/P2/P3 sections below.
+2. **Fingerprinting program (round 2+).** Validate the shipped PNL/reconnect
+   enrichment on real captures, then wire it into scoring; then cross-PHY WiFi↔BT
+   linking (one device → one contact). Deepens randomization-resistant identity.
+   Design: [design-entity-fingerprinting.md](design-entity-fingerprinting.md).
+3. **Cross-session returning-entity (P4 remainder).** Link fingerprints into stable
+   entities across days/sessions and emit "returning entity" — "was this device here
+   yesterday / casing me last week," the original counter-surveillance payoff.
+4. **AP evil-twin detection.** Fingerprint AP beacons; flag a known SSID appearing
+   with a new IE set/BSSID, or an AP beaconing what nearby devices probe for (karma).
+
+Iterate a shorter confirmation soak after P2+P3 land, read for the during-learning
+and multi-day FP behaviour specifically.
 
 ---
 
 ## Phases
 
-| Phase | Goal | Status | Blocking for first multi-day soak? |
+Status reference (detail in the per-phase sections below). The last column is the
+**forward priority** from the post-validation re-frame, not the old soak-blocking
+flag. ① = detection-quality lead; ②–④ = the identity/air-picture program after it.
+
+| Phase | Goal | Status | Forward priority |
 |---|---|---|---|
-| **P0** | Endurance hardening (post-freeze memory + disk) | ✅ Done — merged #74, forced-freeze validated on chase | **Yes** |
-| **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Rebased on `main`, green; walk-test gated on the soak #2 freeze (2026-06-12 07:41 UTC) | No (recommended) |
-| **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | Strongly recommended |
-| **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started | No |
-| **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live; cut the flood ~36→3–5/cycle. **Enriched (round 1, #146):** WiFi PNL accumulated per IE hash; BLE reconnect signals (directed/solicited/128-bit/mfg-structure) — capture+keying+GUI, scoring untouched. Cross-session *returning-entity* linkage + scoring integration remain | No |
-| **P5** | Fixed-mode GUI framing + durable history | ✅ Complete — contact designators, scoring-panel thread-safety, baseline-state header strip (learning/frozen + countdown), sortable/filterable columns + CSV, and **durable history across ALL panels**: WiFi/BT (incl. scoring, #142), Aircraft (refresh+restart, #144), Drone, Remote ID, Alerts all rebuild from disk | No |
-| **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, **bounded tracks**, **ID-less split**, Remote ID index pruning + **Remote ID GUI surface** merged; the final pass widened the map current-sky window (a too-tight 120 s cutoff blanked the map under sparse reception), set **24 h aircraft retention**, and shipped **returning-ICAO as same identity** with a marked track gap + an of-interest flag (bridges to P7) | No |
-| **P7** | Aircraft of interest: orbit/loiter detection | ◑ Mostly shipped — **persistence-score** model (mirrors the mobile engine; transit≈0, loiter/return climbs): pure geometry + scorer (`air_geometry.py` / `air_scoring.py`), live scoring wired into `_poll_adsb` against a GPS/home reference, and **alerting reframed** — aircraft alert only when *of-interest* (not every airframe), drone-RF alerts only after sustained sweeps. **Soak #3 confirmed the reframe held** (0 paged aircraft flood; returning-aircraft live). **Still deferred:** durable cross-day per-ICAO baseline + daily-orbiter novelty suppression; GUI severity badge; Remote ID loiter fusion | No |
+| **P0** | Endurance hardening (post-freeze memory + disk) | ✅ Done — merged #74; forced-freeze + soak #3 (~42 h) validated bounded memory | ✅ shipped |
+| **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Merged & green; owes the positive walk-test | ① detection-quality (owes walk-test) |
+| **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | **① detection-quality (lead)** |
+| **P3** | Adaptation — rolling baseline (§5.5) | ☐ Not started (design drafted) | **① detection-quality (lead)** |
+| **P4** | Cross-session entity resolution (Phase F) | ◑ In progress — randomization-resistant fingerprint capture + keying merged & live; cut the flood ~36→3–5/cycle. **Enriched (round 1, #146):** WiFi PNL accumulated per IE hash; BLE reconnect signals (directed/solicited/128-bit/mfg-structure) — capture+keying+GUI, scoring untouched. Cross-session *returning-entity* linkage + scoring integration remain | ②/③ identity program |
+| **P5** | Fixed-mode GUI framing + durable history | ✅ Complete — contact designators, scoring-panel thread-safety, baseline-state header strip (learning/frozen + countdown), sortable/filterable columns + CSV, and **durable history across ALL panels**: WiFi/BT (incl. scoring, #142), Aircraft (refresh+restart, #144), Drone, Remote ID, Alerts all rebuild from disk; **GUI is now a live mirror** (re-seed on reconnect + periodic resync, #149) | ✅ shipped |
+| **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, **bounded tracks**, **ID-less split**, Remote ID index pruning + **Remote ID GUI surface** merged; the final pass widened the map current-sky window (a too-tight 120 s cutoff blanked the map under sparse reception), set **24 h aircraft retention**, and shipped **returning-ICAO as same identity** with a marked track gap + an of-interest flag (bridges to P7) | ✅ shipped |
+| **P7** | Aircraft of interest: orbit/loiter detection | ◑ Mostly shipped — **persistence-score** model (mirrors the mobile engine; transit≈0, loiter/return climbs): pure geometry + scorer (`air_geometry.py` / `air_scoring.py`), live scoring wired into `_poll_adsb` against a GPS/home reference, and **alerting reframed** — aircraft alert only when *of-interest* (not every airframe), drone-RF alerts only after sustained sweeps. **Soak #3 confirmed the reframe held** (0 paged aircraft flood; returning-aircraft live). **Still deferred:** durable cross-day per-ICAO baseline + daily-orbiter novelty suppression; GUI severity badge; Remote ID loiter fusion | follow-on (remainder) |
 
 ### P0 — Endurance hardening (blocking)
 
@@ -453,18 +500,22 @@ transit and surfaced; a novel returning loiterer alerts; routine traffic does no
 
 ---
 
-## The multi-day soak — the validation gate
+## The multi-day soak — the validation gate (PASSED)
 
-Run it **after P0** at minimum, ideally P0 + P2. The critical config change from
-the 4-hour run: set `FIXED_BASELINE_HOURS` so the baseline **freezes inside the
-soak** (e.g. a 48h baseline then 24–48h of post-freeze observation), so it
-actually exercises post-freeze scoring — the thing the 4h soak never reached.
+**This gate has been run and cleared** (soaks #1–#3 below). The method that mattered:
+set `FIXED_BASELINE_HOURS` so the baseline **freezes inside the soak** so it actually
+exercises post-freeze scoring — the thing the original 4-hour run never reached.
+Soak #3 (~42 h, baseline frozen) demonstrated learn-then-detect end-to-end with
+bounded memory, disk in budget, a livable post-freeze FP rate (after the #138 fix),
+and stability across days with the SDR time-shared. The remaining soak use is a
+**shorter confirmation run after P2+P3** to read the during-learning and multi-day FP
+behaviour specifically — not a gate, a regression check.
 
-Measure: RSS flat across the freeze boundary (the P0 proof), disk within budget
-(P0 pruning), the real post-freeze anomaly and false-positive rates,
-egregious-during-baseline behavior, and stability across days with the SDR path
-disabled. A run that survives multi-day, stays bounded, and produces a sane
-anomaly stream with tolerable FP — demonstrating learn-then-detect end to end —
+Measure (retained for that confirmation run): RSS flat across the freeze boundary,
+disk within budget, the post-freeze anomaly and false-positive rates,
+egregious-during-baseline behavior, and stability across days. A run that survives
+multi-day, stays bounded, and produces a sane anomaly stream with tolerable FP —
+demonstrating learn-then-detect end to end —
 is the working prototype.
 
 ### Soak #1 — chase, 2026-06-07 → 09 (P0+P1+P2, 48h, DroneRF off)
@@ -513,14 +564,24 @@ Full record + next steps: [field-findings-2026-06.md](field-findings-2026-06.md)
 
 ## Sequencing
 
-P0 → (P1, P2 in parallel) → **first multi-day soak** → P3 → P4 → P5, iterating the
-soak after P3 once adaptation is in. The first long soak should be read as an
-endurance-and-correctness test, not a usability one, until P3 lands. **P6 sits
-outside this chain** — it is a self-contained GUI bug with a live reproduction and
-can be fixed at any time, independent of the detection-quality sequencing. **P7
-(aircraft of interest)** is a new modality that builds on P6's data-model fixes;
-its own first long run is an endurance-and-correctness test like the WiFi path, and
-its baseline is what eventually makes its alerts livable.
+**Executed so far:** P0 → soaks #1/#2 (found + fixed the novelty then off-schedule
+floods) → P4-core fingerprinting + P5 + P6 + P7-core → soak #3 (validation gate
+passed). That chain is history; the document above records it.
+
+**Forward (from 2026-06-19):**
+1. **Detection-quality completion (lead).** P2 (egregious-during-baseline) and P3
+   (rolling adaptation) together, with the owed P1 walk-test alongside — they close
+   the "blind while learning" and "fatigues over days" gaps. → a **short confirmation
+   soak** read for during-learning and multi-day FP behaviour.
+2. **Fingerprinting program.** Validate the shipped PNL/reconnect enrichment, then
+   wire it into scoring; then cross-PHY WiFi↔BT linking.
+3. **Cross-session returning-entity (P4 remainder).**
+4. **AP evil-twin detection**, and the **P7 remainder** (cross-day air baseline,
+   severity badge, Remote ID loiter fusion) as follow-on.
+
+The forward chain is detection-quality first because trustworthiness-during-learning
+gates deployability; the identity/air-picture depth that follows raises what the
+alerts *mean*, not whether you can rely on the detector.
 
 ## Deliberately deferred (per the design doc)
 
