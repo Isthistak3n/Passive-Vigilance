@@ -7,6 +7,7 @@ GPS-stamped device records. Also handles monitor-mode interface checks.
 import logging
 import os
 import subprocess
+import time
 from typing import Optional
 
 import aiohttp
@@ -176,6 +177,19 @@ class KismetModule:
                 :meth:`~modules.gps.GPSModule.get_fix`), or ``None`` when no fix
                 is available. Supplied by the orchestrator from its own fresh
                 fix — the module performs no GPS read of its own.
+
+        ``KISMET_ACTIVE_WINDOW_SECONDS`` (default 0 = disabled): when set to a
+        positive integer, devices whose Kismet ``last_time`` is older than this
+        many seconds are excluded from the returned list. Kismet's device list
+        is permanent — it retains every device ever heard in the session, so
+        on a mobile node a device passed 10 minutes ago is still present and
+        will accumulate GPS clusters from the node's subsequent movement,
+        making it look like a following device. Setting this to ~90–120 s
+        limits the list to devices that are currently in RF range: a device
+        not heard within the window has left (or never returned), so it is
+        dropped before reaching the persistence engine. Leave at 0 (disabled)
+        on fixed nodes where the full historical device list is needed for
+        baseline building.
         """
         if self._session is None:
             logger.warning("poll_devices() called before connect()")
@@ -197,8 +211,14 @@ class KismetModule:
             logger.error("Error polling Kismet devices: %s", exc)
             return []
 
+        # Read per-call so patch.dict(os.environ, ...) works in tests without
+        # module reload. 0 = disabled (default); positive int = seconds.
+        active_window = int(os.getenv("KISMET_ACTIVE_WINDOW_SECONDS", "0"))
+        now = time.time()
+
         devices = []
         ignored = 0
+        stale = 0
         for entry in raw if isinstance(raw, list) else []:
             mac  = entry.get("kismet.device.base.macaddr", "")
             ssid = entry.get("kismet.device.base.name", "")
@@ -211,6 +231,11 @@ class KismetModule:
                     ignored += 1
                     continue
 
+            last_time = entry.get("kismet.device.base.last_time", 0)
+            if active_window > 0 and last_time and (now - last_time) > active_window:
+                stale += 1
+                continue
+
             record = {
                 "macaddr":      mac,
                 "type":         entry.get("kismet.device.base.type", ""),
@@ -218,7 +243,7 @@ class KismetModule:
                 "manuf":        entry.get("kismet.device.base.manuf", ""),
                 "phyname":      entry.get("kismet.device.base.phyname", ""),
                 "first_time":   entry.get("kismet.device.base.first_time", 0),
-                "last_time":    entry.get("kismet.device.base.last_time", 0),
+                "last_time":    last_time,
                 # Kismet returns the simplified "a/b" field under its LEAF key,
                 # so read kismet.common.signal.last_signal (not the slash-path).
                 "last_signal":  entry.get("kismet.common.signal.last_signal", None),
@@ -237,6 +262,11 @@ class KismetModule:
 
         if ignored:
             logger.debug("Ignored %d devices from Kismet (on ignore list)", ignored)
+        if stale:
+            logger.debug(
+                "Dropped %d stale device(s) outside active window (%ds)",
+                stale, active_window,
+            )
         logger.debug("Polled %d devices from Kismet", len(devices))
         return devices
 

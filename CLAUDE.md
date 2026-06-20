@@ -255,6 +255,7 @@ Re-run the monitor mode commands after any NM restart.
 - `MACFingerprint` dataclass: `canonical_mac`, `all_macs`, `probe_ssids`, `avg_rssi`, `device_count`
 - `group_by_fingerprint(devices)` — clusters randomized MACs that share ≥1 probe SSID using union-find; MACs with no probe SSIDs are never merged
 - `KismetModule.poll_devices()` stamps every record with `mac_type` and `is_randomized` fields
+- `KISMET_ACTIVE_WINDOW_SECONDS` (default `0` = disabled): when set to a positive integer, devices whose Kismet `last_time` is older than this many seconds are excluded before the list reaches the scoring engine. **Set to 90–120 on a mobile node** — Kismet's device list is permanent, so without this filter every device ever heard in the session remains in every poll; on a drive the node's own GPS movement stamps them with new positions, creating spurious "following" clusters that fire the persistence engine on the entire population (confirmed in road-test 2026-06-20: 4,833 devices flagged, 39k alerts). Leave at 0 on fixed nodes where the full historical list is needed for baseline learning.
 - `DetectionEvent` carries `mac_type: str = "static"` field; set via `get_mac_type()` in `_make_event()`
 - `PersistenceEngine.__init__()` accepts `handle_randomized: bool` (also `HANDLE_MAC_RANDOMIZATION` env var, default True)
 - `PersistenceEngine.get_fingerprint_summary()` — returns current `MACFingerprint` list for tracked randomized MACs

@@ -78,12 +78,15 @@ class TestGUIServerPushEvent(unittest.TestCase):
         self.assertEqual(len(self.gui._recent_alerts), 1)
 
     def test_push_nearby_appends_to_recent(self):
+        # _recent_nearby is only filled in mobile mode (fixed nodes don't serve /api/nearby)
+        self.gui._node_mode = "mobile"
         ev = {"mac": "aa:bb:cc:dd:ee:ff", "name": "Phone", "last_signal": -55}
         self.gui.push_event("nearby", ev)
         self.assertEqual(len(self.gui._recent_nearby), 1)
         self.assertEqual(self.gui._recent_nearby[0]["last_signal"], -55)
 
     def test_push_nearby_same_mac_dedups_to_one_entry(self):
+        self.gui._node_mode = "mobile"
         self.gui.push_event("nearby", {"mac": "aa:bb:cc:dd:ee:ff", "last_signal": -70})
         self.gui.push_event("nearby", {"mac": "aa:bb:cc:dd:ee:ff", "last_signal": -50})
         self.assertEqual(len(self.gui._recent_nearby), 1)
@@ -394,6 +397,8 @@ class TestGUIServerNearbyEndpoint(unittest.TestCase):
     def setUp(self):
         from gui.server import GUIServer
         self.gui = GUIServer()
+        # /api/nearby is mobile-only; _recent_nearby is only populated in mobile mode
+        self.gui._node_mode = "mobile"
         if self.gui.app is None:
             self.skipTest("Flask not installed — skipping nearby-endpoint tests")
         self.client = self.gui.app.test_client()
