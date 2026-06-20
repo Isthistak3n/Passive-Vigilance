@@ -71,6 +71,29 @@ def _label(device: dict, ssids: list[str], name: str) -> str:
     return device.get("type") or "Wi-Fi"
 
 
+def compute_identity_key(device: dict) -> Optional[WiFiFingerprint]:
+    """The rotation-stable SCORING identity key for a WiFi client: the IE-set hash
+    anchored on the device's rarest *distinctive* probed SSID (``fp_anchor``, set on
+    the device by the orchestrator from :meth:`EntityStore.distinctive_anchors`).
+
+    Returns None when the device has no IE hash or no distinctive anchor — the caller
+    then falls back to ``mac:`` (un-trackable), which is over-merge-safe: a device
+    whose PNL is only common public SSIDs is never fused with another that merely
+    shares its popular IE hash. The rarest SSID is stable (a home network doesn't
+    churn), so this key both survives MAC rotation and stays put as the rest of the
+    PNL grows. This is the key the frozen baseline, novelty/off-schedule, and P3
+    promotion all consume — distinct from the per-poll :func:`compute_wifi_fingerprint`
+    signature and from the GUI's :func:`compute_pnl_fingerprint` PNL display.
+    """
+    probe_fp = device.get("probe_fingerprint")
+    anchor = (device.get("fp_anchor") or "").strip()
+    if not probe_fp or not anchor:
+        return None
+    canonical = f"f:{probe_fp}|a:{anchor}"
+    key = "wifi-fp:" + hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
+    return WiFiFingerprint(key=key, strong=True, label=anchor)
+
+
 @dataclass(frozen=True)
 class PNLFingerprint:
     key: str           # "wifi-pnl:<12 hex>" — anchored on the rotation-stable IE hash

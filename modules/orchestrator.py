@@ -707,6 +707,23 @@ class SensorOrchestrator:
         self._ble_adverts = {}
         return drained
 
+    def _distinctive_anchor_map(self) -> dict:
+        '''TTL-cached {IE-hash: rarest distinctive SSID} from the EntityStore, used to
+        attach each WiFi device's over-merge-safe identity anchor before scoring.
+        Refreshed every FP_ANCHOR_REFRESH_SECONDS (default 600) — anchors stabilise
+        within minutes, and the GROUP-BY over pnl_evidence should not run every poll.'''
+        if self.entity_store is None:
+            return {}
+        ttl = float(os.getenv("FP_ANCHOR_REFRESH_SECONDS", "600"))
+        if (time.monotonic() - getattr(self, "_anchor_map_ts", 0.0)) > ttl:
+            try:
+                self._anchor_map = self.entity_store.distinctive_anchors(
+                    max_df=int(os.getenv("FP_DISTINCTIVE_MAX_DF", "3")))
+                self._anchor_map_ts = time.monotonic()
+            except Exception:
+                logger.debug("distinctive_anchors refresh failed", exc_info=True)
+        return getattr(self, "_anchor_map", {})
+
     def _enriched_identity_fields(self, device) -> dict:
         '''Enriched identity/reconnect signals for the GUI + analysis ONLY — not used
         for scoring or the live fingerprint key (this round is capture + display).
@@ -822,6 +839,20 @@ class SensorOrchestrator:
                 self.entity_store.record_poll(devices, gps_fix=self._current_fix)
             except Exception as exc:
                 logger.warning("EntityStore write failed (non-fatal): %s", exc)
+
+        # Attach each WiFi device's distinctive identity anchor (its rarest
+        # near-unique probed SSID) BEFORE scoring, so the scorer keys on the enriched,
+        # over-merge-safe identity (IE hash + anchor) rather than the per-poll
+        # signature. TTL-cached; a device with no distinctive anchor is left without
+        # one and stays mac:-keyed (un-trackable, as before).
+        anchor_map = self._distinctive_anchor_map()
+        if anchor_map:
+            for d in devices:
+                fp = d.get("probe_fingerprint")
+                if fp:
+                    anchor = anchor_map.get(fp)
+                    if anchor:
+                        d["fp_anchor"] = anchor
 
         suspicious = self.probe_analyzer.analyze(devices)
         if suspicious:

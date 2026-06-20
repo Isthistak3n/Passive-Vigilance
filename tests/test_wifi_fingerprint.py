@@ -1,7 +1,11 @@
 """Unit tests for modules/wifi_fingerprint.py — the WiFi randomization-resistant signature."""
 import unittest
 
-from modules.wifi_fingerprint import compute_pnl_fingerprint, compute_wifi_fingerprint
+from modules.wifi_fingerprint import (
+    compute_identity_key,
+    compute_pnl_fingerprint,
+    compute_wifi_fingerprint,
+)
 
 
 def _dev(probe_ssids=None, probe_fingerprint=None, name="", manuf="", type="Wi-Fi Client"):
@@ -109,6 +113,33 @@ class TestPNLFingerprint(unittest.TestCase):
         self.assertIsNotNone(fp)
         self.assertTrue(fp.strong)
         self.assertEqual(fp.pnl, ("HomeNet",))
+
+
+class TestIdentityKey(unittest.TestCase):
+    """The enriched SCORING key: IE hash + rarest distinctive anchor."""
+
+    def test_ie_plus_anchor_is_strong(self):
+        fp = compute_identity_key({"probe_fingerprint": 123, "fp_anchor": "HomeNet"})
+        self.assertIsNotNone(fp)
+        self.assertTrue(fp.key.startswith("wifi-fp:"))
+        self.assertTrue(fp.strong)
+        self.assertEqual(fp.label, "HomeNet")
+
+    def test_no_anchor_returns_none(self):
+        # IE hash but no distinctive anchor -> None (caller falls back to mac:).
+        self.assertIsNone(compute_identity_key({"probe_fingerprint": 123}))
+        # anchor but no IE hash -> None.
+        self.assertIsNone(compute_identity_key({"fp_anchor": "HomeNet"}))
+
+    def test_rotation_collapses_same_ie_and_anchor(self):
+        a = compute_identity_key({"probe_fingerprint": 123, "fp_anchor": "Home"})
+        b = compute_identity_key({"probe_fingerprint": 123, "fp_anchor": "Home"})
+        self.assertEqual(a.key, b.key)
+
+    def test_distinct_anchor_distinct_key_same_ie(self):
+        a = compute_identity_key({"probe_fingerprint": 123, "fp_anchor": "HomeA"})
+        b = compute_identity_key({"probe_fingerprint": 123, "fp_anchor": "HomeB"})
+        self.assertNotEqual(a.key, b.key)
 
 
 if __name__ == "__main__":

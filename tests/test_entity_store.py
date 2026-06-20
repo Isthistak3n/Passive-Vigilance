@@ -99,6 +99,18 @@ def test_pnl_empty_without_ie_hash():
     s.close()
 
 
+def test_distinctive_anchors_picks_rarest_omits_common_only():
+    s = _store()
+    # 'attwifi' is probed by 3 distinct IE hashes (common, df=3); 'Home'/'Work' df=1.
+    s.record_poll([_device(mac="aa:11:11:11:11:11", probe_ssids=["Home", "attwifi"], fp=100)], now=T0)
+    s.record_poll([_device(mac="bb:22:22:22:22:22", probe_ssids=["Work", "attwifi"], fp=200)], now=T0)
+    s.record_poll([_device(mac="cc:33:33:33:33:33", probe_ssids=["attwifi"], fp=300)], now=T0)
+    anchors = s.distinctive_anchors(max_df=2)
+    # 100 -> Home, 200 -> Work; 300 probes only the common SSID -> NO anchor (omitted).
+    assert anchors == {100: "Home", 200: "Work"}
+    s.close()
+
+
 # ---------------------------------------------------------------------------
 # device_fingerprint — one row per mac, fields updated
 # ---------------------------------------------------------------------------

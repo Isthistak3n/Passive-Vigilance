@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from modules.ble_fingerprint import compute_ble_fingerprint
-from modules.wifi_fingerprint import compute_wifi_fingerprint
+from modules.wifi_fingerprint import compute_identity_key
 
 _BLE_ADVERT_KEYS = ("company_ids", "service_uuids", "service_data_uuids", "appearance")
 
@@ -51,10 +51,15 @@ def _ble_advert_view(device: dict) -> SimpleNamespace:
 
 
 def _fingerprint(device: dict):
-    """The BLE or WiFi fingerprint object for *device*, by modality (or None)."""
+    """The BLE or WiFi fingerprint object for *device*, by modality (or None).
+
+    WiFi uses the enriched, over-merge-safe identity key (IE hash + rarest
+    distinctive SSID) — see :func:`compute_identity_key`. It needs the orchestrator
+    to have attached ``fp_anchor`` to the device; absent that (or no distinctive
+    anchor), it returns None and the caller keys by ``mac:``."""
     if is_ble_device(device):
         return compute_ble_fingerprint(_ble_advert_view(device))
-    return compute_wifi_fingerprint(device)
+    return compute_identity_key(device)
 
 
 def strong_fingerprint(device: dict) -> Optional[str]:
