@@ -308,6 +308,37 @@ class EntityStore:
         ).fetchall()
         return [r["ssid"] for r in rows]
 
+    def distinctive_anchors(self, max_df: int = 3) -> dict:
+        """Map each IE-set hash → its rarest *distinctive* probed SSID, or omit it.
+
+        Distinctiveness is cross-device rarity: an SSID's document frequency (df) is
+        the number of distinct IE hashes that probe it. A popular public SSID
+        (``xfinitywifi``) has a high df and almost no discriminating power; a home/
+        private SSID has df≈1 and near-uniquely anchors a device. For each IE hash we
+        return its lowest-df SSID, but only if that df ``<= max_df`` — so an IE hash
+        whose whole PNL is common public networks gets NO anchor (the caller leaves
+        it ``mac:``-keyed, un-trackable, which is over-merge-safe). The rarest SSID is
+        stable (a device's home network doesn't churn), so the resulting key is both
+        distinctive and rotation-stable. Read-only; built in one pass for the poll
+        loop to cache."""
+        df = {}
+        for r in self._conn.execute(
+            "SELECT ssid, COUNT(DISTINCT probe_fingerprint) AS d FROM pnl_evidence "
+            "GROUP BY ssid"
+        ):
+            df[r["ssid"]] = r["d"]
+        best = {}   # probe_fingerprint -> (df, ssid)
+        for r in self._conn.execute("SELECT probe_fingerprint, ssid FROM pnl_evidence"):
+            fp, ssid = r["probe_fingerprint"], r["ssid"]
+            d = df.get(ssid, 1)
+            if d > max_df:
+                continue
+            cur = best.get(fp)
+            # lowest df wins; ssid as a stable tie-break
+            if cur is None or (d, ssid) < cur:
+                best[fp] = (d, ssid)
+        return {fp: v[1] for fp, v in best.items()}
+
     def assign_contact_number(self, identity_key: str, group_key: str,
                               now: Optional[datetime] = None) -> int:
         """Return this identity's stable instance number within ``group_key``.

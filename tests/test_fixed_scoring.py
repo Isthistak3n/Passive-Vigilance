@@ -48,7 +48,13 @@ def _static_device(mac="d8:96:85:11:22:33", **extra):
 
 
 def _random_device(mac, probe="HomeNet", **extra):
-    d = {"macaddr": mac, "name": "", "probe_ssids": [probe]}
+    # The enriched WiFi key is hash(IE-hash + distinctive anchor). In production the
+    # orchestrator attaches fp_anchor (the rarest near-unique probed SSID); tests set
+    # it directly. Same probe -> same anchor -> same identity across rotated MACs.
+    d = {"macaddr": mac, "name": "", "probe_ssids": [probe] if probe else []}
+    if probe:
+        d["probe_fingerprint"] = 999
+        d["fp_anchor"] = probe
     d.update(extra)
     return d
 

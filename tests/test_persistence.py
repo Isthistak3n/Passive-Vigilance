@@ -315,8 +315,14 @@ class TestFingerprintKeying(unittest.TestCase):
     rotates its MAC across locations still accumulates one observation series."""
 
     def _dev(self, mac, probe=None, name="", type="Wi-Fi Client", signal=-50):
-        return {"macaddr": mac, "probe_ssids": probe or [], "name": name,
-                "type": type, "manuf": "", "last_signal": signal}
+        d = {"macaddr": mac, "probe_ssids": probe or [], "name": name,
+             "type": type, "manuf": "", "last_signal": signal}
+        if probe:
+            # Enriched WiFi key inputs: IE hash + distinctive anchor (the orchestrator
+            # attaches fp_anchor live). Same probe -> same anchor -> one identity.
+            d["probe_fingerprint"] = 999
+            d["fp_anchor"] = probe[0]
+        return d
 
     def test_randomized_macs_share_fingerprint_series(self):
         pe = PersistenceEngine()
