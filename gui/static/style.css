@@ -167,7 +167,18 @@ main {
 .wifi-likely     { background: #ff8c00; }
 .wifi-suspicious { background: #d29922; }
 .aircraft-dot    { background: #58a6ff; }
-.drone-dot       { background: #bc8cff; }
+.ais-dot         { background: #3fb950; }
+
+/* ACARS message-count badge in the Aircraft tab (hover shows the latest message). */
+.acars-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(31, 111, 235, 0.2);
+  color: #79c0ff;
+  font-size: 0.85em;
+  cursor: help;
+}
 
 /* ── Toolbar ─────────────────────────────────────────────── */
 .toolbar {

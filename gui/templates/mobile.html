@@ -13,7 +13,7 @@
       <span class="sensor" id="s-gps" title="GPS">GPS</span>
       <span class="sensor" id="s-kismet" title="Kismet">WiFi</span>
       <span class="sensor" id="s-adsb" title="ADS-B">ADS-B</span>
-      <span class="sensor" id="s-drone-rf" title="Drone RF">Drone</span>
+      <span class="sensor" id="s-ais" title="AIS (marine VHF)">AIS</span>
       <span class="session-id" id="session-id">—</span>
       <span class="node-mode" id="node-mode" title="Scoring mode (NODE_MODE)">
         <label for="mode-select">Mode</label>
@@ -42,8 +42,8 @@
     <button class="tab-btn" data-tab="aircraft">
       Aircraft <span class="badge" id="badge-aircraft">0</span>
     </button>
-    <button class="tab-btn" data-tab="drone">
-      Drone RF <span class="badge" id="badge-drone">0</span>
+    <button class="tab-btn" data-tab="ais">
+      AIS <span class="badge" id="badge-ais">0</span>
     </button>
     <button class="tab-btn" data-tab="alerts">
       Alerts <span class="badge alert-badge" id="badge-alerts">0</span>
@@ -112,24 +112,25 @@
       </div>
     </section>
 
-    <!-- Drone tab -->
-    <section id="tab-drone" class="tab-panel">
+    <!-- AIS tab -->
+    <section id="tab-ais" class="tab-panel">
       <div class="toolbar">
-        <input type="text" id="drone-search" placeholder="Filter by frequency…">
-        <button id="drone-clear" class="btn-sm">Clear</button>
+        <input type="text" id="ais-search" placeholder="Filter by name, MMSI…">
+        <button id="ais-clear" class="btn-sm">Clear</button>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Freq (MHz)</th>
-              <th>Power (dBm)</th>
+              <th>Vessel</th>
+              <th>MMSI</th>
+              <th>Type</th>
               <th>Lat</th>
               <th>Lon</th>
               <th>Time</th>
             </tr>
           </thead>
-          <tbody id="drone-tbody"></tbody>
+          <tbody id="ais-tbody"></tbody>
         </table>
       </div>
     </section>
