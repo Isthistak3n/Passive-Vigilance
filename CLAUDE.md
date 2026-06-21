@@ -57,14 +57,15 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/gps.py` | `GPSModule` | gpsd streaming client; position/time backbone |
 | `modules/kismet.py` | `KismetModule` | Kismet REST API; async WiFi + BT device polling |
 | `modules/dump1090.py` | `ADSBModule` | dump1090 JSON output; aircraft polling |
-| `modules/drone_rf.py` | `DroneRFModule` | pyrtlsdr; passive RF scan for drone signatures |
+| `modules/ais.py` | `AISModule` | consume AIS-catcher JSON over UDP; passive marine vessel tracking (optional, VHF, default off) |
+| `modules/drone_rf.py` | `DroneRFModule` | pyrtlsdr; passive RF scan for drone signatures — **RETIRED** (default off, dropped from the SDR cycle; code kept for reversibility) |
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
 | `modules/mac_utils.py` | — | MAC randomization detection, type classification, device fingerprinting |
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
 | `modules/kml_writer.py` | `KMLWriter` | Pure Python XML; Google Earth KML with color-coded placemarks and track lines |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson + .kml |
 | `modules/sdr_manager.py` | `SDRManager` | RTL-SDR inventory detection via rtl_test, SDRMode enum resolution |
-| `modules/sdr_coordinator.py` | `SDRCoordinator` | asyncio time-share scheduler for single-dongle setups — slices readsb and DroneRF |
+| `modules/sdr_coordinator.py` | `SDRCoordinator` | asyncio N-band time-share scheduler for single-dongle setups — ordered cycle of band owners (ADS-B/AIS/ACARS/DroneRF) via `SDR_CYCLE_SLICES`; `request_band_window()` preemption; SHARED-only (DEDICATED bypasses it) |
 | `modules/remote_id.py` | `RemoteIDModule` | Kismet REST API; parses FAA Remote ID (ASTM F3411-22a) from 802.11 vendor IE (OUI FA:0B:BC) |
 | `modules/wigle.py` | `WiGLEUploader` | requests; upload Kismet CSV to WiGLE.net at session end |
 | `modules/scoring_engine.py` | `ScoringEngine` (ABC) | Strategy interface (`update`/`status`) selected at startup by `NODE_MODE` |
@@ -138,8 +139,20 @@ Re-run the monitor mode commands after any NM restart.
   - Header: `x-rapidapi-key: <ADSBXLOL_API_KEY>`
   - Returns: registration (`r`), type (`t`), operator (`ownOp`), `dbFlags` (bit 0 = military)
 
-## RTL-SDR / Drone RF
+## SDR decode cycle (AIS / ADS-B / ACARS) + RTL-SDR / Drone RF
 
+- **The SDR plan is an ordered time-share cycle, not just ADS-B↔DroneRF.** `SDRCoordinator`
+  runs a configurable N-band cycle (`SDR_CYCLE_SLICES`, e.g. `adsb:840,ais:60`) of band owners,
+  each an `acquire()/release()/is_available` unit: ADS-B (readsb service), AIS (`ais-catcher`
+  service, optional/VHF/default-off), ACARS (Phase 2, `request_band_window()` preemption on a
+  >30s-held contact), and legacy DroneRF. In DEDICATED mode (≥2 dongles) the coordinator is
+  bypassed and each band runs continuously on its own dongle. Decoder services are managed via
+  the sudoers-scoped `sudo systemctl start/stop <service>` (scope MUST list every service).
+- **AIS** (`modules/ais.py`): consumes AIS-catcher JSON over a localhost UDP socket; vessel
+  position comes from the AIS message itself. Built only with `INSTALL_AIS=true`; default off
+  (won't receive on a 1090 antenna). Drains `{mmsi,lat,lon,name,ship_type}` deduped per MMSI.
+- **DroneRF is RETIRED** — `DRONE_RF_ENABLED` defaults **false** and it's not in the default
+  cycle; the module/tests remain for reversibility (re-add via `SDR_CYCLE_SLICES=…,drone_rf:30`).
 - pyrtlsdr pinned to `0.2.93` — **do not upgrade** (librtlsdr 2.0.2 missing `rtlsdr_set_dithering`)
 - Known RTL-SDR USB vendor IDs: `0bda:2832`, `0bda:2838`, `0bda:2813`
 - Drone scan frequencies: 433 MHz, 868 MHz, 915 MHz, 2.4 GHz, 5.8 GHz

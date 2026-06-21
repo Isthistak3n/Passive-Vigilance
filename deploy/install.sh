@@ -55,6 +55,29 @@ if [ -f "$LIGHTTPD_OTHERPORT" ]; then
     echo "$LOG tar1090 configured on port 8080 (/data/aircraft.json)"
 fi
 
+# ── 2c. AIS-catcher (optional — marine AIS decoder, VHF ~162 MHz) ──────────
+# OFF by default: AIS is VHF and won't receive on a 1090 ADS-B antenna. Build it
+# only when adding VHF hardware. Gate: INSTALL_AIS=true ./install.sh. No Debian
+# Trixie/ARM package, so build from source (like readsb). The coordinator manages
+# the ais-catcher.service start/stop (see the sudoers rule below).
+if [ "${INSTALL_AIS:-false}" = "true" ]; then
+    echo "$LOG Installing AIS-catcher (marine AIS decoder) from source..."
+    DEBIAN_FRONTEND=noninteractive apt install -y \
+        git cmake build-essential pkg-config libusb-1.0-0-dev librtlsdr-dev zlib1g-dev
+    AISC_DIR=/opt/AIS-catcher
+    if [ ! -d "$AISC_DIR" ]; then
+        git clone --depth 1 https://github.com/jvde-github/AIS-catcher.git "$AISC_DIR"
+    fi
+    ( cd "$AISC_DIR" && mkdir -p build && cd build && cmake .. && make -j"$(nproc)" && make install )
+    install -m 0644 "$REPO_DIR/deploy/ais-catcher.service" /etc/systemd/system/ais-catcher.service
+    systemctl daemon-reload
+    # Disabled at boot — the SDR coordinator starts it on the AIS slice.
+    systemctl disable ais-catcher.service 2>/dev/null || true
+    echo "$LOG AIS-catcher installed; ais-catcher.service is coordinator-managed (disabled at boot)."
+else
+    echo "$LOG Skipping AIS-catcher (set INSTALL_AIS=true to build it for VHF/AIS)."
+fi
+
 # ── 3. Python dependencies ─────────────────────────────────────────────────
 # Install GDAL and GIS system dependencies first
 # (required for geopandas/fiona to install without building from source on ARM)
@@ -164,13 +187,15 @@ echo "$LOG Configuring user groups..."
 usermod -aG kismet "$PI_USER"
 usermod -aG dialout "$PI_USER"
 
-# Allow the PV service user to start/stop readsb without interactive auth.
-# The SDR coordinator time-shares the dongle between readsb and DroneRF;
-# it needs to start/stop readsb as a system service during each slice.
-echo "$LOG Writing sudoers rule for readsb management..."
+# Allow the PV service user to start/stop the SDR decoder services without
+# interactive auth. The SDR coordinator time-shares the single dongle across bands
+# (readsb for ADS-B, ais-catcher for AIS, acarsdec for ACARS); it starts/stops each
+# service on its slice. The scope MUST list every managed service or the handoff
+# fails silently. (acarsdec is Phase 2; listed now so the rule is forward-ready.)
+echo "$LOG Writing sudoers rule for SDR decoder service management..."
 cat > /etc/sudoers.d/passive-vigilance << EOF
-# Allow $PI_USER to start/stop readsb for SDR coordinator time-sharing
-$PI_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl start readsb.service, /usr/bin/systemctl stop readsb.service
+# Allow $PI_USER to start/stop SDR decoder services for the coordinator's time-share
+$PI_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl start readsb.service, /usr/bin/systemctl stop readsb.service, /usr/bin/systemctl start ais-catcher.service, /usr/bin/systemctl stop ais-catcher.service, /usr/bin/systemctl start acarsdec.service, /usr/bin/systemctl stop acarsdec.service
 EOF
 chmod 0440 /etc/sudoers.d/passive-vigilance
 

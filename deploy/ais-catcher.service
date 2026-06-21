@@ -1,0 +1,18 @@
+[Unit]
+Description=AIS-catcher — marine AIS decoder for Passive Vigilance
+Documentation=https://github.com/jvde-github/AIS-catcher
+After=network.target
+
+[Service]
+# Coordinator-managed: Passive Vigilance's SDR coordinator starts/stops this on the
+# AIS slice (single dongle) via sudo systemctl. NOT enabled at boot, and Restart=no,
+# so systemd never auto-restarts it mid-ADS-B-slice and grabs the shared dongle.
+Type=simple
+# Decode AIS and emit JSON over UDP to the AISModule's localhost listener.
+# -d 0 selects the first RTL-SDR; on a dedicated VHF dongle set its index/serial.
+ExecStart=/usr/local/bin/AIS-catcher -d 0 -u 127.0.0.1 10110 JSON on -q
+Restart=no
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

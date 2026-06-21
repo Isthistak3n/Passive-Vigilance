@@ -24,6 +24,7 @@ from modules.alerts import AlertFactory, RateLimiter
 from modules.dump1090 import ADSBModule
 from modules.ble_scanner import BLEScanner
 from modules.drone_rf import DroneRFModule
+from modules.ais import AISModule
 from modules.gps import GPSModule
 from modules.ignore_list import IgnoreList
 from modules.kismet import KismetModule
@@ -39,6 +40,10 @@ from modules.shapefile import ShapefileWriter
 from modules.wigle import WiGLEUploader
 
 _BLE_SCANNER_ENABLED = os.getenv("BLE_SCANNER_ENABLED", "false").lower() == "true"
+# AIS (marine VHF) capture — optional/best-effort, off by default (VHF won't
+# receive on a 1090 antenna). The AIS-catcher decoder runs as a systemd service.
+_AIS_ENABLED = os.getenv("AIS_ENABLED", "false").lower() == "true"
+_AIS_SERVICE = os.getenv("AIS_SERVICE", "ais-catcher")
 _GUI_ENABLED = os.getenv("GUI_ENABLED", "false").lower() == "true"
 _GUI_HOST    = os.getenv("GUI_HOST", "0.0.0.0")
 _GUI_PORT    = int(os.getenv("GUI_PORT", "8080"))
@@ -110,7 +115,7 @@ class PassiveVigilance:
         self._modules_active: dict[str, bool] = {
             "gps": False, "kismet": False, "adsb": False,
             "drone_rf": False, "sdr_coordinator": False, "remote_id": False,
-            "ble": False,
+            "ble": False, "ais": False,
         }
         self._session_dir: Path = Path(_SESSION_OUTPUT_DIR) / self.session_id
 
@@ -134,7 +139,14 @@ class PassiveVigilance:
         self.kismet = KismetModule(ignore_list=self.ignore_list)
         self.adsb = ADSBModule()
         self.drone_rf = DroneRFModule(gps_module=self.gps)
-        self.sdr_coordinator: SDRCoordinator = SDRCoordinator(self.drone_rf)
+        # AIS (marine VHF) — optional SDR band; None unless AIS_ENABLED. Consumes an
+        # AIS-catcher JSON feed. DroneRF is retired (default off); ADS-B + AIS are the
+        # active bands. The coordinator time-shares them on a single dongle (SHARED).
+        self.ais = AISModule() if _AIS_ENABLED else None
+        self.sdr_coordinator: SDRCoordinator = SDRCoordinator(
+            self.drone_rf, cycle_slices=self._derive_sdr_cycle())
+        if self.ais is not None:
+            self.sdr_coordinator.add_decoder_band("ais", _AIS_SERVICE, self.ais)
         # Scoring engine forked by mode: fixed = baseline-deviation (durable
         # SQLite), mobile = location-diversity (existing PersistenceEngine).
         # The orchestrator calls .update() on whichever is injected here.
@@ -168,7 +180,7 @@ class PassiveVigilance:
             persistence=self.persistence, probe_analyzer=self.probe_analyzer,
             entity_store=self.entity_store,
             gui_server=None, remote_id=self.remote_id,
-            ble_scanner=self.ble_scanner,
+            ble_scanner=self.ble_scanner, ais=self.ais,
             session_id=self.session_id, session_start=self.session_start,
             session_dir=self._session_dir, sdr_mode=self.sdr_mode,
             stop_event=self._stop,
@@ -229,12 +241,42 @@ class PassiveVigilance:
         self._modules_active["sdr_coordinator"] = v
 
     @property
+    def _ais_active(self) -> bool:
+        return self._modules_active["ais"]
+
+    @_ais_active.setter
+    def _ais_active(self, v: bool) -> None:
+        self._modules_active["ais"] = v
+
+    @property
     def _remote_id_active(self) -> bool:
         return self._modules_active["remote_id"]
 
     @_remote_id_active.setter
     def _remote_id_active(self, v: bool) -> None:
         self._modules_active["remote_id"] = v
+
+    def _derive_sdr_cycle(self):
+        """Build the single-dongle SDR time-share cycle from the enabled bands.
+
+        An explicit ``SDR_CYCLE_SLICES`` env wins (returns None so the coordinator
+        parses it). Otherwise: ADS-B-only when no other band is enabled (None →
+        coordinator default, and we won't even start the coordinator); else a
+        derived cycle — ADS-B for the bulk, then a short AIS slice (the 15-min
+        default is adsb:840 + ais:60), plus a DroneRF slice only if it's re-enabled.
+        """
+        if (os.getenv("SDR_CYCLE_SLICES") or "").strip():
+            return None
+        ais_on = self.ais is not None
+        drone_on = os.getenv("DRONE_RF_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
+        if not ais_on and not drone_on:
+            return None  # ADS-B-only — readsb keeps the dongle, no cycle needed
+        slices = [("adsb", int(os.getenv("ADSB_SLICE_SECONDS", "840")))]
+        if ais_on:
+            slices.append(("ais", int(os.getenv("AIS_SLICE_SECONDS", "60"))))
+        if drone_on:
+            slices.append(("drone_rf", int(os.getenv("DRONE_RF_SLICE_SECONDS", "30"))))
+        return slices
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
@@ -256,6 +298,7 @@ class PassiveVigilance:
             asyncio.create_task(so._poll_adsb_loop(), name="poll-adsb"),
             asyncio.create_task(so._poll_kismet_loop(), name="poll-kismet"),
             asyncio.create_task(so._poll_drone_rf_loop(), name="poll-dronrf"),
+            asyncio.create_task(so._poll_ais_loop(), name="poll-ais"),
             asyncio.create_task(so._poll_remote_id_loop(), name="poll-remoteid"),
             asyncio.create_task(so._health_banner_loop(), name="health-banner"),
             asyncio.create_task(so._watchdog_loop(), name="watchdog"),
@@ -267,7 +310,7 @@ class PassiveVigilance:
         # via ADAPTATION_POSTURE; off (the default) starts no task.
         if so._adaptation_sweep_enabled():
             tasks.append(asyncio.create_task(so._adaptation_sweep_loop(), name="adaptation-sweep"))
-        if self.sdr_mode == SDRMode.SHARED and self._drone_active:
+        if self._sdr_coordinator_active:
             tasks.append(asyncio.create_task(self.sdr_coordinator._coordinator_loop(), name="sdr-coordinator"))
         await self._stop.wait()
         for task in tasks:
@@ -353,53 +396,72 @@ class PassiveVigilance:
         self.sdr_mode = resolve_sdr_mode(sdr_env, sdr_count)
         self.sensor_orchestrator.sdr_mode = self.sdr_mode
 
-        drone_enabled = os.getenv("DRONE_RF_ENABLED", "true").strip().lower() in ("true", "1", "yes", "on")
+        drone_enabled = os.getenv("DRONE_RF_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
+        ais_enabled = self.ais is not None
 
-        if not drone_enabled:
-            # DroneRF disabled (DRONE_RF_ENABLED=false): no SDR time-share, no native
-            # RTL-SDR scan path. readsb keeps the dongle full-time for ADS-B. This is the
-            # stable fallback while the DroneRF/libusb SIGSEGV (issue #63) is unresolved.
-            logger.info("DroneRF disabled (DRONE_RF_ENABLED=false) — readsb-only, no SDR time-share")
+        # The AIS UDP listener binds independently of the dongle schedule — it just
+        # receives nothing while the AIS-catcher service is stopped (between slices).
+        if ais_enabled:
             try:
-                await self.adsb.connect()
-                self._adsb_active = True
+                await self.ais.connect()
+                self._ais_active = True
+                logger.info("AIS: listener active (best-effort — VHF; off by default)")
             except Exception as exc:
-                logger.warning("readsb: unavailable (%s) — ADS-B disabled", exc)
+                logger.warning("AIS: listener unavailable (%s) — AIS disabled", exc)
+                self._ais_active = False
+
+        # Bands beyond ADS-B that want the dongle. With none, readsb keeps it
+        # full-time (no time-share). With ≥1, the coordinator runs the cycle.
+        extra_bands = ais_enabled or drone_enabled
+
+        if sdr_count == 0:
+            logger.warning("SDR: no dongle detected — ADS-B/AIS/DroneRF disabled")
         elif self.sdr_mode == SDRMode.DEDICATED:
-            logger.info("SDR mode: DEDICATED (%d dongle(s) detected) — ADS-B and DroneRF run simultaneously", sdr_count)
+            logger.info("SDR mode: DEDICATED (%d dongles) — bands run simultaneously on their own dongles", sdr_count)
             try:
                 await self.adsb.connect()
                 self._adsb_active = True
             except Exception as exc:
                 logger.warning("readsb: unavailable (%s) — ADS-B tracking disabled", exc)
-            try:
-                await self.drone_rf.start_scan()
-                self._drone_active = bool(self.drone_rf._scan_task and not self.drone_rf._scan_task.done())
-            except Exception as exc:
-                logger.warning("DroneRF: scan not started (%s)", exc)
-        else:
-            if sdr_count == 0:
-                logger.warning("SDR mode: SHARED — no dongle detected — ADS-B and DroneRF both disabled")
-            else:
-                adsb_secs = int(os.getenv("ADSB_SLICE_SECONDS", "30"))
-                drone_secs = int(os.getenv("DRONE_RF_SLICE_SECONDS", "30"))
-                logger.info("SDR mode: SHARED (1 dongle detected) — time-sharing ADS-B (%ds) / DroneRF (%ds)", adsb_secs, drone_secs)
-                # ADS-B is an ENABLED sensor in SHARED mode — the coordinator brings
-                # readsb up during its slices. The startup connect() races that (readsb
-                # may be stopped this instant), so a failure here must NOT grey the
-                # chiclet permanently; keep adsb active and let sensor_health track
-                # live readsb liveness (red if it actually stays down).
-                self._adsb_active = True
+            if ais_enabled:
                 try:
-                    await self.adsb.connect()
+                    await self.sdr_coordinator.start_decoder_service(_AIS_SERVICE)
+                    logger.info("AIS-catcher service started (dedicated dongle)")
                 except Exception as exc:
-                    logger.warning("readsb: not reachable at startup (%s) — ADS-B will "
-                                   "come up via the SDR coordinator", exc)
+                    logger.warning("AIS-catcher: not started (%s)", exc)
+            if drone_enabled:
+                try:
+                    await self.drone_rf.start_scan()
+                    self._drone_active = bool(self.drone_rf._scan_task and not self.drone_rf._scan_task.done())
+                except Exception as exc:
+                    logger.warning("DroneRF: scan not started (%s)", exc)
+        elif not extra_bands:
+            # SHARED, ADS-B only — readsb keeps the dongle full-time, no time-share.
+            logger.info("SDR mode: SHARED (1 dongle) — ADS-B only, no time-share")
+            try:
+                await self.adsb.connect()
+                self._adsb_active = True
+            except Exception as exc:
+                logger.warning("readsb: unavailable (%s) — ADS-B disabled", exc)
+        else:
+            # SHARED, ≥2 bands — the coordinator time-shares the dongle on the cycle.
+            logger.info("SDR mode: SHARED (1 dongle) — time-share cycle: %s",
+                        ", ".join(f"{b}:{s}s" for b, s in self.sdr_coordinator.slices))
+            # ADS-B is enabled; the coordinator brings readsb up during its slices.
+            # The startup connect() races that, so a failure must NOT grey the chiclet
+            # permanently — keep adsb active and let sensor_health track liveness.
+            self._adsb_active = True
+            try:
+                await self.adsb.connect()
+            except Exception as exc:
+                logger.warning("readsb: not reachable at startup (%s) — ADS-B will "
+                               "come up via the SDR coordinator", exc)
+            if drone_enabled:
                 self.drone_rf.can_scan = False
                 self._drone_active = True
-                await self.sdr_coordinator.start()
-                self._sdr_coordinator_active = True
-                logger.info("SDR coordinator started — time-sharing active (P1 hardened)")
+            await self.sdr_coordinator.start()
+            self._sdr_coordinator_active = True
+            logger.info("SDR coordinator started — time-sharing active (P1 hardened)")
 
         if self.gui_server is not None:
             self.gui_server.start()
@@ -445,6 +507,18 @@ class PassiveVigilance:
                 await self.drone_rf.stop_scan()
             except Exception as exc:
                 logger.debug("DroneRF stop error: %s", exc)
+        if self.ais is not None:
+            # In DEDICATED the AIS service runs continuously (no coordinator to stop
+            # it); in SHARED the coordinator.stop() above already released the band.
+            if self.sdr_mode == SDRMode.DEDICATED and self._ais_active:
+                try:
+                    await self.sdr_coordinator.stop_decoder_service(_AIS_SERVICE)
+                except Exception as exc:
+                    logger.debug("AIS-catcher stop error: %s", exc)
+            try:
+                await self.ais.close()
+            except Exception as exc:
+                logger.debug("AIS close error: %s", exc)
         if self.ble_scanner is not None:
             try:
                 await self.ble_scanner.close()

@@ -487,6 +487,42 @@ async def test_basemap_provision_optin_fetches(orch, tmp_path, monkeypatch):
     fake_build.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_poll_ais_dedups_vessel_by_mmsi(orch, tmp_path):
+    """Two reports for one MMSI collapse to a single event (position merged)."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so.ais = MagicMock()
+    so._modules_active["ais"] = True
+    so.ais.drain_detections = MagicMock(return_value=[
+        {"mmsi": 366000123, "lat": None, "lon": None, "name": "TUG", "ship_type": 52,
+         "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_ais()
+    so.ais.drain_detections = MagicMock(return_value=[
+        {"mmsi": 366000123, "lat": 21.3, "lon": -157.8, "name": None, "ship_type": None,
+         "timestamp": "2026-01-01T12:00:05+00:00"},
+    ])
+    await so._poll_ais()
+    assert len(so.ais_detections) == 1                     # one row per MMSI
+    ev = so.ais_detections[0]
+    assert ev["lat"] == 21.3 and ev["name"] == "TUG"       # position + static merged
+    assert ev["observation_count"] == 2
+    assert so._stats["ais_vessels_seen"] == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_ais_auto_disable_marks_inactive(orch):
+    """An auto-disabled AIS module greys the sensor like DroneRF does."""
+    so = orch.sensor_orchestrator
+    so.ais = MagicMock(auto_disabled=True)
+    so.ais.drain_detections = MagicMock(return_value=[])
+    so._modules_active["ais"] = True
+    await so._poll_ais()
+    assert so._modules_active["ais"] is False
+
+
 def test_record_alert_persists_and_pushes(orch, tmp_path):
     """_record_alert writes one line to alerts.jsonl AND pushes to the GUI feed,
     so alerts are durable (P5) and the Alerts tab is fed for the first time."""
