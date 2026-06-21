@@ -43,6 +43,10 @@ class CollectedEvents:
 
 logger = logging.getLogger(__name__)
 
+# Cap on the in-memory raw ACARS feed (the durable record is acars.jsonl; the GUI
+# cache is bounded separately). Keeps a busy datalink environment from growing it.
+_ACARS_FEED_MAX = 500
+
 
 class SensorOrchestrator:
     '''Owns all sensor polling loops, health tracking, and session event accumulation.
@@ -1358,8 +1362,12 @@ class SensorOrchestrator:
                     del acars_list[:-20]
                 if self.gui_server is not None:
                     self.gui_server.push_event("aircraft", matched)
-            # Always surface the raw decoded message on the ACARS feed.
+            # Always surface the raw decoded message on the ACARS feed. Bounded so a
+            # chatty datalink environment can't grow this list without limit (the GUI
+            # cache is separately capped); newest-kept.
             self.acars_detections.append(record)
+            if len(self.acars_detections) > _ACARS_FEED_MAX:
+                del self.acars_detections[:-_ACARS_FEED_MAX]
             if self.gui_server is not None:
                 self.gui_server.push_event("acars", record)
 
