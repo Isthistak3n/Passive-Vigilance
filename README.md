@@ -401,6 +401,8 @@ Key variables:
 | `EGREGIOUS_BLE_SIGNAL_DBM` | Fixed mode: BLE egregious threshold (modality-specific, not density-keyed) | `-50` |
 | `ADAPTATION_POSTURE` | Fixed mode: rolling baseline — `off`, `conservative`, `permissive` | `off` |
 | `OFFLINE_TILES_MBTILES` | Path to the offline basemap MBTiles pack | `data/tiles/basemap.mbtiles` |
+| `AUTO_BASEMAP_ON_BOOT` | Let the node fetch its own basemap on boot (**reveals location** — see step 3) | `false` |
+| `AUTO_BASEMAP_RADIUS_KM` / `_MIN_ZOOM` / `_MAX_ZOOM` | Opt-in fetch area/zoom | `3` / `11` / `17` |
 
 ---
 
@@ -449,19 +451,38 @@ rtl_test -t 2>&1 | head
 ### 3. Build an offline basemap (do this once, while online)
 
 Field nodes have no internet, so bundle the operating area's map tiles into a single
-`.mbtiles` pack. The GUI serves it directly; tar1090 reads an exported copy. Pick your
-center (lat,lon) and a zoom range — higher max zoom = more street/building detail and
-many more tiles:
+`.mbtiles` pack. The GUI serves it directly; tar1090 reads an exported copy.
+
+> **⚠️ OPSEC — build the pack OFF-NODE.** Fetching tiles for a tight area around the
+> node's position **reveals that position**: the tile provider sees the exact tile
+> coordinates server-side, and a passive network observer sees the request burst, the
+> TLS SNI, and the timing (a sensor mapping its own neighbourhood at boot is itself a
+> tell). The safe path — and the default — is to build the pack on a **different
+> machine/network** and copy it onto the node, so the node never contacts a tile server.
+> The node will **not** fetch on its own unless you explicitly opt in (below).
+
+**Recommended — build off-node, copy on.** On a laptop (any network), pick the node's
+center (lat,lon) and zoom range (higher max zoom = more street detail and many more
+tiles), then move the file to the node at `data/tiles/basemap.mbtiles`:
 
 ```bash
-# ~5 km around a point, street-level detail (zoom 11–17)
-python3 scripts/fetch_basemap.py --center 21.31,-157.86 --radius-km 5 \
-    --min-zoom 11 --max-zoom 17 --out data/tiles/basemap.mbtiles
+# ~3 km around a point, street-level detail (zoom 11–17)
+python3 scripts/fetch_basemap.py --center 21.41,-157.76 --radius-km 3 \
+    --min-zoom 11 --max-zoom 17 --out basemap.mbtiles
+scp basemap.mbtiles pi@<node>:~/Passive-Vigilance/data/tiles/basemap.mbtiles
 ```
 
-That is all the **GUI** needs — on next start it serves `/tiles/{z}/{x}/{y}.png` from the
-pack and the dashboard map works offline, centered on the area (no pack → it falls back
-to online OSM). Override the path with `OFFLINE_TILES_MBTILES`.
+The GUI serves `/tiles/{z}/{x}/{y}.png` from the pack on next start (no pack → it falls
+back to online OSM). Override the path with `OFFLINE_TILES_MBTILES`. **The node helps you
+here:** when it boots with no pack and a GPS fix, it logs the exact ready-to-run
+`fetch_basemap.py` command for its own location — copy that command to your laptop, run
+it, and copy the result back. No node-side network traffic.
+
+**Opt-in — let the node fetch itself** (convenience, accepts the location leak above):
+set `AUTO_BASEMAP_ON_BOOT=true`. On boot, with no pack + a GPS fix + reachable internet,
+the node builds the pack centered on its position (tunable via `AUTO_BASEMAP_RADIUS_KM`,
+`AUTO_BASEMAP_MIN_ZOOM`, `AUTO_BASEMAP_MAX_ZOOM`). Use only where revealing the node's
+location to the tile provider / network is acceptable.
 
 For **tar1090**, export the same pack to its offline tile tree and enable it:
 

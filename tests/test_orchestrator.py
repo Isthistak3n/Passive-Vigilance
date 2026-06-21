@@ -436,6 +436,57 @@ async def test_poll_kismet_persists_on_alert_level_change(orch, tmp_path):
     assert json.loads(lines[-1])["alert_level"] == "likely"
 
 
+@pytest.mark.asyncio
+async def test_basemap_provision_default_is_offnode_no_fetch(orch, tmp_path, monkeypatch):
+    """Default (AUTO_BASEMAP_ON_BOOT unset): with no pack and a GPS fix, the node
+    must NOT fetch (opsec) — it only logs the off-node build command."""
+    so = orch.sensor_orchestrator
+    missing = str(tmp_path / "no_such.mbtiles")
+    monkeypatch.setenv("OFFLINE_TILES_MBTILES", missing)
+    monkeypatch.setenv("AUTO_BASEMAP_GPS_WAIT_S", "0")
+    monkeypatch.delenv("AUTO_BASEMAP_ON_BOOT", raising=False)
+    so._current_fix = {"lat": 21.415, "lon": -157.765}
+    import modules.basemap_builder as bb
+    monkeypatch.setattr(bb, "build_pack", MagicMock(side_effect=AssertionError("must not fetch")))
+    monkeypatch.setattr(bb, "internet_reachable", MagicMock(return_value=True))
+
+    await so._basemap_provision_once()   # raises if build_pack is called
+    bb.build_pack.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_basemap_provision_existing_pack_is_noop(orch, tmp_path, monkeypatch):
+    """A pack already present → no fetch and no GPS wait, even when opt-in is on."""
+    pack = tmp_path / "basemap.mbtiles"
+    pack.write_bytes(b"SQLite format 3\x00")
+    monkeypatch.setenv("OFFLINE_TILES_MBTILES", str(pack))
+    monkeypatch.setenv("AUTO_BASEMAP_ON_BOOT", "true")
+    so = orch.sensor_orchestrator
+    import modules.basemap_builder as bb
+    monkeypatch.setattr(bb, "build_pack", MagicMock(side_effect=AssertionError("must not fetch")))
+    await so._basemap_provision_once()
+    bb.build_pack.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_basemap_provision_optin_fetches(orch, tmp_path, monkeypatch):
+    """Opt-in (AUTO_BASEMAP_ON_BOOT=true) + a fix + reachable → the node fetches."""
+    so = orch.sensor_orchestrator
+    missing = str(tmp_path / "no_such.mbtiles")
+    monkeypatch.setenv("OFFLINE_TILES_MBTILES", missing)
+    monkeypatch.setenv("AUTO_BASEMAP_GPS_WAIT_S", "0")
+    monkeypatch.setenv("AUTO_BASEMAP_ON_BOOT", "true")
+    so._current_fix = {"lat": 21.415, "lon": -157.765}
+    import modules.basemap_builder as bb
+    fake_build = MagicMock(return_value={"fetched": 5, "skipped": 0, "failed": 0,
+                                         "total": 5, "path": missing})
+    monkeypatch.setattr(bb, "build_pack", fake_build)
+    monkeypatch.setattr(bb, "internet_reachable", MagicMock(return_value=True))
+
+    await so._basemap_provision_once()
+    fake_build.assert_called_once()
+
+
 def test_record_alert_persists_and_pushes(orch, tmp_path):
     """_record_alert writes one line to alerts.jsonl AND pushes to the GUI feed,
     so alerts are durable (P5) and the Alerts tab is fed for the first time."""
