@@ -99,6 +99,18 @@ EGREGIOUS_SIGNAL_DBM = -45.0
 # the default; an explicit EGREGIOUS_SIGNAL_DBM overrides it.
 _EGREGIOUS_DENSITY_PRESETS = {"dense": -30.0, "suburban": -40.0, "rural": -50.0}
 
+# Egregious threshold for BLE is a SEPARATE, modality-specific knob — the density
+# presets above are Wi-Fi-calibrated and far too strict for Bluetooth. A BLE radio
+# reports much lower RSSI than Wi-Fi for the same distance, and BLE is inherently a
+# short-range (~10 m) proximity signal, so any reasonably strong advert is already
+# "in the operator's space". On chase the ambient BLE floor clusters around -55 dBm
+# (the persistent neighbour-beacon mass), while genuinely-close adverts reach
+# -32..-45; -50 separates the two. Not density-keyed (BLE's short range makes the
+# ambient floor roughly density-independent). Override with EGREGIOUS_BLE_SIGNAL_DBM;
+# on a node where the operator's own device advertises at low TX power this may need
+# calibration against that device's measured close-range RSSI.
+EGREGIOUS_BLE_SIGNAL_DBM = -50.0
+
 
 def _coerce_signal(value) -> Optional[float]:
     """Return *value* as float, or None if it should be skipped.
@@ -133,6 +145,16 @@ def _is_access_point(device_type) -> bool:
     signal (an AP does not move, so its signal variation is environmental).
     """
     return "ap" in (device_type or "").lower().split()
+
+
+def _is_bluetooth(device_type) -> bool:
+    """True if Kismet classifies the device as Bluetooth/BLE.
+
+    Used to select the modality-specific egregious threshold: BLE RSSI runs much
+    lower than Wi-Fi, so the Wi-Fi-calibrated density presets would silence it.
+    """
+    dt = (device_type or "").lower()
+    return "btle" in dt or "bluetooth" in dt
 
 
 class FixedScoring(ScoringEngine):
@@ -194,6 +216,13 @@ class FixedScoring(ScoringEngine):
             self._egregious_signal_dbm = _EGREGIOUS_DENSITY_PRESETS.get(
                 _density, EGREGIOUS_SIGNAL_DBM
             )
+        # BLE uses a separate, modality-specific threshold (not density-keyed) — the
+        # Wi-Fi presets are far too strict for Bluetooth's lower RSSI / short range.
+        _egr_ble = os.getenv("EGREGIOUS_BLE_SIGNAL_DBM")
+        self._egregious_ble_signal_dbm = (
+            float(_egr_ble) if _egr_ble is not None and _egr_ble.strip()
+            else EGREGIOUS_BLE_SIGNAL_DBM
+        )
         # Distinct Wi-Fi APs suppressed from approaching that would otherwise have
         # qualified — observable so a soak can show exactly what the filter caught.
         self._approaching_excluded_aps: set = set()
@@ -293,7 +322,13 @@ class FixedScoring(ScoringEngine):
                 egregious = self._egregious_signals(profile, signal)
                 if _any_active(egregious):
                     score, level = self._combine(egregious)
-                    events.append(self._make_event(device, profile, now, egregious, score, level))
+                    # A single egregious signal scores 0.5 ("suspicious"), below the
+                    # WiFi paging bar — but this IS the during-learning safety net
+                    # (design 5.2), so it must page anyway. force_page lets the
+                    # orchestrator bypass the suspicious-display gate; the per-entity
+                    # rate limiter still bounds it.
+                    events.append(self._make_event(
+                        device, profile, now, egregious, score, level, force_page=True))
                 continue
 
             signals = self._signals(profile, now, freeze_time)
@@ -317,11 +352,16 @@ class FixedScoring(ScoringEngine):
         ``signal`` is the live (coerced) reading this poll; RSSI is negative dBm,
         so "very strong / very close" means at or ABOVE the threshold (a less
         negative value). Wi-Fi APs are excluded — a nearby router is fixed
-        infrastructure, not a device moving through the operator's space.
+        infrastructure, not a device moving through the operator's space. BLE uses
+        its own (looser) threshold because its RSSI runs much lower than Wi-Fi.
         """
+        is_ble = _is_bluetooth(profile.device_type)
+        threshold = (
+            self._egregious_ble_signal_dbm if is_ble else self._egregious_signal_dbm
+        )
         egregious_close = 0.0
         if (signal is not None
-                and signal >= self._egregious_signal_dbm
+                and signal >= threshold
                 and not _is_access_point(profile.device_type)):
             egregious_close = 1.0
         return {
@@ -543,6 +583,7 @@ class FixedScoring(ScoringEngine):
         score_breakdown: dict,
         score: float,
         alert_level: str,
+        force_page: bool = False,
     ) -> DetectionEvent:
         mac = normalize_mac(device.get("macaddr", ""))
         return DetectionEvent(
@@ -560,6 +601,7 @@ class FixedScoring(ScoringEngine):
             ssid=device.get("name", ""),
             fingerprint=str(profile.key),
             fingerprint_label=device_identity.fingerprint_label(device),
+            force_page=force_page,
         )
 
     def close(self) -> None:
