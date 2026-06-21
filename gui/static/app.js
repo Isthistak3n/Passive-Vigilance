@@ -11,10 +11,27 @@ const state = {
 
 // ── Leaflet map ──────────────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([51.5, -0.1], 10);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  attribution: '© OpenStreetMap contributors',
-  maxZoom: 19,
-}).addTo(map);
+
+// Offline-first basemap: when the server has a local MBTiles pack
+// (window.PV_OFFLINE_BASEMAP.available), draw from /tiles/... so the map works with
+// no internet; otherwise use online OSM. The pack's own zoom range and center are
+// honored so the operator lands on the surveyed area, not the default view.
+const _basemap = window.PV_OFFLINE_BASEMAP || { available: false };
+if (_basemap.available) {
+  L.tileLayer('/tiles/{z}/{x}/{y}.png', {
+    attribution: _basemap.attribution || '© OpenStreetMap contributors',
+    minZoom: _basemap.minzoom || 0,
+    maxZoom: _basemap.maxzoom || 19,
+  }).addTo(map);
+  if (Array.isArray(_basemap.center) && _basemap.center.length === 2) {
+    map.setView(_basemap.center, _basemap.maxzoom ? Math.max(_basemap.minzoom || 0, _basemap.maxzoom - 3) : 14);
+  }
+} else {
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+  }).addTo(map);
+}
 
 const layers = {
   wifi:     L.layerGroup().addTo(map),

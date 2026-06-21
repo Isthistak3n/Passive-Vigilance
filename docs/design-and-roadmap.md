@@ -425,10 +425,11 @@ deployability and set the lead priority (**detection-quality completion**):
    "normal." The egregious-during-baseline net (§5.2) is now implemented *and paging*; what
    remains is the on-chase walk-test to calibrate the thresholds (Wi-Fi + BLE) so it pages a
    genuinely-close device without flooding.
-2. **It fatigues over days (P3).** Post-freeze, every benign newcomer reads novel forever.
-   Soak #1's novelty flood and soak #2's off-schedule flood are fixed, but the *durable* answer
-   to slow novelty accrual is a rolling baseline that promotes consistently-present devices
-   without absorbing an intermittent/patient adversary.
+2. **Fatigues over days (P3) — implemented, owes the multi-day read.** Post-freeze, every benign
+   newcomer would otherwise read novel forever. Soak #1's novelty flood and soak #2's off-schedule
+   flood are fixed, and the *durable* answer — a rolling baseline that promotes consistently-present
+   devices without absorbing an intermittent/patient adversary — is now built and activated on
+   chase (`conservative`). What remains is watching it across a multi-day post-freeze run.
 
 Identity and air-picture depth follow detection-quality — they make alerts *mean more*, but a
 detector you can't trust during learning isn't deployable regardless.
@@ -436,9 +437,9 @@ detector you can't trust during learning isn't deployable regardless.
 ## Forward roadmap (priority order)
 
 1. **Detection-quality completion (lead).** P2 egregious-during-baseline (implemented; owes the
-   calibration walk-test) + P3 rolling adaptation + the owed P1 approaching walk-test. Closes
-   "blind while learning" and "fatigues over days" → run a **short confirmation soak** read for
-   during-learning and multi-day FP
+   calibration walk-test) + P3 rolling adaptation (implemented & activated; owes the multi-day
+   read) + the owed P1 approaching walk-test. Closes "blind while learning" and "fatigues over
+   days" → run a **short confirmation soak** read for during-learning and multi-day FP
    behaviour.
 2. **Fingerprinting program (round 2+).** Validate the shipped PNL/reconnect enrichment on real
    captures, then wire it into scoring; then cross-PHY WiFi↔BT linking (one device → one
@@ -463,7 +464,7 @@ the detector.
 | **P0** | Endurance hardening (post-freeze memory + disk) | ✅ Merged #74; forced-freeze + soak #3 (~42 h) validated bounded memory | ✅ shipped |
 | **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Merged & green; owes the positive walk-test | **① (owes walk-test)** |
 | **P2** | Egregious-during-baseline safety net (§5.2) | ◑ Implemented (Phase 2.6) — density-tuned Wi-Fi + modality-specific BLE threshold, now paging via `force_page` (the 0.5-score events were display-only before the fix). *Owes:* the on-chase calibration walk-test (does a deliberately-close device page without flooding) | **① lead (owes walk-test)** |
-| **P3** | Adaptation — rolling baseline (§5.4) | ☐ Not started (design drafted) | **① lead** |
+| **P3** | Adaptation — rolling baseline (§5.4) | ◑ Implemented & wired — `promotion_policy.py` (swappable criterion, slow-in/fast-out invariant), `BaselineStore` promote/demote + post-freeze accumulator, `FixedScoring.run_adaptation_sweep`, the guarded `_adaptation_sweep_loop` task, 30 passing tests. Defaults `off`; **activated on chase** (`ADAPTATION_POSTURE=conservative`). *Owes:* multi-day post-freeze validation that FP decays without absorbing an intermittent returner | **① lead (owes validation)** |
 | **P4** | Cross-session entity resolution | ◑ Within-session fingerprint capture+keying merged & live (flood ~36→3–5/cycle); round-1 PNL/reconnect enrichment merged (capture+GUI only). Cross-session *returning-entity* linkage + scoring integration remain | ②/③ |
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, bounded tracks, ID-less split, Remote ID pruning + surface; 24 h retention; returning-ICAO as same identity | ✅ shipped |
@@ -486,10 +487,22 @@ a deliberately-close phone (Wi-Fi *and* BLE) pages without flooding on ordinary 
 tune `EGREGIOUS_BLE_SIGNAL_DBM` to the device if its BLE TX power is low. *Exit:* egregious
 flags fire (and page) during learning, sparingly.
 
-**P3 — Adaptation: rolling baseline (§5.4).** Operator-selectable posture + a consistency
-window that promotes a device only after sustained presence. *Tests:* a consistently-present
-device stops flagging while an intermittent returner is not absorbed; on chase the post-freeze
-novelty FP decays over days. *Exit:* FP decays without swallowing intermittent returners.
+**P3 — Adaptation: rolling baseline (§5.4).** *Implemented & wired.* `promotion_policy.py` is a
+swappable promotion criterion (`SustainedPresencePolicy` ships; `ConsistencyPatternPolicy` is
+the designed-for stronger one behind the same seam) selecting **parameters** by posture
+(`conservative` / `permissive`, default `off`), never mechanism. Demotion is a fixed mechanism,
+not a policy — the **slow-in / fast-out** asymmetry (demote faster than you can promote) is a
+design invariant, validated at construction so a misconfigured posture fails loud. The
+post-freeze presence accumulator (distinct days + first→last span + distinct hours, kept
+separate from the frozen baseline stats) feeds `FixedScoring.run_adaptation_sweep`, called
+hourly by the guarded `_adaptation_sweep_loop`; demotions emit a `baseline_demotion` event to
+`events.jsonl`. A promoted device is no longer novelty-eligible (§5.3) until demoted. Unit tests
+cover promotion, the intermittent-returner-not-absorbed case, demotion, off-posture, the policy
+seam, and the migration (30 passing). **Activated on chase** (`ADAPTATION_POSTURE=conservative`),
+inert until the baseline freezes. *Owes:* the multi-day post-freeze read that novelty FP decays
+without swallowing an intermittent returner. *Exit:* FP decays without absorbing intermittent
+returners. *Deferred:* swapping in `ConsistencyPatternPolicy`; a "graveyard" GUI panel for
+demotions (the producer ships; the consumer is later).
 
 **P4 — Cross-session entity resolution.** Within-session identity is live (§6). Remaining: a
 resolution pass over the entity store merging fingerprints/probe evidence into stable entities
