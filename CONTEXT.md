@@ -15,7 +15,7 @@
 
 **Active goal:** Validate the fixed-node prototype end to end. `chase` is up and
 running fixed-mode scoring; the gate is a multi-day soak that crosses the baseline
-freeze. See `docs/roadmap-fixed-node-prototype.md` and `docs/soak-plan-2026-06.md`.
+freeze. See `docs/design-and-roadmap.md` (design plan + roadmap + soak validation).
 
 **In flight:**
 - **Multi-day soak on `chase`** — 48h learning window (freezes ~2026-06-09 22:55
@@ -195,7 +195,7 @@ scan). Commit signing is not yet configured on the Pis — see Known Issues.
 > Status (2026-06): Steps 1–3 are done. Step 4 (`ModuleHealth`) is still unbuilt,
 > though the sensor **stall watchdog** (#79) now covers part of the same need
 > (flagging a silently-stalled sensor). The active product roadmap is
-> `docs/roadmap-fixed-node-prototype.md` (P0–P5); this error-handling track is a
+> `docs/design-and-roadmap.md` (P0–P7); this error-handling track is a
 > background cleanup, not the current sprint.
 
 **Steps:**

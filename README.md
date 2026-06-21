@@ -179,7 +179,7 @@ it is restarted.
 > Roadmap: still ahead are the approaching-signal (rising-RSSI) trigger,
 > abnormal-dwell detection, egregious-during-baseline alerting, slow baseline
 > adaptation, and WiGLE resident-vs-visitor enrichment. See
-> [docs/design-detection-modes.md](docs/design-detection-modes.md) for the full
+> [docs/design-and-roadmap.md](docs/design-and-roadmap.md) for the full
 > phased plan and what has shipped so far.
 
 ---
@@ -354,8 +354,8 @@ Passive-Vigilance/
 │   └── 99-unmanaged-wlan1.conf       # NetworkManager: mark wlan1 as unmanaged
 ├── docs/
 │   ├── setup.md                      # Full installation, configuration, and troubleshooting guide
-│   ├── roadmap-fixed-node-prototype.md  # Phased plan + live status (P0–P7)
-│   └── design-*.md                   # Design notes: detection modes, fingerprinting, BLE capture, contact designators, aircraft-of-interest
+│   ├── design-and-roadmap.md         # Consolidated design plan + phased roadmap + soak validation (P0–P7)
+│   └── field-*.md                    # Field-test evidence behind the roadmap decisions
 └── data/
     └── ignore_lists/                 # MAC/OUI/SSID ignore list JSON files (git-ignored)
 ```

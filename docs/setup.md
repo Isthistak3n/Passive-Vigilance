@@ -345,7 +345,7 @@ SCAN_REQ). This recovers the advertisement payload — manufacturer/company id,
 service UUIDs, advertised name — and a **real per-advert RSSI** that the older
 Kismet BT feed reported as a flat `0`. That payload is what fingerprints a
 randomized-MAC device across address rotation (see
-[design-ble-advertisement-capture.md](design-ble-advertisement-capture.md)).
+[design-and-roadmap.md](design-and-roadmap.md) §7, BLE advertisement capture).
 
 On a node with a GPS HAT, prefer a USB dongle over the onboard Bluetooth — the
 onboard radio shares the GPS-HAT UART and can't be used for both (issue #48).
