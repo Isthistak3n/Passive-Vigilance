@@ -51,6 +51,9 @@ class DetectionEvent:
     ssid: str = ""              # AP broadcast SSID / BT device name; "" for probing clients
     fingerprint: str = ""       # rotation-stable identity key (wifi-fp:/ble-fp:/mac:)
     fingerprint_label: str = ""  # human-readable identity for the GUI (e.g. "Apple")
+    force_page: bool = False    # deliberate safety-net alert (egregious-during-baseline):
+    #                            page even when the score is below WIFI_ALERT_MIN_SCORE,
+    #                            which a single egregious signal (0.5) otherwise never clears.
 
 
 class PersistenceEngine(ScoringEngine):

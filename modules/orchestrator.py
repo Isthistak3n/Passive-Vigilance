@@ -923,10 +923,13 @@ class SensorOrchestrator:
                 self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
                 if self.gui_server is not None:
                     self.gui_server.push_event("wifi", event_dict)
-            if event.score < self._wifi_page_min_score:
+            if event.score < self._wifi_page_min_score and not event.force_page:
                 # Below the paging bar — shown in the WiFi panel above, but not paged
                 # (no backend send, no Alerts-feed entry). Keeps low-confidence
                 # suspicious flags visible without drowning the operator.
+                # force_page events (egregious-during-baseline, design 5.2) are the
+                # deliberate exception: a single egregious signal scores 0.5, which
+                # never clears the bar, but it is a safety-net alert that must page.
                 self._stats["alerts_below_threshold"] = self._stats.get("alerts_below_threshold", 0) + 1
             elif await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self._dispatch_alert(self.alert_backend.send_persistence_alert, event)

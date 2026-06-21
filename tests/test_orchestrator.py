@@ -356,6 +356,24 @@ async def test_poll_kismet_suspicious_is_display_only(orch):
 
 
 @pytest.mark.asyncio
+async def test_poll_kismet_force_page_pages_below_threshold(orch):
+    """An egregious-during-baseline event scores 0.5 (suspicious) but carries
+    force_page, so it pages anyway — the design-5.2 safety net, which the
+    suspicious-display-only cut would otherwise silence."""
+    so = orch.sensor_orchestrator
+    event = _make_detection_event(alert_level="suspicious", score=0.5, force_page=True)
+    orch.persistence.update.return_value = [event]
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": "aa:bb:cc:dd:ee:ff"}])
+    orch._kismet_active = True
+
+    await so._poll_kismet()
+    await _drain_alerts(orch)
+
+    orch._mock_backend.send_persistence_alert.assert_called_once_with(event)   # paged
+    assert so._stats.get("alerts_below_threshold", 0) == 0
+
+
+@pytest.mark.asyncio
 async def test_poll_kismet_dedups_repeated_device_into_one_event(orch):
     """A device that re-flags every poll updates ONE ongoing detection in place,
     not a new row each poll — the post-freeze memory-bound fix."""

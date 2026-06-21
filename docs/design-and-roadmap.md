@@ -123,17 +123,31 @@ service auto-restarted ~60× in 70 min; an in-memory baseline would have re-lear
 restart and never alerted. `BaselineStore` uses `check_same_thread=False` + an `RLock` so the
 Flask GUI thread can read it (otherwise the scoring panel reported "scoring not active").
 
-### 5.2 Egregious-during-baseline (the safety net — P2, not yet built)
+### 5.2 Egregious-during-baseline (the safety net — implemented, Phase 2.6)
 
 Baseline learning does **not** fully suppress alerting. A sensor deployed into an
 already-compromised environment must not bake an existing surveillance device into "normal."
 Even during learning, the node still flags **egregious** conditions: a device very close /
 very strong on first contact (in the operator's space, not street traffic), or one trending
-stronger. Reuses the RSSI stats and approaching machinery (P1). Soak #1 showed a naive
-`-45 dBm` floor floods a dense environment (~22/poll), so the threshold is
-**environment-density-tuned**: `NODE_DENSITY` → dense `-30` / suburban `-40` / rural `-50`,
-override `EGREGIOUS_SIGNAL_DBM`. chase runs `dense`. The operator may also run a deliberate
-clean-environment baseline, but the system must not *depend* on it.
+stronger (reuses the approaching machinery, P1). Soak #1 showed a naive `-45 dBm` floor
+floods a dense environment (~22/poll), so the Wi-Fi threshold is **environment-density-tuned**:
+`NODE_DENSITY` → dense `-30` / suburban `-40` / rural `-50`, override `EGREGIOUS_SIGNAL_DBM`.
+chase runs `dense`. The operator may also run a deliberate clean-environment baseline, but
+the system must not *depend* on it.
+
+**BLE has its own threshold** (`EGREGIOUS_BLE_SIGNAL_DBM`, default `-50`, *not* density-keyed):
+BLE RSSI runs much lower than Wi-Fi for the same distance and is inherently a ~10 m proximity
+signal, so the Wi-Fi presets silence it entirely. On chase the ambient BLE floor clusters
+around `-55` while genuinely-close adverts reach `-32..-45`; `-50` separates them. A node whose
+operator device advertises at low TX power (iPhones) may need this calibrated against that
+device's measured close-range RSSI.
+
+**Paging (the gap that was closed):** a single egregious signal scores `0.5` ("suspicious"),
+which is **below** the `WIFI_ALERT_MIN_SCORE` (0.7) display-only bar — so for a window these
+events showed in the GUI but never paged, defeating the safety net's purpose. Egregious events
+now carry a `force_page` flag (`DetectionEvent.force_page`) that bypasses the suspicious-display
+gate so they page anyway; the per-entity rate limiter still bounds them. Post-freeze deviation
+events are unaffected (they page only on score, as before).
 
 ### 5.3 Deviation scoring (monitoring phase)
 
@@ -390,7 +404,8 @@ at this node. Strictly depends on WiGLE enrichment; inherits all of its rules.
 ## Where we are (2026-06)
 
 Merged on `main`: the `NODE_MODE` fork + `ScoringEngine` strategy; `FixedScoring` (novelty +
-off-schedule + graduated severity + per-device activation guard); the crash-safe
+off-schedule + graduated severity + per-device activation guard + egregious-during-baseline,
+Phase 2.6 — now paging via `force_page`, §5.2); the crash-safe
 `BaselineStore`; the GUI mode toggle; probe-SSID/fingerprint capture; the entity/observation
 store (both modes); randomization-resistant fingerprint capture + keying for WiFi *and* BLE
 (§6–7); contact designators (§8); the full operator GUI (durable history across all panels,
@@ -405,9 +420,11 @@ leak — is **settled** (soak #3, ~42 h, memory bounded). The new driver is the 
 *"works in a soak"* and *"trustworthy at an unknown location."* Two things gate cold
 deployability and set the lead priority (**detection-quality completion**):
 
-1. **It's blind during learning (P2).** A 48–72 h baseline that flags nothing while learning
-   bakes an already-present surveillance device into "normal." A real deployment can't assume a
-   clean environment.
+1. **Blind during learning (P2) — closed in code, owes field calibration.** A 48–72 h baseline
+   that flags nothing while learning would bake an already-present surveillance device into
+   "normal." The egregious-during-baseline net (§5.2) is now implemented *and paging*; what
+   remains is the on-chase walk-test to calibrate the thresholds (Wi-Fi + BLE) so it pages a
+   genuinely-close device without flooding.
 2. **It fatigues over days (P3).** Post-freeze, every benign newcomer reads novel forever.
    Soak #1's novelty flood and soak #2's off-schedule flood are fixed, but the *durable* answer
    to slow novelty accrual is a rolling baseline that promotes consistently-present devices
@@ -418,9 +435,10 @@ detector you can't trust during learning isn't deployable regardless.
 
 ## Forward roadmap (priority order)
 
-1. **Detection-quality completion (lead).** P2 egregious-during-baseline + P3 rolling
-   adaptation + the owed P1 approaching walk-test. Closes "blind while learning" and "fatigues
-   over days" → run a **short confirmation soak** read for during-learning and multi-day FP
+1. **Detection-quality completion (lead).** P2 egregious-during-baseline (implemented; owes the
+   calibration walk-test) + P3 rolling adaptation + the owed P1 approaching walk-test. Closes
+   "blind while learning" and "fatigues over days" → run a **short confirmation soak** read for
+   during-learning and multi-day FP
    behaviour.
 2. **Fingerprinting program (round 2+).** Validate the shipped PNL/reconnect enrichment on real
    captures, then wire it into scoring; then cross-PHY WiFi↔BT linking (one device → one
@@ -444,7 +462,7 @@ the detector.
 |---|---|---|---|
 | **P0** | Endurance hardening (post-freeze memory + disk) | ✅ Merged #74; forced-freeze + soak #3 (~42 h) validated bounded memory | ✅ shipped |
 | **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Merged & green; owes the positive walk-test | **① (owes walk-test)** |
-| **P2** | Egregious-during-baseline safety net (§5.2) | ☐ Not started | **① lead** |
+| **P2** | Egregious-during-baseline safety net (§5.2) | ◑ Implemented (Phase 2.6) — density-tuned Wi-Fi + modality-specific BLE threshold, now paging via `force_page` (the 0.5-score events were display-only before the fix). *Owes:* the on-chase calibration walk-test (does a deliberately-close device page without flooding) | **① lead (owes walk-test)** |
 | **P3** | Adaptation — rolling baseline (§5.4) | ☐ Not started (design drafted) | **① lead** |
 | **P4** | Cross-session entity resolution | ◑ Within-session fingerprint capture+keying merged & live (flood ~36→3–5/cycle); round-1 PNL/reconnect enrichment merged (capture+GUI only). Cross-session *returning-entity* linkage + scoring integration remain | ②/③ |
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
@@ -458,11 +476,15 @@ operator **walk-test** (a device moved closer must trip it); confirm zero-RSSI p
 skipped in the approaching path as in the baseline stats; tune margin only if the walk-test
 mis-fires. *Exit:* a real approach fires; ambient stationary FP acceptable.
 
-**P2 — Egregious-during-baseline (§5.2).** During learning, keep emitting alerts for egregious
-triggers (very close/strong on first contact, or trending stronger), reusing P1's RSSI/
-approaching machinery and the `NODE_DENSITY`-tuned floor. *Tests:* a strong/close device flags
-during learning while normal traffic stays silent; on chase the operator's deliberately-close
-device flags without flooding. *Exit:* egregious flags fire during learning, sparingly.
+**P2 — Egregious-during-baseline (§5.2).** *Implemented (Phase 2.6).* During learning the node
+emits alerts for egregious triggers (very close/strong on first contact, or trending stronger),
+reusing P1's approaching machinery, a `NODE_DENSITY`-tuned Wi-Fi floor, and a separate BLE
+threshold (`EGREGIOUS_BLE_SIGNAL_DBM`). The events now **page** via `force_page` (they score
+0.5 and were silenced by the suspicious-display gate until the fix). Unit tests cover the
+threshold routing and the paging bypass. *Owed:* the on-chase calibration walk-test — confirm
+a deliberately-close phone (Wi-Fi *and* BLE) pages without flooding on ordinary traffic, and
+tune `EGREGIOUS_BLE_SIGNAL_DBM` to the device if its BLE TX power is low. *Exit:* egregious
+flags fire (and page) during learning, sparingly.
 
 **P3 — Adaptation: rolling baseline (§5.4).** Operator-selectable posture + a consistency
 window that promotes a device only after sustained presence. *Tests:* a consistently-present

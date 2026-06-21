@@ -680,6 +680,8 @@ def test_egregious_close_flags_during_learning():
     assert len(events) == 1
     assert events[0].score_breakdown["egregious_close"] == 1.0
     assert events[0].alert_level == "suspicious"
+    # The safety-net alert must page despite scoring below the WiFi paging bar.
+    assert events[0].force_page is True
 
 
 def test_egregious_weak_device_silent_during_learning():
@@ -726,6 +728,61 @@ def test_egregious_device_is_still_learned_into_baseline():
     dev = _static_device(mac="d8:96:85:c1:05:e6", type="Wi-Fi Client", last_signal=-40)
     engine.update([dev])
     assert engine._store.get_profile("mac:d8:96:85:c1:05:e6") is not None
+
+
+def test_postfreeze_event_does_not_force_page():
+    # Only the during-learning egregious safety net forces a page. A post-freeze
+    # deviation event (here: novelty) is gated normally by its score.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    clock[0] = T0 + timedelta(hours=2)                 # frozen
+    dev = _static_device(mac="d8:96:85:c1:05:e7", type="Wi-Fi Client")
+    engine.update([dev])
+    events = engine.update([dev])                      # obs 2 -> novelty fires
+    assert len(events) == 1 and events[0].score_breakdown["novelty"] == 1.0
+    assert events[0].force_page is False
+
+
+# ---------------------------------------------------------------------------
+# BLE egregious uses its own (looser) modality-specific threshold
+# ---------------------------------------------------------------------------
+
+
+def test_egregious_ble_flags_below_wifi_threshold():
+    # The engine pins the WiFi egregious threshold to -45 (see _clocked_engine) and
+    # leaves the BLE threshold at its -50 default. A BLE advert at -48 is BELOW the
+    # WiFi bar (-48 < -45) yet flags on the looser BLE bar (-48 >= -50) — and pages.
+    # (_ble_device is the shared helper defined above for the keying tests.)
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    events = engine.update([_ble_device("d8:96:85:b1:00:01", last_signal=-48)])
+    assert len(events) == 1
+    assert events[0].score_breakdown["egregious_close"] == 1.0
+    assert events[0].force_page is True
+
+
+def test_egregious_wifi_client_silent_at_ble_only_strength():
+    # The SAME -48 dBm reading on a WiFi client does NOT flag — confirming the
+    # threshold is modality-routed, not a blanket loosening.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    assert engine.update([_static_device(mac="d8:96:85:c1:05:e8",
+                                         type="Wi-Fi Client", last_signal=-48)]) == []
+
+
+def test_egregious_ble_weak_device_silent():
+    # Ambient BLE (the -55-and-below neighbour-beacon floor) stays silent.
+    engine, clock = _clocked_engine(baseline_hours=1.0)
+    assert engine.update([_ble_device("d8:96:85:b1:00:02", last_signal=-70)]) == []
+
+
+def test_egregious_ble_threshold_default_and_override():
+    from modules.fixed_scoring import FixedScoring, EGREGIOUS_BLE_SIGNAL_DBM
+    from modules.baseline_store import BaselineStore
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("EGREGIOUS_BLE_SIGNAL_DBM", None)
+        e = FixedScoring(store=BaselineStore(":memory:", baseline_hours=1.0, now=T0))
+        assert e._egregious_ble_signal_dbm == EGREGIOUS_BLE_SIGNAL_DBM
+    with patch.dict(os.environ, {"EGREGIOUS_BLE_SIGNAL_DBM": "-58"}):
+        e = FixedScoring(store=BaselineStore(":memory:", baseline_hours=1.0, now=T0))
+        assert e._egregious_ble_signal_dbm == -58.0
 
 
 # ---------------------------------------------------------------------------
