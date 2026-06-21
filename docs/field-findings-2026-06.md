@@ -3,7 +3,7 @@
 **Purpose:** capture the empirical results, decisions, and owed validations from
 the fixed-node detection-mode work, so the knowledge survives a clean local
 state. This is the test evidence behind
-[roadmap-fixed-node-prototype.md](roadmap-fixed-node-prototype.md). Configuration
+[design-and-roadmap.md](design-and-roadmap.md). Configuration
 and hardware facts live in `CLAUDE.md` / `CONTEXT.md` (refreshed separately) and
 are cross-referenced here rather than repeated.
 
