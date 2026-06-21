@@ -128,6 +128,7 @@ class GUIServer:
         self._recent_aircraft: list[dict] = []
         self._recent_drone: list[dict] = []
         self._recent_ais: list[dict] = []
+        self._recent_acars: list[dict] = []
         self._recent_alerts: list[dict] = []
         self._recent_nearby: list[dict] = []
         self._recent_remote_id: list[dict] = []
@@ -300,6 +301,15 @@ class GUIServer:
                 return jsonify(hist)
             with self._data_lock:
                 return jsonify(list(self._recent_ais))
+
+        @app.route("/api/acars")
+        def api_acars():
+            # Disk-backed history (P5); discrete decoded messages, no dedup.
+            hist = self._history("acars.jsonl", _HISTORY_LIMIT)
+            if hist is not None:
+                return jsonify(hist)
+            with self._data_lock:
+                return jsonify(list(self._recent_acars))
 
         @app.route("/api/alerts")
         def api_alerts():
@@ -612,6 +622,8 @@ class GUIServer:
                 self._remember(self._recent_drone, data, None)
             elif event_type == "ais":
                 self._remember(self._recent_ais, data, "mmsi")
+            elif event_type == "acars":
+                self._remember(self._recent_acars, data, None)
             elif event_type == "alert":
                 self._remember(self._recent_alerts, data, None)
             elif event_type == "nearby":

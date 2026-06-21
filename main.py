@@ -25,6 +25,8 @@ from modules.dump1090 import ADSBModule
 from modules.ble_scanner import BLEScanner
 from modules.drone_rf import DroneRFModule
 from modules.ais import AISModule
+from modules.acars import ACARSModule
+from modules.aircraft_registry import AircraftRegistry
 from modules.gps import GPSModule
 from modules.ignore_list import IgnoreList
 from modules.kismet import KismetModule
@@ -44,6 +46,10 @@ _BLE_SCANNER_ENABLED = os.getenv("BLE_SCANNER_ENABLED", "false").lower() == "tru
 # receive on a 1090 antenna). The AIS-catcher decoder runs as a systemd service.
 _AIS_ENABLED = os.getenv("AIS_ENABLED", "false").lower() == "true"
 _AIS_SERVICE = os.getenv("AIS_SERVICE", "ais-catcher")
+# ACARS (aviation VHF datalink) — optional, off by default. Decoder service invoked
+# on a >30s-held ADS-B contact (single dongle) or continuously (dedicated dongle).
+_ACARS_ENABLED = os.getenv("ACARS_ENABLED", "false").lower() == "true"
+_ACARS_SERVICE = os.getenv("ACARS_SERVICE", "acarsdec")
 _GUI_ENABLED = os.getenv("GUI_ENABLED", "false").lower() == "true"
 _GUI_HOST    = os.getenv("GUI_HOST", "0.0.0.0")
 _GUI_PORT    = int(os.getenv("GUI_PORT", "8080"))
@@ -115,7 +121,7 @@ class PassiveVigilance:
         self._modules_active: dict[str, bool] = {
             "gps": False, "kismet": False, "adsb": False,
             "drone_rf": False, "sdr_coordinator": False, "remote_id": False,
-            "ble": False, "ais": False,
+            "ble": False, "ais": False, "acars": False,
         }
         self._session_dir: Path = Path(_SESSION_OUTPUT_DIR) / self.session_id
 
@@ -143,10 +149,18 @@ class PassiveVigilance:
         # AIS-catcher JSON feed. DroneRF is retired (default off); ADS-B + AIS are the
         # active bands. The coordinator time-shares them on a single dongle (SHARED).
         self.ais = AISModule() if _AIS_ENABLED else None
+        # ACARS (aviation datalink) + the connectivity-adaptive ICAO→registration
+        # registry it correlates through. Both None unless ACARS_ENABLED.
+        self.acars = ACARSModule() if _ACARS_ENABLED else None
+        self.aircraft_registry = AircraftRegistry() if _ACARS_ENABLED else None
         self.sdr_coordinator: SDRCoordinator = SDRCoordinator(
             self.drone_rf, cycle_slices=self._derive_sdr_cycle())
         if self.ais is not None:
             self.sdr_coordinator.add_decoder_band("ais", _AIS_SERVICE, self.ais)
+        if self.acars is not None:
+            # Registered as a band but NOT in the default cycle — invoked only via
+            # request_band_window() on a >30s-held contact.
+            self.sdr_coordinator.add_decoder_band("acars", _ACARS_SERVICE, self.acars)
         # Scoring engine forked by mode: fixed = baseline-deviation (durable
         # SQLite), mobile = location-diversity (existing PersistenceEngine).
         # The orchestrator calls .update() on whichever is injected here.
@@ -181,6 +195,7 @@ class PassiveVigilance:
             entity_store=self.entity_store,
             gui_server=None, remote_id=self.remote_id,
             ble_scanner=self.ble_scanner, ais=self.ais,
+            acars=self.acars, aircraft_registry=self.aircraft_registry,
             session_id=self.session_id, session_start=self.session_start,
             session_dir=self._session_dir, sdr_mode=self.sdr_mode,
             stop_event=self._stop,
@@ -249,6 +264,14 @@ class PassiveVigilance:
         self._modules_active["ais"] = v
 
     @property
+    def _acars_active(self) -> bool:
+        return self._modules_active["acars"]
+
+    @_acars_active.setter
+    def _acars_active(self, v: bool) -> None:
+        self._modules_active["acars"] = v
+
+    @property
     def _remote_id_active(self) -> bool:
         return self._modules_active["remote_id"]
 
@@ -268,9 +291,13 @@ class PassiveVigilance:
         if (os.getenv("SDR_CYCLE_SLICES") or "").strip():
             return None
         ais_on = self.ais is not None
+        acars_on = self.acars is not None
         drone_on = os.getenv("DRONE_RF_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
-        if not ais_on and not drone_on:
+        if not ais_on and not drone_on and not acars_on:
             return None  # ADS-B-only — readsb keeps the dongle, no cycle needed
+        # ACARS is NOT a cycle slice — it's preemption-driven (request_band_window on a
+        # >30s-held contact) — but its presence means we still run the coordinator so
+        # those windows get serviced; hence a derived ADS-B slice even when acars-only.
         slices = [("adsb", int(os.getenv("ADSB_SLICE_SECONDS", "840")))]
         if ais_on:
             slices.append(("ais", int(os.getenv("AIS_SLICE_SECONDS", "60"))))
@@ -299,6 +326,7 @@ class PassiveVigilance:
             asyncio.create_task(so._poll_kismet_loop(), name="poll-kismet"),
             asyncio.create_task(so._poll_drone_rf_loop(), name="poll-dronrf"),
             asyncio.create_task(so._poll_ais_loop(), name="poll-ais"),
+            asyncio.create_task(so._poll_acars_loop(), name="poll-acars"),
             asyncio.create_task(so._poll_remote_id_loop(), name="poll-remoteid"),
             asyncio.create_task(so._health_banner_loop(), name="health-banner"),
             asyncio.create_task(so._watchdog_loop(), name="watchdog"),
@@ -399,8 +427,10 @@ class PassiveVigilance:
         drone_enabled = os.getenv("DRONE_RF_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
         ais_enabled = self.ais is not None
 
-        # The AIS UDP listener binds independently of the dongle schedule — it just
-        # receives nothing while the AIS-catcher service is stopped (between slices).
+        acars_enabled = self.acars is not None
+
+        # The AIS/ACARS UDP listeners bind independently of the dongle schedule — they
+        # just receive nothing while their decoder service is stopped (between slices).
         if ais_enabled:
             try:
                 await self.ais.connect()
@@ -409,10 +439,19 @@ class PassiveVigilance:
             except Exception as exc:
                 logger.warning("AIS: listener unavailable (%s) — AIS disabled", exc)
                 self._ais_active = False
+        if acars_enabled:
+            try:
+                await self.acars.connect()
+                self._acars_active = True
+                logger.info("ACARS: listener active (best-effort — VHF; off by default)")
+            except Exception as exc:
+                logger.warning("ACARS: listener unavailable (%s) — ACARS disabled", exc)
+                self._acars_active = False
 
-        # Bands beyond ADS-B that want the dongle. With none, readsb keeps it
-        # full-time (no time-share). With ≥1, the coordinator runs the cycle.
-        extra_bands = ais_enabled or drone_enabled
+        # Bands beyond ADS-B that need the coordinator running. AIS/DroneRF take cycle
+        # slices; ACARS doesn't (preemption-only) but still needs the loop alive to
+        # service its windows. With none of them, readsb keeps the dongle full-time.
+        extra_bands = ais_enabled or drone_enabled or acars_enabled
 
         if sdr_count == 0:
             logger.warning("SDR: no dongle detected — ADS-B/AIS/DroneRF disabled")
@@ -429,6 +468,12 @@ class PassiveVigilance:
                     logger.info("AIS-catcher service started (dedicated dongle)")
                 except Exception as exc:
                     logger.warning("AIS-catcher: not started (%s)", exc)
+            if acars_enabled:
+                try:
+                    await self.sdr_coordinator.start_decoder_service(_ACARS_SERVICE)
+                    logger.info("ACARS decoder service started (dedicated dongle)")
+                except Exception as exc:
+                    logger.warning("ACARS decoder: not started (%s)", exc)
             if drone_enabled:
                 try:
                     await self.drone_rf.start_scan()
@@ -519,6 +564,21 @@ class PassiveVigilance:
                 await self.ais.close()
             except Exception as exc:
                 logger.debug("AIS close error: %s", exc)
+        if self.acars is not None:
+            if self.sdr_mode == SDRMode.DEDICATED and self._acars_active:
+                try:
+                    await self.sdr_coordinator.stop_decoder_service(_ACARS_SERVICE)
+                except Exception as exc:
+                    logger.debug("ACARS decoder stop error: %s", exc)
+            try:
+                await self.acars.close()
+            except Exception as exc:
+                logger.debug("ACARS close error: %s", exc)
+        if self.aircraft_registry is not None:
+            try:
+                self.aircraft_registry.close()
+            except Exception as exc:
+                logger.debug("aircraft registry close error: %s", exc)
         if self.ble_scanner is not None:
             try:
                 await self.ble_scanner.close()

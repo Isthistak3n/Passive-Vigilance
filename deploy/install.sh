@@ -78,6 +78,32 @@ else
     echo "$LOG Skipping AIS-catcher (set INSTALL_AIS=true to build it for VHF/AIS)."
 fi
 
+# ── 2d. acarsdec (optional — aviation ACARS decoder, VHF ~131 MHz) ─────────
+# OFF by default (VHF, antenna-limited). Gate: INSTALL_ACARS=true ./install.sh.
+# Build acarsdec (and its libacars dependency) from source; emits JSON over UDP to
+# the ACARSModule. The coordinator manages acarsdec.service (sudoers rule above).
+if [ "${INSTALL_ACARS:-false}" = "true" ]; then
+    echo "$LOG Installing acarsdec (ACARS decoder) from source..."
+    DEBIAN_FRONTEND=noninteractive apt install -y \
+        git cmake build-essential pkg-config libusb-1.0-0-dev librtlsdr-dev zlib1g-dev libxml2-dev
+    LIBACARS_DIR=/opt/libacars
+    if [ ! -d "$LIBACARS_DIR" ]; then
+        git clone --depth 1 https://github.com/szpajder/libacars.git "$LIBACARS_DIR"
+    fi
+    ( cd "$LIBACARS_DIR" && mkdir -p build && cd build && cmake .. && make -j"$(nproc)" && make install && ldconfig )
+    ACARSDEC_DIR=/opt/acarsdec
+    if [ ! -d "$ACARSDEC_DIR" ]; then
+        git clone --depth 1 https://github.com/TLeconte/acarsdec.git "$ACARSDEC_DIR"
+    fi
+    ( cd "$ACARSDEC_DIR" && mkdir -p build && cd build && cmake .. -Drtl=ON && make -j"$(nproc)" && make install )
+    install -m 0644 "$REPO_DIR/deploy/acarsdec.service" /etc/systemd/system/acarsdec.service
+    systemctl daemon-reload
+    systemctl disable acarsdec.service 2>/dev/null || true
+    echo "$LOG acarsdec installed; acarsdec.service is coordinator-managed (disabled at boot)."
+else
+    echo "$LOG Skipping acarsdec (set INSTALL_ACARS=true to build it for VHF/ACARS)."
+fi
+
 # ── 3. Python dependencies ─────────────────────────────────────────────────
 # Install GDAL and GIS system dependencies first
 # (required for geopandas/fiona to install without building from source on ARM)

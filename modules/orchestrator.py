@@ -19,6 +19,7 @@ from typing import Optional
 
 from modules import air_geometry, air_scoring, contact_designator, device_identity
 from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
+from modules.sdr_manager import SDRMode
 from modules.wifi_fingerprint import compute_pnl_fingerprint
 
 
@@ -67,6 +68,8 @@ class SensorOrchestrator:
         remote_id=None,
         ble_scanner=None,
         ais=None,
+        acars=None,
+        aircraft_registry=None,
         session_id: str,
         session_start: datetime,
         session_dir: Path,
@@ -110,6 +113,11 @@ class SensorOrchestrator:
         # Optional AIS (marine VHF) capture — an SDR band like DroneRF/ADS-B. None
         # unless AIS_ENABLED. Consumes an AIS-catcher JSON feed; off by default.
         self.ais = ais
+        # Optional ACARS (aviation VHF datalink) capture + the connectivity-adaptive
+        # ICAO→registration registry used to correlate a decoded ACARS message back to
+        # a live ADS-B contact. Both None unless ACARS_ENABLED.
+        self.acars = acars
+        self.aircraft_registry = aircraft_registry
 
         self.session_id = session_id
         self.session_start = session_start
@@ -122,6 +130,16 @@ class SensorOrchestrator:
         self._kismet_poll_interval = kismet_poll_interval
         self._drone_poll_interval = drone_poll_interval
         self._ais_poll_interval = int(os.getenv("AIS_POLL_INTERVAL_SECONDS", "10"))
+        self._acars_poll_interval = int(os.getenv("ACARS_POLL_INTERVAL_SECONDS", "5"))
+        self._acars_enabled = acars is not None
+        # Online enrichment is opt-in via the API key; without it, registration
+        # resolution stays fully offline (no outbound queries) — opsec default.
+        self._adsb_enrich_enabled = bool(os.getenv("ADSBXLOL_API_KEY", "").strip())
+        # ACARS preemption: when an ADS-B contact is continuously held past the
+        # trigger, request a bounded ACARS window from the SDR coordinator (single
+        # dongle). On a dedicated VHF dongle ACARS runs continuously (no trigger).
+        self._acars_trigger_s = float(os.getenv("ACARS_TRIGGER_SECONDS", "30"))
+        self._acars_window_s = float(os.getenv("ACARS_WINDOW_SECONDS", "25"))
         self._remote_id_poll_interval = remote_id_poll_interval
         self._health_banner_interval = health_banner_interval
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -130,11 +148,11 @@ class SensorOrchestrator:
 
         self._sensor_health: dict[str, bool] = {
             "gps": True, "kismet": True, "adsb": True, "drone_rf": True, "sdr": True,
-            "remote_id": True, "ais": True,
+            "remote_id": True, "ais": True, "acars": True,
         }
         self._degraded_log_counter: dict[str, int] = {
             "gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0, "sdr": 0, "remote_id": 0,
-            "ais": 0,
+            "ais": 0, "acars": 0,
         }
         # Watchdog: monotonic timestamp of each sensor's last COMPLETED poll. The
         # exception-based health flips above only catch a poll that *raises*; a
@@ -190,6 +208,8 @@ class SensorOrchestrator:
             "aircraft_seen": 0,
             "drone_detections": 0,
             "ais_vessels_seen": 0,
+            "acars_messages_seen": 0,
+            "acars_correlated": 0,
             "remote_id_detections": 0,
             "alerts_sent": 0,
             "alerts_rate_limited": 0,
@@ -259,6 +279,9 @@ class SensorOrchestrator:
         # carries its OWN position in the AIS message, so the map uses that.
         self.ais_detections: list[dict] = []
         self._ais_index: dict[str, dict] = {}
+        # ACARS decoded messages (raw feed for the GUI); correlation stashes matched
+        # messages onto the aircraft event under event["acars"].
+        self.acars_detections: list[dict] = []
         self.remote_id_detections: list[dict] = []
         # Index UAS ID -> the Remote ID event already in remote_id_detections, so
         # a drone broadcasting every frame becomes ONE event accumulating a
@@ -373,6 +396,19 @@ class SensorOrchestrator:
                 raise
             except Exception as exc:
                 logger.error("AIS poll loop sleep error: %s", exc)
+
+    async def _poll_acars_loop(self) -> None:
+        '''Run ACARS polling on a fixed interval until stop is signalled.'''
+        while not self._stop_event.is_set():
+            if self._modules_active.get("acars", False):
+                await self._poll_acars()
+                self._mark_poll("acars")
+            try:
+                await asyncio.sleep(self._acars_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("ACARS poll loop sleep error: %s", exc)
 
     async def _poll_remote_id_loop(self) -> None:
         '''Run Remote ID polling on a fixed interval until stop is signalled.'''
@@ -647,6 +683,10 @@ class SensorOrchestrator:
                 existing.update({**aircraft, "event_type": "aircraft", "timestamp": now_iso})
                 if returned:
                     self._note_aircraft_return(existing, icao, prior_gap, now_iso)
+                    # The contact left and came back — restart the continuous-hold
+                    # clock and re-arm the one-shot ACARS trigger for this new segment.
+                    existing["segment_start"] = now_iso
+                    existing["_acars_fired"] = False
                 moved = self._extend_aircraft_track(existing, aircraft, now_iso)
                 if returned:
                     # Persist the re-acquisition so the durable aircraft log reflects
@@ -658,7 +698,8 @@ class SensorOrchestrator:
                 if self.gui_server is not None and (moved or returned):
                     self.gui_server.push_event("aircraft", existing)
             else:
-                event = {**aircraft, "event_type": "aircraft", "timestamp": now_iso, "positions": []}
+                event = {**aircraft, "event_type": "aircraft", "timestamp": now_iso,
+                         "positions": [], "segment_start": now_iso}
                 self._extend_aircraft_track(event, aircraft, now_iso)
                 self._aircraft_index[icao] = event
                 self.aircraft_detections.append(event)
@@ -671,6 +712,10 @@ class SensorOrchestrator:
             air = self._score_aircraft(contact)
             if self.gui_server is not None and air.of_interest:
                 self.gui_server.push_event("aircraft", contact)
+            # ACARS: a contact held continuously past the trigger requests a bounded
+            # ACARS decode window (single dongle) and resolves its registration so a
+            # decoded message can be tied back to it.
+            await self._maybe_trigger_acars(contact, icao, now_iso)
             emergency = aircraft.get("emergency", False)
             label = aircraft.get("callsign") or aircraft.get("registration") or icao
             body = (f"{label}: alt {aircraft.get('altitude', '?')} ft, "
@@ -1192,6 +1237,131 @@ class SensorOrchestrator:
                 self.ais_detections.append(event_dict)
                 if self.gui_server is not None:
                     self.gui_server.push_event("ais", event_dict)
+
+    # ------------------------------------------------------------------
+    # ACARS — decode + correlate to live ADS-B contacts
+    # ------------------------------------------------------------------
+
+    async def _maybe_trigger_acars(self, contact: dict, icao: str, now_iso: str) -> None:
+        '''If a contact has been held continuously past the trigger, request a bounded
+        ACARS decode window (single dongle) and resolve its registration so a decoded
+        message can be tied back. One-shot per contact segment.'''
+        if not self._acars_enabled:
+            return
+        seg = contact.get("segment_start")
+        if not seg:
+            return
+        try:
+            held = (datetime.fromisoformat(now_iso) - datetime.fromisoformat(seg)).total_seconds()
+        except (ValueError, TypeError):
+            return
+        contact["held_seconds"] = round(held)
+        if held < self._acars_trigger_s or contact.get("_acars_fired"):
+            return
+        contact["_acars_fired"] = True
+        # Resolve registration now (connectivity-adaptive) so tail↔reg matching works.
+        await self._resolve_registration(contact, icao)
+        # Single-dongle SHARED: preempt for a bounded ACARS window. DEDICATED runs
+        # ACARS continuously on its own dongle, so no preemption is needed there.
+        coord = self.sdr_coordinator
+        if (coord is not None and self.sdr_mode == SDRMode.SHARED
+                and hasattr(coord, "request_band_window")):
+            if coord.request_band_window("acars", self._acars_window_s):
+                logger.info("ACARS: %s held %ds — requested a %ds decode window",
+                            contact.get("callsign") or icao, int(held), int(self._acars_window_s))
+
+    async def _resolve_registration(self, contact: dict, icao: str) -> None:
+        '''Fill contact['registration'] (and type/operator) via the connectivity-
+        adaptive registry — online adsb.lol when an API key is set, else offline DB.'''
+        if self.aircraft_registry is None or contact.get("registration"):
+            return
+        online = self.adsb.enrich_aircraft if (self._adsb_enrich_enabled and self.adsb) else None
+        try:
+            rec = await self.aircraft_registry.resolve(icao, online_enrich=online)
+        except Exception as exc:
+            logger.debug("registration resolve error for %s: %s", icao, exc)
+            return
+        if rec.get("registration"):
+            contact["registration"] = rec["registration"]
+            if rec.get("aircraft_type") and not contact.get("aircraft_type"):
+                contact["aircraft_type"] = rec["aircraft_type"]
+            if rec.get("operator"):
+                contact["operator"] = rec["operator"]
+            if "military" in rec and "military" not in contact:
+                contact["military"] = rec["military"]
+
+    @staticmethod
+    def _ident_norm(s) -> str:
+        '''Normalize a tail/callsign for matching: alphanumerics only, lowercased.
+        (acarsdec pads tails; ADS-B callsigns carry trailing spaces.)'''
+        return "".join(c for c in (s or "") if c.isalnum()).lower()
+
+    def _correlate_acars(self, msg: dict) -> Optional[dict]:
+        '''Find the live ADS-B contact a decoded ACARS message belongs to — by tail ↔
+        registration first, then flight-id ↔ callsign. Returns the event or None.'''
+        tail = self._ident_norm(msg.get("tail"))
+        flight = self._ident_norm(msg.get("flight_id"))
+        if not tail and not flight:
+            return None
+        for ev in self._aircraft_index.values():
+            if tail:
+                reg = self._ident_norm(ev.get("registration"))
+                if reg and reg == tail:
+                    return ev
+            if flight:
+                cs = self._ident_norm(ev.get("callsign"))
+                if cs and cs == flight:
+                    return ev
+        return None
+
+    async def _poll_acars(self) -> None:
+        '''Drain decoded ACARS messages; surface them and correlate to ADS-B contacts.'''
+        if getattr(self.acars, "auto_disabled", False) and self._modules_active.get("acars"):
+            self._modules_active["acars"] = False
+            logger.warning("ACARS auto-disabled — marking sensor inactive")
+        try:
+            pending = self.acars.drain_detections()
+        except Exception as exc:
+            if self._sensor_health["acars"]:
+                logger.warning("Sensor acars degraded: %s", exc)
+                self._console_alert(f"Sensor acars degraded: {exc}")
+                self._sensor_health["acars"] = False
+            else:
+                self._degraded_log_counter["acars"] += 1
+                if self._degraded_log_counter["acars"] % 10 == 0:
+                    logger.warning("Sensor acars still degraded after %d consecutive failures",
+                                   self._degraded_log_counter["acars"])
+            return
+        if not self._sensor_health["acars"]:
+            logger.info("Sensor acars recovered")
+            self._sensor_health["acars"] = True
+            self._degraded_log_counter["acars"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for msg in pending:
+            ts = msg.get("timestamp", now_iso)
+            self._stats["acars_messages_seen"] += 1
+            record = {
+                "event_type": "acars", "tail": msg.get("tail"),
+                "flight_id": msg.get("flight_id"), "label": msg.get("label"),
+                "text": msg.get("text"), "timestamp": ts,
+            }
+            self._append_jsonl(self._session_dir / "acars.jsonl", record)
+            # Correlate to a live contact (tail↔reg / flight↔callsign).
+            matched = self._correlate_acars(msg)
+            if matched is not None:
+                self._stats["acars_correlated"] += 1
+                record["icao"] = matched.get("icao")
+                acars_list = matched.setdefault("acars", [])
+                acars_list.append(record)
+                # Bound the per-contact message list so a chatty airframe can't grow it.
+                if len(acars_list) > 20:
+                    del acars_list[:-20]
+                if self.gui_server is not None:
+                    self.gui_server.push_event("aircraft", matched)
+            # Always surface the raw decoded message on the ACARS feed.
+            self.acars_detections.append(record)
+            if self.gui_server is not None:
+                self.gui_server.push_event("acars", record)
 
     async def _poll_remote_id(self) -> None:
         '''Poll Kismet for Remote ID frames; append events and fire alerts.'''

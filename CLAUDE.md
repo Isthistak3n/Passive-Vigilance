@@ -58,6 +58,8 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/kismet.py` | `KismetModule` | Kismet REST API; async WiFi + BT device polling |
 | `modules/dump1090.py` | `ADSBModule` | dump1090 JSON output; aircraft polling |
 | `modules/ais.py` | `AISModule` | consume AIS-catcher JSON over UDP; passive marine vessel tracking (optional, VHF, default off) |
+| `modules/acars.py` | `ACARSModule` | consume acarsdec/dumpvdl2 JSON over UDP; passive aviation datalink decode (optional, VHF, default off); preemption-driven on a >30s-held ADS-B contact |
+| `modules/aircraft_registry.py` | `AircraftRegistry` | connectivity-adaptive ICAO→registration (offline SQLite built off-node; adsb.lol augments online); used to correlate ACARS↔ADS-B |
 | `modules/drone_rf.py` | `DroneRFModule` | pyrtlsdr; passive RF scan for drone signatures — **RETIRED** (default off, dropped from the SDR cycle; code kept for reversibility) |
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
 | `modules/mac_utils.py` | — | MAC randomization detection, type classification, device fingerprinting |
@@ -144,13 +146,20 @@ Re-run the monitor mode commands after any NM restart.
 - **The SDR plan is an ordered time-share cycle, not just ADS-B↔DroneRF.** `SDRCoordinator`
   runs a configurable N-band cycle (`SDR_CYCLE_SLICES`, e.g. `adsb:840,ais:60`) of band owners,
   each an `acquire()/release()/is_available` unit: ADS-B (readsb service), AIS (`ais-catcher`
-  service, optional/VHF/default-off), ACARS (Phase 2, `request_band_window()` preemption on a
-  >30s-held contact), and legacy DroneRF. In DEDICATED mode (≥2 dongles) the coordinator is
+  service, optional/VHF/default-off), ACARS (`acarsdec` service, `request_band_window()`
+  preemption on a >30s-held contact, correlated back by tail/flight-id), and legacy DroneRF.
+  In DEDICATED mode (≥2 dongles) the coordinator is
   bypassed and each band runs continuously on its own dongle. Decoder services are managed via
   the sudoers-scoped `sudo systemctl start/stop <service>` (scope MUST list every service).
 - **AIS** (`modules/ais.py`): consumes AIS-catcher JSON over a localhost UDP socket; vessel
   position comes from the AIS message itself. Built only with `INSTALL_AIS=true`; default off
   (won't receive on a 1090 antenna). Drains `{mmsi,lat,lon,name,ship_type}` deduped per MMSI.
+- **ACARS** (`modules/acars.py`): consumes acarsdec/dumpvdl2 JSON over UDP; **plaintext decode,
+  not "decrypt"**. Preemption-driven on a single dongle — a contact held past
+  `ACARS_TRIGGER_SECONDS` requests `request_band_window("acars", …)` (ADS-B briefly blind).
+  Decoded messages correlate back to the live contact by **tail↔registration / flight-id↔callsign**
+  (`_correlate_acars`); registration via `aircraft_registry` (offline DB built off-node, adsb.lol
+  augments online). `INSTALL_ACARS=true`; default off. Surfaced on `event["acars"]`.
 - **DroneRF is RETIRED** — `DRONE_RF_ENABLED` defaults **false** and it's not in the default
   cycle; the module/tests remain for reversibility (re-add via `SDR_CYCLE_SLICES=…,drone_rf:30`).
 - pyrtlsdr pinned to `0.2.93` — **do not upgrade** (librtlsdr 2.0.2 missing `rtlsdr_set_dithering`)

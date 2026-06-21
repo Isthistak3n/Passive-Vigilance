@@ -488,6 +488,82 @@ async def test_basemap_provision_optin_fetches(orch, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_acars_trigger_fires_once_past_threshold(orch):
+    """A contact held past ACARS_TRIGGER_SECONDS requests one ACARS window, once."""
+    from modules.sdr_manager import SDRMode
+    so = orch.sensor_orchestrator
+    so._acars_enabled = True
+    so.sdr_mode = SDRMode.SHARED
+    so.acars = MagicMock()
+    so.aircraft_registry = None                       # skip registration resolve
+    so.sdr_coordinator = MagicMock()
+    so.sdr_coordinator.request_band_window = MagicMock(return_value=True)
+    so._acars_trigger_s = 30
+
+    old = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, 12, 0, 40, tzinfo=timezone.utc)   # 40s later
+    contact = {"icao": "abc123", "callsign": "UAL9", "segment_start": old.isoformat()}
+    await so._maybe_trigger_acars(contact, "abc123", now.isoformat())
+    assert contact["_acars_fired"] is True
+    so.sdr_coordinator.request_band_window.assert_called_once_with("acars", so._acars_window_s)
+    # Second call must NOT re-fire for the same segment.
+    await so._maybe_trigger_acars(contact, "abc123", now.isoformat())
+    so.sdr_coordinator.request_band_window.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_acars_trigger_holds_below_threshold(orch):
+    """A contact held under the threshold does not trigger."""
+    from modules.sdr_manager import SDRMode
+    so = orch.sensor_orchestrator
+    so._acars_enabled = True
+    so.sdr_mode = SDRMode.SHARED
+    so.aircraft_registry = None
+    so.sdr_coordinator = MagicMock()
+    so._acars_trigger_s = 30
+    old = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 1, 1, 12, 0, 10, tzinfo=timezone.utc)   # only 10s
+    contact = {"icao": "abc123", "segment_start": old.isoformat()}
+    await so._maybe_trigger_acars(contact, "abc123", now.isoformat())
+    so.sdr_coordinator.request_band_window.assert_not_called()
+    assert not contact.get("_acars_fired")
+
+
+@pytest.mark.asyncio
+async def test_poll_acars_correlates_by_callsign(orch, tmp_path):
+    """A decoded ACARS message matches a live contact by flight-id ↔ callsign."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so._aircraft_index["abc123"] = {"icao": "abc123", "callsign": "UAL123"}
+    so.acars = MagicMock()
+    so._modules_active["acars"] = True
+    so.acars.drain_detections = MagicMock(return_value=[
+        {"tail": None, "flight_id": "UAL123", "label": "H1", "text": "OPS NORMAL",
+         "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_acars()
+    assert so._stats["acars_correlated"] == 1
+    assert so._aircraft_index["abc123"]["acars"][0]["text"] == "OPS NORMAL"
+
+
+@pytest.mark.asyncio
+async def test_poll_acars_correlates_by_tail(orch, tmp_path):
+    """Match by tail ↔ registration, normalizing padding/case."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so._aircraft_index["abc123"] = {"icao": "abc123", "registration": "N12345"}
+    so.acars = MagicMock()
+    so._modules_active["acars"] = True
+    so.acars.drain_detections = MagicMock(return_value=[
+        {"tail": ".N12345", "flight_id": None, "text": "POS", "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_acars()
+    assert so._stats["acars_correlated"] == 1
+
+
+@pytest.mark.asyncio
 async def test_poll_ais_dedups_vessel_by_mmsi(orch, tmp_path):
     """Two reports for one MMSI collapse to a single event (position merged)."""
     so = orch.sensor_orchestrator
