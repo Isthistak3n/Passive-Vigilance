@@ -147,7 +147,7 @@ class GUIServer:
 
     def _build_app(self):
         try:
-            from flask import Flask, Response, jsonify, render_template, stream_with_context
+            from flask import Flask, Response, abort, jsonify, render_template, stream_with_context
         except ImportError:
             logger.error("Flask not installed — GUI disabled. Run: pip install flask")
             return None
@@ -157,6 +157,12 @@ class GUIServer:
             template_folder=str(_HERE / "templates"),
             static_folder=str(_HERE / "static"),
         )
+
+        # Offline basemap: open the local MBTiles pack once (None if absent → the
+        # page falls back to online OSM tiles). Served at /tiles/<z>/<x>/<y>.png for
+        # both this GUI and tar1090 (point tar1090's custom layer at this endpoint).
+        from modules import offline_tiles
+        self._basemap = offline_tiles.load_basemap()
         app.logger.setLevel(logging.WARNING)
 
         # Suppress Flask's default startup banner in our logger
@@ -184,8 +190,23 @@ class GUIServer:
             # cached an OLDER index.html would then pair stale markup with fresh JS —
             # a missing element the new JS expects can break the page. Force the doc
             # to revalidate too so markup and script never drift.
-            resp = app.make_response(render_template(template))
+            basemap = self._basemap.describe() if self._basemap else {"available": False}
+            resp = app.make_response(render_template(template, offline_basemap=basemap))
             resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
+        @app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
+        def offline_tile(z, x, y):
+            # Serve a raster tile from the local MBTiles pack (offline basemap).
+            # 404 when no pack is loaded or the tile is absent — Leaflet just leaves
+            # that tile blank; the auth check above also gates these requests.
+            if self._basemap is None:
+                abort(404)
+            blob = self._basemap.get_tile(z, x, y)
+            if blob is None:
+                abort(404)
+            resp = Response(blob, mimetype=self._basemap.content_type)
+            resp.headers["Cache-Control"] = "public, max-age=604800"  # tiles are immutable
             return resp
 
         @app.route("/api/status")

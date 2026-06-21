@@ -450,6 +450,85 @@ class SensorOrchestrator:
         return contact_designator.designator(cls, ident, number)
 
     # ------------------------------------------------------------------
+    # Offline basemap provisioning (boot, one-shot)
+    # ------------------------------------------------------------------
+
+    async def _basemap_provision_once(self) -> None:
+        """At boot, ensure an offline basemap is available — opsec-aware.
+
+        Default (off-node, **no network**): if no pack is present, wait for a GPS fix
+        and LOG the ready-to-run ``fetch_basemap.py`` command so the operator builds
+        the pack OFF-NODE and copies it on. The node never touches a tile server, so
+        it never reveals its location.
+
+        Opt-in (``AUTO_BASEMAP_ON_BOOT=true``): when no pack is present and a fix is
+        available, the node fetches the pack itself centered on its position. This
+        reveals the location to the tile provider and (by request burst/timing) to a
+        passive observer — an accepted, explicit trade for convenience. Guarded: any
+        failure is logged and swallowed; capture/scoring are never affected.
+        """
+        try:
+            from modules import basemap_builder, offline_tiles
+
+            path = offline_tiles.resolve_path()
+            if path and os.path.isfile(path):
+                return  # a pack exists — the operator manages it; do nothing, no net.
+
+            radius = float(os.getenv("AUTO_BASEMAP_RADIUS_KM", "3"))
+            minz = int(os.getenv("AUTO_BASEMAP_MIN_ZOOM", "11"))
+            maxz = int(os.getenv("AUTO_BASEMAP_MAX_ZOOM", "17"))
+            on_boot = os.getenv("AUTO_BASEMAP_ON_BOOT", "false").strip().lower() == "true"
+
+            # Wait (cancellably) for a GPS fix so we can center on the node.
+            wait_s = float(os.getenv("AUTO_BASEMAP_GPS_WAIT_S", "180"))
+            waited = 0.0
+            while self._current_fix is None and waited < wait_s:
+                if self._stop_event.is_set():
+                    return
+                await asyncio.sleep(5)
+                waited += 5
+            fix = self._current_fix
+            if not fix or fix.get("lat") is None or fix.get("lon") is None:
+                logger.info(
+                    "Offline basemap: no pack at %s and no GPS fix yet — once a fix is "
+                    "acquired, build one off-node with scripts/fetch_basemap.py", path)
+                return
+
+            lat, lon = fix["lat"], fix["lon"]
+            cmd = basemap_builder.suggest_command(lat, lon, radius, minz, maxz, path)
+
+            if not on_boot:
+                logger.info(
+                    "Offline basemap: no pack at %s. For opsec the node does NOT fetch "
+                    "(that would reveal its location). Build it OFF-NODE and copy it on:\n"
+                    "    %s\n"
+                    "(or set AUTO_BASEMAP_ON_BOOT=true to let the node fetch — see README.)",
+                    path, cmd)
+                return
+
+            # Opt-in on-node fetch — runs the blocking network build off the event loop.
+            logger.warning(
+                "Offline basemap: AUTO_BASEMAP_ON_BOOT=true — fetching z%d-%d (%g km) "
+                "centered on the node's position. OPSEC: this reveals the node location "
+                "to the tile provider and a network observer.", minz, maxz, radius)
+            loop = asyncio.get_running_loop()
+            if not await loop.run_in_executor(None, basemap_builder.internet_reachable):
+                logger.warning(
+                    "Offline basemap: no internet — cannot fetch. Build off-node:\n    %s", cmd)
+                return
+            stats = await loop.run_in_executor(
+                None, lambda: basemap_builder.build_pack(
+                    (lat, lon), radius, minz, maxz, path))
+            logger.warning(
+                "Offline basemap: fetched %d tiles (skipped %d, failed %d) → %s. "
+                "Restart or reload the GUI to serve it.",
+                stats["fetched"], stats["skipped"], stats["failed"], stats["path"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("Offline basemap provisioning failed (capture unaffected): %s", exc)
+
+    # ------------------------------------------------------------------
     # Inner poll methods
     # ------------------------------------------------------------------
 

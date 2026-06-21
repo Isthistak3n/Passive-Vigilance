@@ -259,6 +259,9 @@ class PassiveVigilance:
             asyncio.create_task(so._poll_remote_id_loop(), name="poll-remoteid"),
             asyncio.create_task(so._health_banner_loop(), name="health-banner"),
             asyncio.create_task(so._watchdog_loop(), name="watchdog"),
+            # One-shot: ensure an offline basemap (off-node by default — just logs the
+            # build command once a GPS fix is in; opt-in fetch via AUTO_BASEMAP_ON_BOOT).
+            asyncio.create_task(so._basemap_provision_once(), name="basemap-provision"),
         ]
         # Rolling-baseline adaptation sweep (P3) — only when a fixed engine opts in
         # via ADAPTATION_POSTURE; off (the default) starts no task.

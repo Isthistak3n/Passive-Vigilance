@@ -396,23 +396,125 @@ Key variables:
 | `GUI_ENABLED` | Enable live web dashboard | `false` |
 | `GUI_PORT` | Web dashboard port | `8080` |
 | `GUI_TOKEN` | Bearer/`?token=` for the dashboard; **required** to use the mode toggle | — |
+| `NODE_DENSITY` | Fixed mode: egregious-threshold preset (`dense`/`suburban`/`rural`) | `suburban` |
+| `EGREGIOUS_SIGNAL_DBM` | Fixed mode: explicit WiFi egregious threshold (overrides preset) | preset |
+| `EGREGIOUS_BLE_SIGNAL_DBM` | Fixed mode: BLE egregious threshold (modality-specific, not density-keyed) | `-50` |
+| `ADAPTATION_POSTURE` | Fixed mode: rolling baseline — `off`, `conservative`, `permissive` | `off` |
+| `OFFLINE_TILES_MBTILES` | Path to the offline basemap MBTiles pack | `data/tiles/basemap.mbtiles` |
+| `AUTO_BASEMAP_ON_BOOT` | Let the node fetch its own basemap on boot (**reveals location** — see step 3) | `false` |
+| `AUTO_BASEMAP_RADIUS_KM` / `_MIN_ZOOM` / `_MAX_ZOOM` | Opt-in fetch area/zoom | `3` / `11` / `17` |
 
 ---
 
 ## Boot sequence
 
-All services start automatically on boot in dependency order:
+All services start automatically on boot in dependency order (`gpsd` → `kismet` →
+`readsb` via the SDR coordinator → `passive-vigilance`). The steps below are the
+**one-time initialization** to bring a node up from a fresh install to a running,
+field-testable sensor — including an **offline basemap** so the maps work with no
+internet.
 
-Check service status at any time:
+### 1. Configure the node
 
 ```bash
-sudo systemctl status gpsd
-sudo systemctl status kismet
-sudo systemctl status passive-vigilance
-
-# View live logs
-journalctl -fu passive-vigilance
+cp .env.example .env
+nano .env
 ```
+
+Set at minimum:
+- **`NODE_MODE`** — `fixed` (leave-behind base station) or `mobile` (wardrive). The
+  node **refuses to enter scoring** without it.
+- **`KISMET_API_KEY`** — generated once in the Kismet web UI (`http://<pi>:2501` →
+  Settings → API Keys).
+- **`ALERT_BACKEND`** — `console` while bench-testing (alerts go to the journal only);
+  set `ntfy` + `NTFY_TOPIC` to actually get pushes on your phone.
+- For a fixed node: review `FIXED_BASELINE_HOURS` (learning window), `NODE_DENSITY`
+  (egregious threshold preset), and `ADAPTATION_POSTURE` (rolling baseline; `off` by
+  default).
+
+### 2. Verify the radios (one-time, after plugging hardware)
+
+```bash
+# WiFi dongle in monitor mode (wlan1 — NOT wlan0, the Pi's network link)
+iw dev wlan1 info | grep -i monitor
+
+# Bluetooth USB dongle up for passive BLE capture
+sudo rfkill unblock bluetooth && hciconfig hci0 up
+
+# GPS streaming
+gpspipe -w -n 5 | grep -i mode
+
+# RTL-SDR present (ADS-B / DroneRF)
+rtl_test -t 2>&1 | head
+```
+
+### 3. Build an offline basemap (do this once, while online)
+
+Field nodes have no internet, so bundle the operating area's map tiles into a single
+`.mbtiles` pack. The GUI serves it directly; tar1090 reads an exported copy.
+
+> **⚠️ OPSEC — build the pack OFF-NODE.** Fetching tiles for a tight area around the
+> node's position **reveals that position**: the tile provider sees the exact tile
+> coordinates server-side, and a passive network observer sees the request burst, the
+> TLS SNI, and the timing (a sensor mapping its own neighbourhood at boot is itself a
+> tell). The safe path — and the default — is to build the pack on a **different
+> machine/network** and copy it onto the node, so the node never contacts a tile server.
+> The node will **not** fetch on its own unless you explicitly opt in (below).
+
+**Recommended — build off-node, copy on.** On a laptop (any network), pick the node's
+center (lat,lon) and zoom range (higher max zoom = more street detail and many more
+tiles), then move the file to the node at `data/tiles/basemap.mbtiles`:
+
+```bash
+# ~3 km around a point, street-level detail (zoom 11–17)
+python3 scripts/fetch_basemap.py --center 21.41,-157.76 --radius-km 3 \
+    --min-zoom 11 --max-zoom 17 --out basemap.mbtiles
+scp basemap.mbtiles pi@<node>:~/Passive-Vigilance/data/tiles/basemap.mbtiles
+```
+
+The GUI serves `/tiles/{z}/{x}/{y}.png` from the pack on next start (no pack → it falls
+back to online OSM). Override the path with `OFFLINE_TILES_MBTILES`. **The node helps you
+here:** when it boots with no pack and a GPS fix, it logs the exact ready-to-run
+`fetch_basemap.py` command for its own location — copy that command to your laptop, run
+it, and copy the result back. No node-side network traffic.
+
+**Opt-in — let the node fetch itself** (convenience, accepts the location leak above):
+set `AUTO_BASEMAP_ON_BOOT=true`. On boot, with no pack + a GPS fix + reachable internet,
+the node builds the pack centered on its position (tunable via `AUTO_BASEMAP_RADIUS_KM`,
+`AUTO_BASEMAP_MIN_ZOOM`, `AUTO_BASEMAP_MAX_ZOOM`). Use only where revealing the node's
+location to the tile provider / network is acceptable.
+
+For **tar1090**, export the same pack to its offline tile tree and enable it:
+
+```bash
+sudo python3 scripts/mbtiles_to_tar1090.py data/tiles/basemap.mbtiles
+# then set the printed max zoom in tar1090's config and reload:
+echo 'offlineMapDetail = 17;' | sudo tee -a /usr/local/share/tar1090/html/config.js
+```
+
+> Tile-usage note: the default source is the public OSM tile server — keep areas small
+> and zoom ranges sane (each +1 zoom is ~4× the tiles). For large areas use your own
+> tile server via `--tile-url`.
+
+### 4. Start and verify
+
+```bash
+sudo systemctl restart passive-vigilance
+
+sudo systemctl status gpsd kismet passive-vigilance
+journalctl -fu passive-vigilance         # live logs
+```
+
+A healthy fixed node logs, on startup:
+`NODE_MODE=fixed`, `Resumed/Started baseline learning window …`, `Startup health:
+ADS-B✓ BLE✓ DroneRF✓ GPS✓ WiFi✓ Remote ID✓`, and (if a pack is present)
+`Offline basemap: serving …`. Open the dashboard at `http://<pi>:<GUI_PORT>`.
+
+> Trust the **per-sensor counters** advancing over the health banner's ✓ flags to judge
+> liveness — a node can sit "green" while silently stalled.
+
+> **Relocating a fixed node?** Wipe `data/baseline.db` so it learns the new
+> environment's pattern of life from scratch instead of carrying the old site's profile.
 
 ---
 
