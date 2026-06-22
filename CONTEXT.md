@@ -121,7 +121,9 @@ authority for what is actually present and working on each node.
 | WiFi/BT scan (Kismet) | ✅ Complete | ✅ Hardware present | ✅ wlan1 + hci0 (BT dongle) active |
 | GPS stamping | ✅ Complete | ✅ u-blox 8 on ttyACM0 | ✅ L76K on ttyAMA0 (3D fix) |
 | ADS-B (readsb) | ✅ Complete | ❌ No SDR dongle | ✅ RTL-SDR present, ADS-B flowing |
-| Drone RF | ✅ Complete | ❌ No SDR dongle | ⚠️ Disabled (`DRONE_RF_ENABLED=false`, SDR segfault #63) |
+| Drone RF | 🗄️ Retired | — | Replaced by the SDR decode cycle; `DRONE_RF_ENABLED=false`, code kept for reversibility |
+| AIS (marine) | 🧩 Phase 1 (software) | — | Optional/off; needs a VHF antenna + AIS-catcher (`INSTALL_AIS=true`) — won't receive on the 1090 antenna |
+| ACARS (aviation datalink) | 🔜 Phase 2 | — | >30s-held ADS-B trigger → decode + tail/flight-id correlation; VHF antenna best-effort |
 | FAA Remote ID | ✅ Complete | ⚠️ Requires Kismet (API key not set) | ✅ Active |
 | Fixed/mobile detection modes | ✅ Phase 2 (main) | — | ✅ `NODE_MODE=fixed` |
 | Entity/observation store | ✅ Complete | — | ✅ Recorded at poll site |

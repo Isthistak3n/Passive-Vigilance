@@ -66,6 +66,7 @@ class SensorOrchestrator:
         entity_store=None,
         remote_id=None,
         ble_scanner=None,
+        ais=None,
         session_id: str,
         session_start: datetime,
         session_dir: Path,
@@ -106,6 +107,9 @@ class SensorOrchestrator:
         self._ble_adverts: dict = {}
         if ble_scanner is not None:
             ble_scanner.on_advert = self._on_ble_advert
+        # Optional AIS (marine VHF) capture — an SDR band like DroneRF/ADS-B. None
+        # unless AIS_ENABLED. Consumes an AIS-catcher JSON feed; off by default.
+        self.ais = ais
 
         self.session_id = session_id
         self.session_start = session_start
@@ -117,6 +121,7 @@ class SensorOrchestrator:
         self._adsb_poll_interval = adsb_poll_interval
         self._kismet_poll_interval = kismet_poll_interval
         self._drone_poll_interval = drone_poll_interval
+        self._ais_poll_interval = int(os.getenv("AIS_POLL_INTERVAL_SECONDS", "10"))
         self._remote_id_poll_interval = remote_id_poll_interval
         self._health_banner_interval = health_banner_interval
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -125,10 +130,11 @@ class SensorOrchestrator:
 
         self._sensor_health: dict[str, bool] = {
             "gps": True, "kismet": True, "adsb": True, "drone_rf": True, "sdr": True,
-            "remote_id": True,
+            "remote_id": True, "ais": True,
         }
         self._degraded_log_counter: dict[str, int] = {
             "gps": 0, "kismet": 0, "adsb": 0, "drone_rf": 0, "sdr": 0, "remote_id": 0,
+            "ais": 0,
         }
         # Watchdog: monotonic timestamp of each sensor's last COMPLETED poll. The
         # exception-based health flips above only catch a poll that *raises*; a
@@ -183,6 +189,7 @@ class SensorOrchestrator:
             "kismet_devices_seen": 0,
             "aircraft_seen": 0,
             "drone_detections": 0,
+            "ais_vessels_seen": 0,
             "remote_id_detections": 0,
             "alerts_sent": 0,
             "alerts_rate_limited": 0,
@@ -247,6 +254,11 @@ class SensorOrchestrator:
         # in place with the latest/peak power and a running count) instead of a
         # row per sweep. A fixed node doesn't move, so no geographic track.
         self._drone_index: dict[str, dict] = {}
+        # AIS vessels — dedup by MMSI into one event per vessel (refreshed in place
+        # with the latest position/name), mirroring the drone band's index. A vessel
+        # carries its OWN position in the AIS message, so the map uses that.
+        self.ais_detections: list[dict] = []
+        self._ais_index: dict[str, dict] = {}
         self.remote_id_detections: list[dict] = []
         # Index UAS ID -> the Remote ID event already in remote_id_detections, so
         # a drone broadcasting every frame becomes ONE event accumulating a
@@ -348,6 +360,19 @@ class SensorOrchestrator:
                 raise
             except Exception as exc:
                 logger.error("Drone RF poll loop sleep error: %s", exc)
+
+    async def _poll_ais_loop(self) -> None:
+        '''Run AIS polling on a fixed interval until stop is signalled.'''
+        while not self._stop_event.is_set():
+            if self._modules_active.get("ais", False):
+                await self._poll_ais()
+                self._mark_poll("ais")
+            try:
+                await asyncio.sleep(self._ais_poll_interval)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("AIS poll loop sleep error: %s", exc)
 
     async def _poll_remote_id_loop(self) -> None:
         '''Run Remote ID polling on a fixed interval until stop is signalled.'''
@@ -1103,6 +1128,70 @@ class SensorOrchestrator:
                 )
             else:
                 self._stats["alerts_rate_limited"] += 1
+
+    async def _poll_ais(self) -> None:
+        '''Drain AIS vessel reports; dedup by MMSI, log, and surface to the GUI.'''
+        if getattr(self.ais, "auto_disabled", False) and self._modules_active.get("ais"):
+            self._modules_active["ais"] = False
+            logger.warning("AIS auto-disabled — marking sensor inactive")
+        try:
+            pending = self.ais.drain_detections()
+        except Exception as exc:
+            if self._sensor_health["ais"]:
+                logger.warning("Sensor ais degraded: %s", exc)
+                self._console_alert(f"Sensor ais degraded: {exc}")
+                self._sensor_health["ais"] = False
+            else:
+                self._degraded_log_counter["ais"] += 1
+                if self._degraded_log_counter["ais"] % 10 == 0:
+                    logger.warning("Sensor ais still degraded after %d consecutive failures",
+                                   self._degraded_log_counter["ais"])
+            return
+        if not self._sensor_health["ais"]:
+            logger.info("Sensor ais recovered")
+            self._sensor_health["ais"] = True
+            self._degraded_log_counter["ais"] = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for vessel in pending:
+            mmsi = vessel.get("mmsi")
+            if mmsi is None:
+                continue
+            ts = vessel.get("timestamp", now_iso)
+            key = str(mmsi)
+            # Forensic series stays on disk; the in-memory list is one row per MMSI.
+            self._append_jsonl(self._session_dir / "ais.jsonl", {
+                "event_type": "ais", "mmsi": mmsi,
+                "lat": vessel.get("lat"), "lon": vessel.get("lon"),
+                "name": vessel.get("name"), "ship_type": vessel.get("ship_type"),
+                "timestamp": ts,
+            })
+            existing = self._ais_index.get(key)
+            if existing is not None:
+                # Same vessel — refresh position/name/identity in place (static and
+                # position reports arrive separately; merge, keeping known values).
+                if vessel.get("lat") is not None:
+                    existing["lat"] = vessel["lat"]
+                    existing["lon"] = vessel["lon"]
+                if vessel.get("name"):
+                    existing["name"] = vessel["name"]
+                if vessel.get("ship_type") is not None:
+                    existing["ship_type"] = vessel["ship_type"]
+                existing["last_seen"] = ts
+                existing["timestamp"] = ts
+                existing["observation_count"] = existing.get("observation_count", 1) + 1
+            else:
+                self._stats["ais_vessels_seen"] += 1
+                event_dict = {
+                    "event_type": "ais", "mmsi": mmsi,
+                    "lat": vessel.get("lat"), "lon": vessel.get("lon"),
+                    "name": vessel.get("name"), "ship_type": vessel.get("ship_type"),
+                    "first_seen": ts, "last_seen": ts, "timestamp": ts,
+                    "observation_count": 1,
+                }
+                self._ais_index[key] = event_dict
+                self.ais_detections.append(event_dict)
+                if self.gui_server is not None:
+                    self.gui_server.push_event("ais", event_dict)
 
     async def _poll_remote_id(self) -> None:
         '''Poll Kismet for Remote ID frames; append events and fire alerts.'''

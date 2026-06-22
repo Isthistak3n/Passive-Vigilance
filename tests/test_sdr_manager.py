@@ -122,11 +122,12 @@ async def test_coordinator_handoff_to_adsb_sets_owner():
     drone_rf.stop_scan = AsyncMock()
 
     coordinator = SDRCoordinator(drone_rf)
-    with patch.object(coordinator, "_start_readsb", new_callable=AsyncMock) as mock_start:
-        await coordinator._handoff_to_adsb()
+    coordinator._handoff_settle = 0  # no real sleep in the test
+    with patch.object(coordinator, "_start_readsb", new_callable=AsyncMock) as mock_start, \
+         patch.object(coordinator, "_is_readsb_active", new_callable=AsyncMock, return_value=True):
+        await coordinator._handoff_to("adsb")
 
     assert coordinator.current_owner == "adsb"
-    assert drone_rf.can_scan is False
     # Handshake now retries up to 5 times (P1 hardening) — test only cares that it was called
     mock_start.assert_awaited()
 
@@ -142,9 +143,10 @@ async def test_coordinator_handoff_to_drone_sets_owner():
 
     coordinator = SDRCoordinator(drone_rf)
     coordinator._handoff_settle = 0  # no real sleep in the test
+    coordinator._current_owner = "adsb"  # readsb holds the dongle → drone handoff releases it
     with patch.object(coordinator, "_stop_readsb", new_callable=AsyncMock) as mock_stop, \
          patch.object(coordinator, "_is_readsb_active", new_callable=AsyncMock, return_value=False):
-        await coordinator._handoff_to_drone()
+        await coordinator._handoff_to("drone_rf")
 
     assert coordinator.current_owner == "drone_rf"
     assert drone_rf.can_scan is True
@@ -191,29 +193,29 @@ async def test_coordinator_stop_restores_readsb():
 
 @pytest.mark.asyncio
 async def test_coordinator_loop_alternates_slices():
-    """Loop calls both handoff methods before being cancelled."""
+    """The N-slice loop hands off to each enabled band before being cancelled."""
     import asyncio
     from unittest.mock import AsyncMock
     from modules.sdr_coordinator import SDRCoordinator
 
     drone_rf = MagicMock()
+    drone_rf.auto_disabled = False           # DroneRF band available
     drone_rf._scan_task = None
     drone_rf.stop_scan = AsyncMock()
     drone_rf.start_scan = AsyncMock()
 
-    coordinator = SDRCoordinator(drone_rf)
-    coordinator._adsb_slice = 0
-    coordinator._drone_slice = 0
+    # Explicit two-band cycle with zero-length slices so it spins fast.
+    coordinator = SDRCoordinator(drone_rf, cycle_slices=[("adsb", 0), ("drone_rf", 0)])
 
-    mock_to_adsb = AsyncMock()
-    mock_to_drone = AsyncMock()
+    handed_off = []
 
-    with patch.object(coordinator, "_handoff_to_adsb", mock_to_adsb), \
-         patch.object(coordinator, "_handoff_to_drone", mock_to_drone):
+    async def spy_handoff(band):
+        handed_off.append(band)
+        await asyncio.sleep(0)   # yield so the cancel below can take effect
 
+    with patch.object(coordinator, "_handoff_to", spy_handoff):
         task = asyncio.create_task(coordinator._coordinator_loop())
-        # Let the loop run through at least one full cycle
-        for _ in range(10):
+        for _ in range(20):
             await asyncio.sleep(0)
         task.cancel()
         try:
@@ -221,5 +223,5 @@ async def test_coordinator_loop_alternates_slices():
         except asyncio.CancelledError:
             pass
 
-    assert mock_to_drone.await_count >= 1, "expected at least one handoff to DroneRF"
-    assert mock_to_adsb.await_count >= 1, "expected at least one handoff to ADS-B"
+    assert "drone_rf" in handed_off, "expected at least one handoff to DroneRF"
+    assert "adsb" in handed_off, "expected at least one handoff to ADS-B"

@@ -397,6 +397,30 @@ clusters around a known-threat origin, or falls inside an operator-defined **wat
 its score — catching a device that tailed the operator from a known source even if never seen
 at this node. Strictly depends on WiGLE enrichment; inherits all of its rules.
 
+## 11. SDR decode cycle — AIS / ADS-B / ACARS (replaces DroneRF)
+
+DroneRF is **retired** (default off, low-value power-threshold scans, antenna-limited, the #63
+libusb SIGSEGV). In its place, the single RTL-SDR runs an ordered **decode cycle**: AIS (marine
+VHF ~162 MHz, optional), ADS-B (1090 MHz, the bulk), and ACARS (aviation VHF ~131 MHz). Generalizes
+`SDRCoordinator` from a fixed readsb↔DroneRF alternation into an N-band cycle (`SDR_CYCLE_SLICES`)
+of band *owners* (`acquire/release/is_available`), reusing the lock + settle barrier + sudoers-scoped
+`systemctl` handshakes. AIS/ACARS run as external decoder systemd services (AIS-catcher / acarsdec),
+not subprocesses — one handoff machine, one crash-isolation story.
+
+**Hard realities (designed around):** ACARS is *decode*, not "decrypt" (it's plaintext); you can't
+aim the radio at one aircraft (decode the shared channel, correlate by tail/flight-id); and AIS/ACARS
+won't receive on the 1090 antenna — both are **best-effort, default-off** until VHF hardware exists.
+On a single dongle, a VHF window blinds ADS-B; a 2nd VHF dongle (DEDICATED) removes the blackout and
+the cycle is bypassed (each band continuous).
+
+**Phase 1 (this work):** retire DroneRF; generalize the coordinator to the N-band cycle; add the
+optional AIS band (`modules/ais.py`, AIS-catcher JSON over UDP, deduped per MMSI) + GUI/deploy/sudoers.
+**Phase 2:** ACARS decoder + the **>30s-held trigger** (a contact continuously in view past
+`ACARS_TRIGGER_SECONDS` requests a bounded `request_band_window("acars", …)` preemption) +
+**connectivity-adaptive correlation** — adsb.lol enrichment when online, else a local ICAO→registration
+DB (tar1090's bundled `db-*` aircraft data, already on the node — opsec-safe, zero network) — matching
+ACARS tail/flight-id back to the live ADS-B contact. Augments-never-gates, offline fully functional.
+
 ---
 
 # Part II — Roadmap
