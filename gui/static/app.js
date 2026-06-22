@@ -23,13 +23,14 @@ const _basemap = window.PV_OFFLINE_BASEMAP || { available: false };
 // nothing instead of a broken-tile / “access blocked” square — the map-hole bug.
 const BLANK_TILE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
-// Online OSM is the base layer so the whole world renders and the operator can pan/
-// zoom beyond the surveyed area. The offline MBTiles pack is laid *on top* and is the
-// one that matters in the surveyed box. errorTileUrl makes a blocked/unreachable OSM
-// tile blank rather than a “403 access blocked” square.
-// OPSEC: requesting online tiles reveals the node's view area to the OSM tile server.
-// For a fully air-gapped deployment, remove this base layer and keep only /tiles.
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+// Online basemap via the NODE'S OSM PROXY (/osm/...), not tile.openstreetmap.org
+// directly: the browser was getting 403'd talking to OSM (and cached the blocked
+// tile, which a refresh won't purge). Proxying through our own origin fixes both —
+// the node fetches OSM fine and disk-caches it. errorTileUrl blanks a tile the node
+// couldn't fetch (e.g. offline) instead of a “403 access blocked” square.
+// OPSEC: the node fetches OSM server-side (reveals view area to OSM). For a fully
+// air-gapped deployment, the node simply can't reach OSM → blank → offline pack shows.
+L.tileLayer('/osm/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap contributors',
   maxZoom: 19,
   errorTileUrl: BLANK_TILE,
