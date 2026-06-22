@@ -413,9 +413,17 @@ won't receive on the 1090 antenna — both are **best-effort, default-off** unti
 On a single dongle, a VHF window blinds ADS-B; a 2nd VHF dongle (DEDICATED) removes the blackout and
 the cycle is bypassed (each band continuous).
 
+**Status (2026-06-21): in on-Pi stress-test before merge.** Phase 1 + Phase 2 + the GUI overhaul
+(DroneRF tab retired, AIS tab added, ACARS surfaced on the aircraft tab) are implemented on
+`feat/sdr-acars-correlation`. The **make-or-break** validation is SDR handoff stability — the
+2026-06-21 readsb "SDR wedged" crash-loop on every time-share handoff is the headline risk, so the
+stress test forces frequent ADS-B↔AIS frequency switches on a short cycle and watches readsb for
+wedges (`scripts/sdr_watch.sh`). AIS/ACARS reception itself is antenna-gated (VHF), so the stress
+test validates the *handoff machinery*, not decode.
+
 **Phase 1 (shipped):** retire DroneRF; generalize the coordinator to the N-band cycle; add the
 optional AIS band (`modules/ais.py`, AIS-catcher JSON over UDP, deduped per MMSI) + GUI/deploy/sudoers.
-**Phase 2 (implemented — on `feat/sdr-acars-correlation`, pending on-Pi validation):** ACARS decoder
+**Phase 2 (implemented):** ACARS decoder
 (`modules/acars.py`, acarsdec/dumpvdl2 JSON) + the **>30s-held trigger** (a contact in view past
 `ACARS_TRIGGER_SECONDS` requests a bounded `request_band_window("acars", …)` preemption) +
 **connectivity-adaptive correlation** (`modules/aircraft_registry.py`) — adsb.lol enrichment when an
@@ -556,6 +564,11 @@ multi-node correlation (the follower-resolves-to-fixed pattern, §5.5). All genu
 
 ## Standing risks
 
+- **SDR-wedge on time-share handoff (open, under test).** The 2026-06-21 readsb "SDR wedged"
+  crash-loop on every dongle handoff is the headline risk for the SDR pivot (§11). The settle
+  barrier + start/stop handshakes are the mitigation; `SDR_HANDOFF_USB_RESET=true` and a second
+  (VHF) dongle are the escalations. Gated by the on-Pi stress test (`scripts/sdr_watch.sh`) before
+  the pivot merges.
 - **Post-freeze memory leak — RETIRED.** Soak #3 ran ~42 h post-freeze, RSS bounded
   (~116–200 MB, no drift); `all_events` dedups per device.
 - **Alert fatigue — largely addressed.** Soak #1 novelty flood and soak #2 off-schedule flood

@@ -21,12 +21,12 @@ transmitting a single packet. It listens. It logs. It alerts.
 
 Originally inspired by [Chasing Your Tail NG](https://github.com/ArgeliusLabs/Chasing-Your-Tail-NG),
 Passive Vigilance extends the counter-surveillance concept into a unified,
-always-on sensor platform covering WiFi, Bluetooth, ADS-B aircraft, and
-drone command links simultaneously — all GPS-stamped and GIS-ready.
+always-on sensor platform covering WiFi, Bluetooth, ADS-B aircraft (with ACARS
+datalink decode), and AIS marine traffic — all GPS-stamped and GIS-ready.
 
-If you've ever wanted to know whether you're being followed, whether there's
-a drone overhead, or who's flying above your location and where they came
-from — this is built for that.
+If you've ever wanted to know whether you're being followed, who's flying above
+your location and where they came from, or what's transiting nearby on the water
+— this is built for that.
 
 **It is entirely passive. It never connects to, transmits to, or interferes
 with any device or network.**
@@ -41,10 +41,12 @@ with any device or network.**
   sensor that learns the location's normal RF "pattern of life," then flags
   devices that deviate from it — new devices that appear and linger (see
   [Detection modes](#detection-modes))
-- **Drone detection** — alert when drone command link frequencies
-  (433 MHz, 868 MHz, 915 MHz, 2.4 GHz) are active in your area
 - **Aircraft awareness** — track aircraft overhead with full registration,
-  operator, and origin data via ADS-B and adsb.lol enrichment
+  operator, and origin data via ADS-B and adsb.lol enrichment; an aircraft held
+  in view triggers an **ACARS** datalink decode window, correlated back to the
+  contact by tail/flight-id
+- **Maritime awareness (AIS)** — passively track nearby vessels (optional; needs
+  a VHF antenna)
 - **Wardriving** — automatically upload session data to WiGLE.net to
   contribute to the global RF database
 - **GIS analysis** — all detections are GPS-stamped and exported as
@@ -72,12 +74,15 @@ flowchart TD
     end
     subgraph Daemons
         READSB["readsb (ADS-B decoder)"]
+        AISD["AIS-catcher / acarsdec<br/>(VHF decoders)"]
         KISMET["Kismet WiFi capture"]
         GPSD["gpsd (position + UTC)"]
     end
     subgraph Orchestrator["Python Orchestrator"]
+        COORD["SDRCoordinator<br/>N-band time-share"]
         ADSB["ADSBModule<br/>+ adsb.lol enrichment"]
-        DRONE["DroneRFModule<br/>433/868/915 MHz"]
+        AIS["AISModule<br/>vessel tracking"]
+        ACARS["ACARSModule<br/>datalink decode"]
         KIS["KismetModule<br/>REST API poll"]
         BLE["BLEScanner<br/>raw-HCI adverts"]
         RID["RemoteIDModule<br/>FAA Remote ID"]
@@ -92,18 +97,21 @@ flowchart TD
         WIGLE["WiGLE Uploader<br/>session CSV"]
         DB[("SQLite DB<br/>event log")]
     end
-    SDR --> READSB
-    SDR --> DRONE
+    SDR -->|time-shared| COORD
+    COORD --> READSB
+    COORD --> AISD
     WIFI --> KISMET
     BT --> BLE
     GPS --> GPSD
     READSB --> ADSB
+    AISD --> AIS
+    AISD --> ACARS
     KISMET --> KIS
     KISMET --> RID
     GPSD --> GPSM
     GPSM -->|GPS stamp| ADSB
     GPSM -->|GPS stamp| KIS
-    GPSM -->|GPS stamp| DRONE
+    ADSB -->|held >30s| ACARS
     KIS --> IGNORE
     BLE --> IGNORE
     IGNORE --> PERSIST
@@ -111,7 +119,7 @@ flowchart TD
     PERSIST --> ALERT
     PROBE --> ALERT
     ADSB --> ALERT
-    DRONE --> ALERT
+    AIS --> ALERT
     RID --> ALERT
     PERSIST --> SHP
     PERSIST --> DB
@@ -191,7 +199,10 @@ it is restarted.
 | GPS daemon | ✅ Complete | gpsd integration, fix quality, HDOP filter — 12 tests |
 | Kismet integration | ✅ Complete | REST API, API key auth, WiGLE CSV — 10 tests |
 | ADS-B | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
-| Drone RF | ✅ Complete | pyrtlsdr, duty cycle, thermal throttle — 15 tests (includes drain_detections) |
+| SDR decode cycle | 🧪 Stress-testing | N-band single-dongle time-share (`SDRCoordinator`): ADS-B + optional AIS, with ACARS preemption on a held contact. Replaces DroneRF |
+| AIS (marine) | 🧪 Stress-testing | `AISModule` — AIS-catcher JSON over UDP; optional/VHF, default off |
+| ACARS (aviation datalink) | 🧪 Stress-testing | `ACARSModule` — acarsdec/dumpvdl2; >30s-held trigger + tail/flight-id correlation to ADS-B; optional/VHF, default off |
+| Drone RF | 🗄️ Retired | Replaced by the SDR decode cycle; `DRONE_RF_ENABLED=false`, code kept for reversibility — 15 tests |
 | WiFi monitor mode | ✅ Complete | RTL8811CU udev + NM unmanaged — 15 tests |
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
 | MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
@@ -283,7 +294,10 @@ Passive-Vigilance/
 │   ├── gps.py                        # GPSModule — gpsd streaming client; position/time backbone
 │   ├── kismet.py                     # KismetModule — Kismet REST API; async WiFi + BT polling; probe-SSID + fingerprint extraction
 │   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
-│   ├── drone_rf.py                   # DroneRFModule — pyrtlsdr; passive RF scan for drone signatures + drain_detections()
+│   ├── ais.py                        # AISModule — AIS-catcher JSON over UDP; marine vessel tracking (optional/VHF)
+│   ├── acars.py                      # ACARSModule — acarsdec/dumpvdl2 JSON; aviation datalink decode (optional/VHF)
+│   ├── aircraft_registry.py          # AircraftRegistry — connectivity-adaptive ICAO→registration (offline DB + adsb.lol)
+│   ├── drone_rf.py                   # DroneRFModule — RETIRED (default off; replaced by the SDR decode cycle; kept for reversibility)
 │   ├── remote_id.py                  # RemoteIDModule — FAA Remote ID (ASTM F3411-22a) via Kismet 802.11 vendor IE
 │   ├── ble_scanner.py                # BLEScanner — passive raw-HCI LE advertisement capture (vendor/services/name + real RSSI)
 │   ├── ble_fingerprint.py            # BLE advertisement → rotation-resistant signature (ble-fp:)
@@ -391,8 +405,13 @@ Key variables:
 | `LOG_LEVEL` | Python logging level | `INFO` |
 | `GPS_MIN_QUALITY` | GPS fix quality gate: `any`, `2d`, or `3d` | `2d` |
 | `GPS_MAX_HDOP` | Reject fixes with HDOP above this value | `5.0` |
-| `DRONE_RF_REST_SECONDS` | Seconds to rest between DroneRF sweep cycles | `20` |
-| `DRONE_RF_MAX_TEMP_C` | CPU temp threshold that doubles rest period | `75` |
+| `SDR_MODE` | `auto` / `shared` (one dongle, time-share) / `dedicated` (≥2 dongles) | `auto` |
+| `SDR_CYCLE_SLICES` | Explicit time-share cycle, e.g. `adsb:840,ais:60` (blank = auto-derive) | — |
+| `AIS_ENABLED` | Marine AIS band (needs AIS-catcher + a VHF antenna) | `false` |
+| `ACARS_ENABLED` | Aviation ACARS decode (needs acarsdec + a VHF antenna) | `false` |
+| `ACARS_TRIGGER_SECONDS` | Hold time before a contact triggers an ACARS window | `30` |
+| `ADSBXLOL_API_KEY` / `AIRCRAFT_REGISTRY_DB` | ACARS↔ADS-B correlation: online enrich, else offline DB | — / `data/registry/aircraft.sqlite` |
+| `DRONE_RF_ENABLED` | **Retired** — DroneRF replaced by the SDR decode cycle | `false` |
 | `GUI_ENABLED` | Enable live web dashboard | `false` |
 | `GUI_PORT` | Web dashboard port | `8080` |
 | `GUI_TOKEN` | Bearer/`?token=` for the dashboard; **required** to use the mode toggle | — |
@@ -444,7 +463,7 @@ sudo rfkill unblock bluetooth && hciconfig hci0 up
 # GPS streaming
 gpspipe -w -n 5 | grep -i mode
 
-# RTL-SDR present (ADS-B / DroneRF)
+# RTL-SDR present (ADS-B / AIS / ACARS)
 rtl_test -t 2>&1 | head
 ```
 
@@ -507,7 +526,7 @@ journalctl -fu passive-vigilance         # live logs
 
 A healthy fixed node logs, on startup:
 `NODE_MODE=fixed`, `Resumed/Started baseline learning window …`, `Startup health:
-ADS-B✓ BLE✓ DroneRF✓ GPS✓ WiFi✓ Remote ID✓`, and (if a pack is present)
+ADS-B✓ BLE✓ GPS✓ WiFi✓ Remote ID✓` (AIS/ACARS appear when enabled), and (if a pack is present)
 `Offline basemap: serving …`. Open the dashboard at `http://<pi>:<GUI_PORT>`.
 
 > Trust the **per-sensor counters** advancing over the health banner's ✓ flags to judge
