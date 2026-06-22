@@ -753,6 +753,29 @@ async def test_poll_adsb_dedups_by_icao_into_one_track(orch):
 
 
 @pytest.mark.asyncio
+async def test_poll_adsb_pushes_stationary_positioned_contact_each_poll(orch):
+    """A positioned plane whose fix isn't advancing must still reach the live map on
+    every poll. readsb holds a plane's position with a growing seen_pos while it isn't
+    sending fresh fixes (fringe reception, slow/distant target), so the position sits
+    frozen across polls and the track never 'moves'. Gating the GUI push on track
+    movement left such a plane in the table/API but never pushed it to the map."""
+    so = orch.sensor_orchestrator
+    orch._adsb_active = True
+    so.gui_server = MagicMock()
+    # Identical position every poll — the track never advances, so the old
+    # (moved or returned) gate would push only on the very first sighting.
+    frozen = _make_aircraft(icao="ABC123", lat=51.5, lon=-0.1, altitude=35000)
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[frozen])
+    await so._poll_adsb()                       # first sighting (new event) pushes
+    so.gui_server.push_event.reset_mock()
+    await so._poll_adsb()                       # same frozen fix — must STILL push
+    pushed = [c for c in so.gui_server.push_event.call_args_list
+              if c.args and c.args[0] == "aircraft"]
+    assert pushed, "a stationary positioned contact must be pushed to the live map each poll"
+    assert pushed[-1].args[1]["lat"] == 51.5 and pushed[-1].args[1]["lon"] == -0.1
+
+
+@pytest.mark.asyncio
 async def test_aircraft_track_thinned_for_stationary_target(orch):
     """A target reporting the same position each poll adds ONE point, not N."""
     so = orch.sensor_orchestrator

@@ -625,7 +625,17 @@ class SensorOrchestrator:
                     # persistence in _poll_kismet — only this meaningful state change
                     # is written, never routine position churn.
                     self._append_jsonl(self._session_dir / "aircraft.jsonl", existing)
-                if self.gui_server is not None and (moved or returned):
+                # Push to the live map whenever the contact currently has a position —
+                # not only when its track advanced. readsb holds a plane's position with
+                # a growing seen_pos while it isn't sending fresh fixes (fringe reception,
+                # slow/distant target), so the position can sit frozen across polls.
+                # Gating the push on track movement (moved) left such a plane in the
+                # table/API but never pushed it to the map — the live marker never
+                # appeared even though the record had a position. The marker's own decay
+                # expires it once the plane leaves; the GUI dedups by ICAO so re-pushing
+                # the same contact each poll just refreshes it.
+                has_pos = existing.get("lat") is not None and existing.get("lon") is not None
+                if self.gui_server is not None and (has_pos or moved or returned):
                     self.gui_server.push_event("aircraft", existing)
             else:
                 event = {**aircraft, "event_type": "aircraft", "timestamp": now_iso,
