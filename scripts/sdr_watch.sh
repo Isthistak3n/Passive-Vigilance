@@ -8,9 +8,10 @@
 #   * readsb crash-looping        — its systemd NRestarts counter climbing
 #   * readsb wedge/claim errors   — its journal in the last interval
 #   * PV-side handoff failures     — passive-vigilance journal
-#   * ADS-B recovery              — aircraft count (0 is normal *during* a VHF slice;
-#                                    sustained 0 across many checks while readsb is
-#                                    "active" is the wedge tell)
+#   * ADS-B liveness              — readsb's Mode-S message counter advancing. A
+#                                    FROZEN counter while readsb is "active" is the
+#                                    stall/wedge tell; aircraft=0 alone is NOT (a
+#                                    sparse sky legitimately shows 0 for minutes)
 #   * PV memory                   — RSS, to catch a leak over a long soak
 #
 # Usage:  ./scripts/sdr_watch.sh [interval_seconds]   (default 60)
@@ -47,15 +48,22 @@ while true; do
     fi
 
     rstate="$(systemctl is-active readsb 2>/dev/null)"
-    ac="$(curl -s --max-time 3 "$READSB_URL" 2>/dev/null \
-        | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('aircraft',[])))" 2>/dev/null || echo '?')"
+    # Read BOTH the aircraft count and readsb's cumulative Mode-S message counter.
+    # aircraft=0 is normal (sparse sky); the real liveness signal is the message
+    # counter advancing. A FROZEN counter while readsb is "active" = a true stall/wedge.
+    read -r ac msgs < <(curl -s --max-time 3 "$READSB_URL" 2>/dev/null \
+        | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('aircraft',[])), d.get('messages',0))" 2>/dev/null || echo '? ?')
 
-    # Sustained 0 aircraft while readsb is "active" across many checks = not recovering.
-    if [ "$rstate" = "active" ] && [ "$ac" = "0" ]; then
-        zero_streak=$((zero_streak + 1))
-        [ "$zero_streak" -ge 5 ] && warns="$warns adsb-not-recovering(${zero_streak}x)"
+    if [ "$rstate" = "active" ]; then
+        if [ -n "$prev_msgs" ] && [ "$msgs" = "$prev_msgs" ] && [ "$msgs" != "?" ]; then
+            stall_streak=$((stall_streak + 1))
+            [ "$stall_streak" -ge 5 ] && warns="$warns adsb-stalled(msgs-frozen ${stall_streak}x)"
+        else
+            stall_streak=0
+        fi
+        prev_msgs="$msgs"
     else
-        zero_streak=0
+        stall_streak=0   # inactive = an AIS/ACARS slice has the dongle; expected
     fi
 
     pid="$(systemctl show -p MainPID --value passive-vigilance 2>/dev/null)"
@@ -64,8 +72,8 @@ while true; do
         | grep -oiE "handing off to [a-z_]+" | tail -1)"
 
     status="OK"; [ -n "$warns" ] && status="WARN:$warns"
-    printf '%s readsb=%s aircraft=%s rss=%sMB restarts=%s [%s] %s\n' \
-        "$ts" "$rstate" "$ac" "$rss" "$restarts" "${owner:-no-handoff-seen}" "$status" | tee -a "$LOG"
+    printf '%s readsb=%s aircraft=%s msgs=%s rss=%sMB restarts=%s [%s] %s\n' \
+        "$ts" "$rstate" "$ac" "${msgs:-?}" "$rss" "$restarts" "${owner:-no-handoff-seen}" "$status" | tee -a "$LOG"
 
     sleep "$INTERVAL"
 done
