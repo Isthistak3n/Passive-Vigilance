@@ -8,7 +8,7 @@
 const state = {
   wifi:     [],   // deduplicated by MAC
   aircraft: [],
-  drone:    [],
+  ais:      [],   // deduplicated by MMSI
   alerts:   [],
   nearby:   [],   // live "what's around me" feed, deduplicated by MAC
 };
@@ -120,19 +120,20 @@ function renderAircraft() {
   }).join('');
 }
 
-function renderDrone() {
-  const q = document.getElementById('drone-search').value.toLowerCase();
-  const rows = state.drone
+function renderAis() {
+  const q = document.getElementById('ais-search').value.toLowerCase();
+  const rows = state.ais
     .filter(e => !q || JSON.stringify(e).toLowerCase().includes(q))
     .slice(-200)
     .reverse();
-  document.getElementById('drone-tbody').innerHTML = rows.map(e => `
+  document.getElementById('ais-tbody').innerHTML = rows.map(e => `
     <tr>
-      <td>${e.freq_mhz ?? '—'}</td>
-      <td>${e.power_db ?? '—'}</td>
+      <td>${e.name ? esc(e.name) : '—'}</td>
+      <td>${e.mmsi ?? '—'}</td>
+      <td>${e.ship_type ?? '—'}</td>
       <td>${e.lat ?? '—'}</td>
       <td>${e.lon ?? '—'}</td>
-      <td>${fmtTime(e.timestamp)}</td>
+      <td>${fmtTime(e.last_seen || e.timestamp)}</td>
     </tr>`).join('');
 }
 
@@ -218,7 +219,7 @@ function renderNearby() {
 })();
 
 // Search filters
-['wifi', 'aircraft', 'drone'].forEach(tab => {
+['wifi', 'aircraft', 'ais'].forEach(tab => {
   const el = document.getElementById(`${tab}-search`);
   if (el) el.addEventListener('input', () => window[`render${tab[0].toUpperCase()}${tab.slice(1)}`]());
 });
@@ -230,8 +231,8 @@ document.getElementById('wifi-clear').addEventListener('click', () => {
 document.getElementById('aircraft-clear').addEventListener('click', () => {
   state.aircraft = []; renderAircraft(); setBadge('badge-aircraft', 0);
 });
-document.getElementById('drone-clear').addEventListener('click', () => {
-  state.drone = []; renderDrone(); setBadge('badge-drone', 0);
+document.getElementById('ais-clear').addEventListener('click', () => {
+  state.ais = []; renderAis(); setBadge('badge-ais', 0);
 });
 document.getElementById('alerts-clear').addEventListener('click', () => {
   state.alerts = []; renderAlerts(); setBadge('badge-alerts', 0);
@@ -239,12 +240,12 @@ document.getElementById('alerts-clear').addEventListener('click', () => {
 
 // ── Status polling ───────────────────────────────────────────────────────────
 function applyHealth(health, active, gpsFix) {
-  const map_ = { gps: 's-gps', kismet: 's-kismet', adsb: 's-adsb', 'drone_rf': 's-drone-rf' };
+  const map_ = { gps: 's-gps', kismet: 's-kismet', adsb: 's-adsb', ais: 's-ais' };
   active = active || {};
   Object.entries(map_).forEach(([key, id]) => {
     const el = document.getElementById(id);
     if (!el) return;
-    // A sensor that isn't running (e.g. DroneRF disabled) shows as "off", not
+    // A sensor that isn't running (e.g. AIS off) shows as "off", not
     // healthy. A missing modules_active key is treated as active (back-compat).
     const isActive = active[key] !== false;
     const ok = health[key];
@@ -342,7 +343,7 @@ async function seedFromRest() {
   const endpoints = [
     { url: '/api/wifi',     key: 'wifi',     render: renderWifi,     badge: 'badge-wifi' },
     { url: '/api/aircraft', key: 'aircraft', render: renderAircraft, badge: 'badge-aircraft' },
-    { url: '/api/drone',    key: 'drone',    render: renderDrone,    badge: 'badge-drone' },
+    { url: '/api/ais',      key: 'ais',      render: renderAis,      badge: 'badge-ais' },
     { url: '/api/alerts',   key: 'alerts',   render: renderAlerts,   badge: 'badge-alerts' },
     { url: '/api/nearby',   key: 'nearby',   render: renderNearby,   badge: 'badge-nearby' },
   ];
@@ -393,10 +394,10 @@ function connectSSE() {
       if (idx >= 0) state.aircraft[idx] = data; else state.aircraft.push(data);
       setBadge('badge-aircraft', state.aircraft.length);
       renderAircraft();
-    } else if (type === 'drone') {
-      state.drone.push(data);
-      setBadge('badge-drone', state.drone.length);
-      renderDrone();
+    } else if (type === 'ais') {
+      const idx = state.ais.findIndex(e => e.mmsi === data.mmsi);
+      if (idx >= 0) state.ais[idx] = data; else state.ais.push(data);
+      renderAis();
     } else if (type === 'alert') {
       state.alerts.push(data);
       setBadge('badge-alerts', state.alerts.length);

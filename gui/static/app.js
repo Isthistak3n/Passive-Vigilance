@@ -4,7 +4,7 @@
 const state = {
   wifi:     [],   // deduplicated by MAC
   aircraft: [],
-  drone:    [],
+  ais:      [],   // deduplicated by MMSI
   alerts:   [],
   remoteId: [],   // deduplicated by UAS ID
 };
@@ -17,26 +17,47 @@ const map = L.map('map', { zoomControl: true }).setView([51.5, -0.1], 10);
 // no internet; otherwise use online OSM. The pack's own zoom range and center are
 // honored so the operator lands on the surveyed area, not the default view.
 const _basemap = window.PV_OFFLINE_BASEMAP || { available: false };
+
+// A 1×1 transparent PNG. Used as errorTileUrl so a tile that fails to load (an
+// OSM 403/“access blocked”, or a missing offline tile outside the pack) renders as
+// nothing instead of a broken-tile / “access blocked” square — the map-hole bug.
+const BLANK_TILE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+// Online basemap via the NODE'S OSM PROXY (/osm/...), not tile.openstreetmap.org
+// directly: the browser was getting 403'd talking to OSM (and cached the blocked
+// tile, which a refresh won't purge). Proxying through our own origin fixes both —
+// the node fetches OSM fine and disk-caches it. errorTileUrl blanks a tile the node
+// couldn't fetch (e.g. offline) instead of a “403 access blocked” square.
+// OPSEC: the node fetches OSM server-side (reveals view area to OSM). For a fully
+// air-gapped deployment, the node simply can't reach OSM → blank → offline pack shows.
+L.tileLayer('/osm/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap contributors',
+  maxZoom: 19,
+  errorTileUrl: BLANK_TILE,
+}).addTo(map);
+
 if (_basemap.available) {
+  // maxNativeZoom = the deepest zoom with real tiles in the pack; maxZoom higher so
+  // Leaflet UPSCALES those tiles when you zoom in past the pack's range. That keeps
+  // the surveyed area on OFFLINE tiles (blurry, but present) instead of falling
+  // through to online OSM — which is what produced the “403 hole” when zooming close.
+  const packMax = _basemap.maxzoom || 17;
   L.tileLayer('/tiles/{z}/{x}/{y}.png', {
     attribution: _basemap.attribution || '© OpenStreetMap contributors',
     minZoom: _basemap.minzoom || 0,
-    maxZoom: _basemap.maxzoom || 19,
+    maxNativeZoom: packMax,
+    maxZoom: 19,
+    errorTileUrl: BLANK_TILE,   // outside the box → transparent, OSM base shows through
   }).addTo(map);
   if (Array.isArray(_basemap.center) && _basemap.center.length === 2) {
-    map.setView(_basemap.center, _basemap.maxzoom ? Math.max(_basemap.minzoom || 0, _basemap.maxzoom - 3) : 14);
+    map.setView(_basemap.center, packMax ? Math.max(_basemap.minzoom || 0, packMax - 3) : 14);
   }
-} else {
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors',
-    maxZoom: 19,
-  }).addTo(map);
 }
 
 const layers = {
   wifi:     L.layerGroup().addTo(map),
   aircraft: L.layerGroup().addTo(map),
-  drone:    L.layerGroup().addTo(map),
+  ais:      L.layerGroup().addTo(map),
 };
 
 function wifiColor(level) {
@@ -89,13 +110,14 @@ function addAircraftMarker(ev) {
   ).addTo(layers.aircraft);
 }
 
-function addDroneMarker(ev) {
+function addAisMarker(ev) {
   if (ev.lat == null || ev.lon == null) return;
   L.circleMarker([ev.lat, ev.lon], {
-    radius: 8, color: '#bc8cff', fillOpacity: 0.9,
+    radius: 6, color: '#3fb950', fillOpacity: 0.85,
   }).bindPopup(
-    `<b>Drone RF</b><br>${ev.freq_mhz} MHz  ${ev.power_db} dBm`
-  ).addTo(layers.drone);
+    `<b>${ev.name ? esc(ev.name) : ('MMSI ' + ev.mmsi)}</b>` +
+    `<br>MMSI: ${ev.mmsi}` + (ev.ship_type != null ? `<br>Type: ${esc(String(ev.ship_type))}` : '')
+  ).addTo(layers.ais);
 }
 
 // ── Tab switching ────────────────────────────────────────────────────────────
@@ -345,18 +367,25 @@ const tables = {
     columns: [
       { k: 'callsign', label: 'Callsign' }, { k: 'icao', label: 'ICAO' }, { k: 'registration', label: 'Reg' },
       { k: 'altitude', label: 'Alt_ft' }, { k: 'speed', label: 'Speed' }, { k: 'lat', label: 'Lat' },
-      { k: 'lon', label: 'Lon' }, { k: 'emergency', label: 'Emergency' }, { k: 'time', label: 'Time' },
+      { k: 'lon', label: 'Lon' }, { k: 'acars', label: 'ACARS_count' },
+      { k: 'emergency', label: 'Emergency' }, { k: 'time', label: 'Time' },
     ],
     filters: [{ k: 'emergency', label: 'Emergency' }],
     min: null,
     defaultSort: { k: 'time', dir: 'desc', type: 'time' },
     rows() {
-      return state.aircraft.map(e => ({
-        callsign: e.callsign || '', icao: e.icao || '', registration: e.registration || '',
-        altitude: e.altitude ?? '', speed: e.speed ?? '', lat: e.lat ?? '', lon: e.lon ?? '',
-        emergency: e.emergency ? 'Yes' : 'No', time: e.timestamp || '',
-        returning: !!e.returning, return_count: e.return_count || 0,
-      }));
+      return state.aircraft.map(e => {
+        const ac = Array.isArray(e.acars) ? e.acars : [];
+        const latest = ac.length ? ac[ac.length - 1] : null;
+        return {
+          callsign: e.callsign || '', icao: e.icao || '', registration: e.registration || '',
+          altitude: e.altitude ?? '', speed: e.speed ?? '', lat: e.lat ?? '', lon: e.lon ?? '',
+          emergency: e.emergency ? 'Yes' : 'No', time: e.timestamp || '',
+          returning: !!e.returning, return_count: e.return_count || 0,
+          acars: ac.length,
+          acars_text: latest ? `${latest.label ? latest.label + ': ' : ''}${latest.text || ''}`.trim() : '',
+        };
+      });
     },
     cell(r) {
       const pos = (r.lat !== '' && r.lat != null && r.lon !== '' && r.lon != null)
@@ -365,6 +394,9 @@ const tables = {
       const ret = r.returning
         ? ` <span class="returning" title="Re-seen after an absence — same airframe (${r.return_count || 1}×)">↩ RETURN${(r.return_count || 1) > 1 ? ' ×' + r.return_count : ''}</span>`
         : '';
+      const acars = r.acars > 0
+        ? `<span class="acars-badge" title="${esc(r.acars_text)}">✉ ${r.acars}</span>`
+        : '—';
       return `
     <tr class="${r.returning ? 'returning-row' : ''}">
       <td>${r.callsign ? esc(r.callsign) : '—'}${ret}</td>
@@ -373,34 +405,44 @@ const tables = {
       <td>${r.altitude === '' ? '—' : r.altitude}</td>
       <td>${r.speed === '' ? '—' : r.speed}</td>
       <td>${pos}</td>
+      <td>${acars}</td>
       <td class="${r.emergency === 'Yes' ? 'emergency-yes' : ''}">${r.emergency === 'Yes' ? '🚨 YES' : 'No'}</td>
       <td>${fmtTime(r.time)}</td>
     </tr>`;
     },
   }),
 
-  drone: createTable({
-    tab: 'drone',
+  ais: createTable({
+    tab: 'ais',
     columns: [
-      { k: 'freq_mhz', label: 'Freq_MHz' }, { k: 'power_db', label: 'Power_dBm' },
-      { k: 'lat', label: 'Lat' }, { k: 'lon', label: 'Lon' }, { k: 'time', label: 'Time' },
+      { k: 'name', label: 'Vessel' }, { k: 'mmsi', label: 'MMSI' }, { k: 'ship_type', label: 'Type' },
+      { k: 'lat', label: 'Lat' }, { k: 'lon', label: 'Lon' }, { k: 'seen', label: 'Seen' },
+      { k: 'time', label: 'Time' },
     ],
-    filters: [{ k: 'freq_mhz', label: 'Band' }],
+    filters: [{ k: 'ship_type', label: 'Type' }],
     min: null,
     defaultSort: { k: 'time', dir: 'desc', type: 'time' },
     rows() {
-      return state.drone.map(e => ({
-        freq_mhz: e.freq_mhz ?? '', power_db: e.power_db ?? '',
-        lat: e.lat ?? '', lon: e.lon ?? '', time: e.timestamp || '',
+      return state.ais.map(e => ({
+        name: e.name || '', mmsi: e.mmsi ?? '', ship_type: e.ship_type ?? '',
+        lat: e.lat ?? '', lon: e.lon ?? '', seen: e.observation_count ?? '',
+        time: e.last_seen || e.timestamp || '',
       }));
     },
     cell(r) {
+      const pos = (r.lat !== '' && r.lat != null && r.lon !== '' && r.lon != null)
+        ? `${(+r.lat).toFixed(3)}, ${(+r.lon).toFixed(3)}`
+        : '<span class="no-pos">no position</span>';
+      const lat = (r.lat !== '' && r.lat != null) ? (+r.lat).toFixed(3) : '—';
+      const lon = (r.lon !== '' && r.lon != null) ? (+r.lon).toFixed(3) : '—';
       return `
     <tr>
-      <td>${r.freq_mhz === '' ? '—' : r.freq_mhz}</td>
-      <td>${r.power_db === '' ? '—' : r.power_db}</td>
-      <td>${r.lat === '' ? '—' : r.lat}</td>
-      <td>${r.lon === '' ? '—' : r.lon}</td>
+      <td>${r.name ? esc(r.name) : '—'}</td>
+      <td><code>${r.mmsi || '—'}</code></td>
+      <td>${r.ship_type === '' ? '—' : esc(String(r.ship_type))}</td>
+      <td>${lat}</td>
+      <td>${lon}</td>
+      <td>${r.seen === '' ? '—' : r.seen}</td>
       <td>${fmtTime(r.time)}</td>
     </tr>`;
     },
@@ -456,7 +498,12 @@ function renderAircraft() {
   state.aircraft.forEach(addAircraftMarker);
 }
 
-function renderDrone() { tables.drone.render(); }
+function renderAis() {
+  setBadge('badge-ais', state.ais.length);
+  tables.ais.render();
+  layers.ais.clearLayers();
+  state.ais.forEach(addAisMarker);
+}
 
 function renderRemoteId() {
   if (!document.getElementById('remote-id-tbody')) return;   // stale cached DOM — no-op
@@ -493,8 +540,8 @@ document.getElementById('wifi-clear')?.addEventListener('click', () => {
 document.getElementById('aircraft-clear')?.addEventListener('click', () => {
   state.aircraft = []; layers.aircraft.clearLayers(); renderAircraft(); setBadge('badge-aircraft', 0);
 });
-document.getElementById('drone-clear')?.addEventListener('click', () => {
-  state.drone = []; layers.drone.clearLayers(); renderDrone(); setBadge('badge-drone', 0);
+document.getElementById('ais-clear')?.addEventListener('click', () => {
+  state.ais = []; layers.ais.clearLayers(); renderAis(); setBadge('badge-ais', 0);
 });
 document.getElementById('remote-id-clear')?.addEventListener('click', () => {
   state.remoteId = []; renderRemoteId(); setBadge('badge-remote-id', 0);
@@ -505,12 +552,12 @@ document.getElementById('alerts-clear')?.addEventListener('click', () => {
 
 // ── Status polling ───────────────────────────────────────────────────────────
 function applyHealth(health, active, gpsFix) {
-  const map_ = { gps: 's-gps', kismet: 's-kismet', ble: 's-ble', adsb: 's-adsb', 'drone_rf': 's-drone-rf' };
+  const map_ = { gps: 's-gps', kismet: 's-kismet', ble: 's-ble', adsb: 's-adsb', ais: 's-ais', acars: 's-acars' };
   active = active || {};
   Object.entries(map_).forEach(([key, id]) => {
     const el = document.getElementById(id);
     if (!el) return;
-    // A sensor that isn't running (e.g. DroneRF disabled, or BLE controller down)
+    // A sensor that isn't running (e.g. AIS/ACARS off, or BLE controller down)
     // shows as "off", not healthy. A missing modules_active key is treated as active
     // (back-compat). BLE has no separate sensor_health flip, so absence => ok.
     const isActive = active[key] !== false;
@@ -609,7 +656,7 @@ async function seedFromRest() {
   const endpoints = [
     { url: '/api/wifi',     key: 'wifi',     render: renderWifi,     badge: 'badge-wifi',     marker: addWifiMarker,  layer: layers.wifi },
     { url: '/api/aircraft', key: 'aircraft', render: renderAircraft, badge: 'badge-aircraft', marker: null,           layer: null },
-    { url: '/api/drone',    key: 'drone',    render: renderDrone,    badge: 'badge-drone',    marker: addDroneMarker, layer: layers.drone },
+    { url: '/api/ais',      key: 'ais',      render: renderAis,      badge: 'badge-ais',      marker: addAisMarker,   layer: layers.ais },
     { url: '/api/remote_id', key: 'remoteId', render: renderRemoteId, badge: 'badge-remote-id', marker: null,         layer: null },
     { url: '/api/alerts',   key: 'alerts',   render: renderAlerts,   badge: 'badge-alerts',   marker: null,           layer: null },
   ];
@@ -663,11 +710,15 @@ function connectSSE() {
       if (idx >= 0) state.aircraft[idx] = data; else state.aircraft.push(data);
       setBadge('badge-aircraft', state.aircraft.length);
       renderAircraft();   // rebuilds the table and the map markers from state
-    } else if (type === 'drone') {
-      state.drone.push(data);
-      setBadge('badge-drone', state.drone.length);
-      addDroneMarker(data);
-      renderDrone();
+    } else if (type === 'ais') {
+      // Deduplicate by MMSI — a vessel re-reports position/static periodically.
+      const idx = state.ais.findIndex(e => e.mmsi === data.mmsi);
+      if (idx >= 0) state.ais[idx] = data; else state.ais.push(data);
+      renderAis();
+    } else if (type === 'acars') {
+      // Raw ACARS feed; correlated messages already ride on the aircraft event
+      // (event.acars → the Aircraft tab's ACARS column), so nothing to do here.
+      return;
     } else if (type === 'remote_id') {
       // Deduplicate by UAS ID — a broadcasting drone is re-pushed as its track advances.
       const idx = state.remoteId.findIndex(e => e.uas_id === data.uas_id);
@@ -700,7 +751,7 @@ setInterval(seedFromRest, 15000);
 
 // Re-render the aircraft panel on a timer so recency decay applies (and stale
 // contacts expire) even during quiet periods with no new SSE pushes — e.g. while
-// readsb is stopped during a DroneRF SDR slice.
+// readsb is stopped during an AIS/ACARS SDR slice.
 setInterval(renderAircraft, 5000);
 
 // ── Baseline-state header ─────────────────────────────────────────────────────

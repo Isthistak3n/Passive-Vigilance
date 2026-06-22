@@ -1,0 +1,19 @@
+[Unit]
+Description=acarsdec — ACARS (aviation VHF datalink) decoder for Passive Vigilance
+Documentation=https://github.com/TLeconte/acarsdec
+After=network.target
+
+[Service]
+# Coordinator-managed: Passive Vigilance requests a bounded ACARS window (via sudo
+# systemctl) when an ADS-B contact is held >30 s. NOT enabled at boot, and Restart=no,
+# so systemd never auto-restarts it and grabs the shared dongle outside a window.
+Type=simple
+# Decode the common ACARS VHF channels and emit JSON over UDP to the ACARSModule
+# listener (127.0.0.1:5555). -r 0 selects the first RTL-SDR; on a dedicated VHF
+# dongle set its index. Channels are the standard POA ACARS frequencies (MHz).
+ExecStart=/usr/local/bin/acarsdec -j 127.0.0.1:5555 -r 0 131.550 131.725 131.825 130.025 130.450
+Restart=no
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

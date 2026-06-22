@@ -413,13 +413,18 @@ won't receive on the 1090 antenna — both are **best-effort, default-off** unti
 On a single dongle, a VHF window blinds ADS-B; a 2nd VHF dongle (DEDICATED) removes the blackout and
 the cycle is bypassed (each band continuous).
 
-**Phase 1 (this work):** retire DroneRF; generalize the coordinator to the N-band cycle; add the
+**Phase 1 (shipped):** retire DroneRF; generalize the coordinator to the N-band cycle; add the
 optional AIS band (`modules/ais.py`, AIS-catcher JSON over UDP, deduped per MMSI) + GUI/deploy/sudoers.
-**Phase 2:** ACARS decoder + the **>30s-held trigger** (a contact continuously in view past
+**Phase 2 (implemented — on `feat/sdr-acars-correlation`, pending on-Pi validation):** ACARS decoder
+(`modules/acars.py`, acarsdec/dumpvdl2 JSON) + the **>30s-held trigger** (a contact in view past
 `ACARS_TRIGGER_SECONDS` requests a bounded `request_band_window("acars", …)` preemption) +
-**connectivity-adaptive correlation** — adsb.lol enrichment when online, else a local ICAO→registration
-DB (tar1090's bundled `db-*` aircraft data, already on the node — opsec-safe, zero network) — matching
-ACARS tail/flight-id back to the live ADS-B contact. Augments-never-gates, offline fully functional.
+**connectivity-adaptive correlation** (`modules/aircraft_registry.py`) — adsb.lol enrichment when an
+API key is set, else an **offline ICAO→registration SQLite built off-node** (`scripts/build_aircraft_registry.py`
+from a public CSV; opsec-safe, zero node-side queries) — matching ACARS **tail↔registration /
+flight-id↔callsign** back to the live ADS-B contact (`event["acars"]`). Augments-never-gates; offline
+fully functional (correlation falls back to callsign with no registry at all).
+*Note:* the offline DB is built from a public CSV, not tar1090's bundled `db-*` shards — those are
+zlib-compressed binary (a fragile, version-specific trie), so a clean off-node SQLite is the robust source.
 
 ---
 

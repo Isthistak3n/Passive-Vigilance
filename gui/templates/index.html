@@ -15,7 +15,8 @@
       <span class="sensor" id="s-kismet" title="Kismet">WiFi</span>
       <span class="sensor" id="s-ble" title="BLE (Bluetooth)">BLE</span>
       <span class="sensor" id="s-adsb" title="ADS-B">ADS-B</span>
-      <span class="sensor" id="s-drone-rf" title="Drone RF">Drone</span>
+      <span class="sensor" id="s-ais" title="AIS (marine VHF)">AIS</span>
+      <span class="sensor" id="s-acars" title="ACARS (aviation datalink)">ACARS</span>
       <span class="session-id" id="session-id">—</span>
       <span class="node-mode" id="node-mode" title="Scoring mode (NODE_MODE)">
         <label for="mode-select">Mode</label>
@@ -42,8 +43,8 @@
     <button class="tab-btn" data-tab="aircraft">
       Aircraft <span class="badge" id="badge-aircraft">0</span>
     </button>
-    <button class="tab-btn" data-tab="drone">
-      Drone RF <span class="badge" id="badge-drone">0</span>
+    <button class="tab-btn" data-tab="ais">
+      AIS <span class="badge" id="badge-ais">0</span>
     </button>
     <button class="tab-btn" data-tab="remote-id">
       Remote ID <span class="badge" id="badge-remote-id">0</span>
@@ -62,7 +63,7 @@
         <span class="legend-item"><span class="dot wifi-likely"></span>Likely</span>
         <span class="legend-item"><span class="dot wifi-suspicious"></span>Suspicious</span>
         <span class="legend-item"><span class="dot aircraft-dot"></span>Aircraft</span>
-        <span class="legend-item"><span class="dot drone-dot"></span>Drone RF</span>
+        <span class="legend-item"><span class="dot ais-dot"></span>Vessels (AIS)</span>
       </div>
     </section>
 
@@ -110,6 +111,7 @@
               <th data-col="altitude" data-type="num">Alt (ft)</th>
               <th data-col="speed" data-type="num">Speed</th>
               <th>Position</th>
+              <th data-col="acars" data-type="num">ACARS</th>
               <th data-col="emergency" data-type="text">Emergency</th>
               <th data-col="time" data-type="time">Time</th>
             </tr>
@@ -119,24 +121,26 @@
       </div>
     </section>
 
-    <!-- Drone tab -->
-    <section id="tab-drone" class="tab-panel">
+    <!-- AIS tab -->
+    <section id="tab-ais" class="tab-panel">
       <div class="toolbar">
-        <input type="text" id="drone-search" placeholder="Filter by frequency…">
-        <button id="drone-clear" class="btn-sm">Clear</button>
+        <input type="text" id="ais-search" placeholder="Filter by name, MMSI, type…">
+        <button id="ais-clear" class="btn-sm">Clear</button>
       </div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th data-col="freq_mhz" data-type="num">Freq (MHz)</th>
-              <th data-col="power_db" data-type="num">Power (dBm)</th>
+              <th data-col="name" data-type="text">Vessel</th>
+              <th data-col="mmsi" data-type="text">MMSI</th>
+              <th data-col="ship_type" data-type="text">Type</th>
               <th data-col="lat" data-type="num">Lat</th>
               <th data-col="lon" data-type="num">Lon</th>
-              <th data-col="time" data-type="time">Time</th>
+              <th data-col="seen" data-type="num">Seen</th>
+              <th data-col="time" data-type="time">Last</th>
             </tr>
           </thead>
-          <tbody id="drone-tbody"></tbody>
+          <tbody id="ais-tbody"></tbody>
         </table>
       </div>
     </section>
