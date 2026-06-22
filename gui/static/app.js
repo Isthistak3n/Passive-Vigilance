@@ -18,25 +18,38 @@ const map = L.map('map', { zoomControl: true }).setView([51.5, -0.1], 10);
 // honored so the operator lands on the surveyed area, not the default view.
 const _basemap = window.PV_OFFLINE_BASEMAP || { available: false };
 
+// A 1×1 transparent PNG. Used as errorTileUrl so a tile that fails to load (an
+// OSM 403/“access blocked”, or a missing offline tile outside the pack) renders as
+// nothing instead of a broken-tile / “access blocked” square — the map-hole bug.
+const BLANK_TILE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
 // Online OSM is the base layer so the whole world renders and the operator can pan/
-// zoom beyond the surveyed area. When an offline MBTiles pack is present it is laid
-// *on top*: its opaque tiles override OSM inside the surveyed box, and where the pack
-// has no tile (outside the box, or zoomed past its range) the OSM base shows through.
+// zoom beyond the surveyed area. The offline MBTiles pack is laid *on top* and is the
+// one that matters in the surveyed box. errorTileUrl makes a blocked/unreachable OSM
+// tile blank rather than a “403 access blocked” square.
 // OPSEC: requesting online tiles reveals the node's view area to the OSM tile server.
 // For a fully air-gapped deployment, remove this base layer and keep only /tiles.
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap contributors',
   maxZoom: 19,
+  errorTileUrl: BLANK_TILE,
 }).addTo(map);
 
 if (_basemap.available) {
+  // maxNativeZoom = the deepest zoom with real tiles in the pack; maxZoom higher so
+  // Leaflet UPSCALES those tiles when you zoom in past the pack's range. That keeps
+  // the surveyed area on OFFLINE tiles (blurry, but present) instead of falling
+  // through to online OSM — which is what produced the “403 hole” when zooming close.
+  const packMax = _basemap.maxzoom || 17;
   L.tileLayer('/tiles/{z}/{x}/{y}.png', {
     attribution: _basemap.attribution || '© OpenStreetMap contributors',
     minZoom: _basemap.minzoom || 0,
-    maxZoom: _basemap.maxzoom || 19,
+    maxNativeZoom: packMax,
+    maxZoom: 19,
+    errorTileUrl: BLANK_TILE,   // outside the box → transparent, OSM base shows through
   }).addTo(map);
   if (Array.isArray(_basemap.center) && _basemap.center.length === 2) {
-    map.setView(_basemap.center, _basemap.maxzoom ? Math.max(_basemap.minzoom || 0, _basemap.maxzoom - 3) : 14);
+    map.setView(_basemap.center, packMax ? Math.max(_basemap.minzoom || 0, packMax - 3) : 14);
   }
 }
 

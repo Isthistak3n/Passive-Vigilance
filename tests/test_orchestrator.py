@@ -589,6 +589,48 @@ async def test_poll_ais_dedups_vessel_by_mmsi(orch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_poll_ais_drops_out_of_range_misdecode(orch, tmp_path):
+    """A positioned vessel implausibly far for VHF is dropped as a misdecode; a
+    near vessel and a position-less (static) report are kept."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so.ais = MagicMock()
+    so._modules_active["ais"] = True
+    so._ais_max_range_km = 100.0
+    so._current_fix = {"lat": 21.40, "lon": -157.76}        # Oʻahu
+    so.ais.drain_detections = MagicMock(return_value=[
+        {"mmsi": 367634290, "lat": 21.42, "lon": -157.79, "name": None, "ship_type": None,
+         "timestamp": "2026-01-01T12:00:00+00:00"},          # ~3 km — kept
+        {"mmsi": 112088045, "lat": 28.28, "lon": 66.02, "name": None, "ship_type": None,
+         "timestamp": "2026-01-01T12:00:00+00:00"},          # Pakistan — dropped
+        {"mmsi": 999, "lat": None, "lon": None, "name": "DOCKED", "ship_type": 52,
+         "timestamp": "2026-01-01T12:00:00+00:00"},          # no position — kept
+    ])
+    await so._poll_ais()
+    seen = {e["mmsi"] for e in so.ais_detections}
+    assert seen == {367634290, 999}
+    assert so._stats["ais_out_of_range_dropped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_ais_no_gps_fix_disables_range_filter(orch, tmp_path):
+    """With no GPS fix, the range filter is off (never silently hides everything)."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so.ais = MagicMock()
+    so._modules_active["ais"] = True
+    so._current_fix = None
+    so.ais.drain_detections = MagicMock(return_value=[
+        {"mmsi": 112088045, "lat": 28.28, "lon": 66.02, "name": None, "ship_type": None,
+         "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_ais()
+    assert {e["mmsi"] for e in so.ais_detections} == {112088045}   # kept (no fix → no filter)
+
+
+@pytest.mark.asyncio
 async def test_poll_ais_auto_disable_marks_inactive(orch):
     """An auto-disabled AIS module greys the sensor like DroneRF does."""
     so = orch.sensor_orchestrator

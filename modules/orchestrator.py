@@ -134,6 +134,10 @@ class SensorOrchestrator:
         self._kismet_poll_interval = kismet_poll_interval
         self._drone_poll_interval = drone_poll_interval
         self._ais_poll_interval = int(os.getenv("AIS_POLL_INTERVAL_SECONDS", "10"))
+        # AIS is VHF (line-of-sight, realistically <~100 km). A positioned vessel
+        # reported far beyond range when we have a GPS fix is physically impossible to
+        # have received directly — a misdecode (noise that passed CRC). Drop those.
+        self._ais_max_range_km = float(os.getenv("AIS_MAX_RANGE_KM", "100"))
         self._acars_poll_interval = int(os.getenv("ACARS_POLL_INTERVAL_SECONDS", "5"))
         self._acars_enabled = acars is not None
         # Online enrichment is opt-in via the API key; without it, registration
@@ -212,6 +216,7 @@ class SensorOrchestrator:
             "aircraft_seen": 0,
             "drone_detections": 0,
             "ais_vessels_seen": 0,
+            "ais_out_of_range_dropped": 0,
             "acars_messages_seen": 0,
             "acars_correlated": 0,
             "remote_id_detections": 0,
@@ -1205,6 +1210,21 @@ class SensorOrchestrator:
             mmsi = vessel.get("mmsi")
             if mmsi is None:
                 continue
+            # Sanity gate: drop a positioned vessel that's implausibly far for VHF
+            # (a misdecode). GPS-gated — no fix → no filtering. Position-less (static)
+            # reports are kept; there's nothing to range-check.
+            vlat, vlon = vessel.get("lat"), vessel.get("lon")
+            fix = self._current_fix
+            if (self._ais_max_range_km > 0
+                    and vlat is not None and vlon is not None and fix
+                    and fix.get("lat") is not None and fix.get("lon") is not None):
+                dist_km = _haversine_m(fix["lat"], fix["lon"], vlat, vlon) / 1000.0
+                if dist_km > self._ais_max_range_km:
+                    self._stats["ais_out_of_range_dropped"] = (
+                        self._stats.get("ais_out_of_range_dropped", 0) + 1)
+                    logger.debug("AIS: dropped MMSI %s at %.0f km (> %.0f km) — misdecode",
+                                 mmsi, dist_km, self._ais_max_range_km)
+                    continue
             ts = vessel.get("timestamp", now_iso)
             key = str(mmsi)
             # Forensic series stays on disk; the in-memory list is one row per MMSI.
