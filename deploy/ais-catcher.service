@@ -8,10 +8,12 @@ After=network.target
 # AIS slice (single dongle) via sudo systemctl. NOT enabled at boot, and Restart=no,
 # so systemd never auto-restarts it mid-ADS-B-slice and grabs the shared dongle.
 Type=simple
+# -X off: OPSEC — AIS-catcher's community sharing (aiscatcher.org) is ON by default
+# and phones home with received data; a passive node must not.
 # Decode AIS and emit JSON over UDP to the AISModule's localhost listener.
 # -d:0 selects RTL-SDR index 0 (NOTE the colon — bare "-d 0" means serial "0").
 # On a dedicated VHF dongle set its index (-d:1) or serial (-d <serial>).
-ExecStart=/usr/local/bin/AIS-catcher -d:0 -u 127.0.0.1 10110 MSGFORMAT JSON_FULL -q
+ExecStart=/usr/local/bin/AIS-catcher -d:0 -X off -u 127.0.0.1 10110 MSGFORMAT JSON_FULL -q
 Restart=no
 Nice=5
 
