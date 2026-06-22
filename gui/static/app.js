@@ -11,48 +11,10 @@ const state = {
 
 // ── Leaflet map ──────────────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([51.5, -0.1], 10);
-
-// Offline-first basemap: when the server has a local MBTiles pack
-// (window.PV_OFFLINE_BASEMAP.available), draw from /tiles/... so the map works with
-// no internet; otherwise use online OSM. The pack's own zoom range and center are
-// honored so the operator lands on the surveyed area, not the default view.
-const _basemap = window.PV_OFFLINE_BASEMAP || { available: false };
-
-// A 1×1 transparent PNG. Used as errorTileUrl so a tile that fails to load (an
-// OSM 403/“access blocked”, or a missing offline tile outside the pack) renders as
-// nothing instead of a broken-tile / “access blocked” square — the map-hole bug.
-const BLANK_TILE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-
-// Online basemap via the NODE'S OSM PROXY (/osm/...), not tile.openstreetmap.org
-// directly: the browser was getting 403'd talking to OSM (and cached the blocked
-// tile, which a refresh won't purge). Proxying through our own origin fixes both —
-// the node fetches OSM fine and disk-caches it. errorTileUrl blanks a tile the node
-// couldn't fetch (e.g. offline) instead of a “403 access blocked” square.
-// OPSEC: the node fetches OSM server-side (reveals view area to OSM). For a fully
-// air-gapped deployment, the node simply can't reach OSM → blank → offline pack shows.
-L.tileLayer('/osm/{z}/{x}/{y}.png', {
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap contributors',
   maxZoom: 19,
-  errorTileUrl: BLANK_TILE,
 }).addTo(map);
-
-if (_basemap.available) {
-  // maxNativeZoom = the deepest zoom with real tiles in the pack; maxZoom higher so
-  // Leaflet UPSCALES those tiles when you zoom in past the pack's range. That keeps
-  // the surveyed area on OFFLINE tiles (blurry, but present) instead of falling
-  // through to online OSM — which is what produced the “403 hole” when zooming close.
-  const packMax = _basemap.maxzoom || 17;
-  L.tileLayer('/tiles/{z}/{x}/{y}.png', {
-    attribution: _basemap.attribution || '© OpenStreetMap contributors',
-    minZoom: _basemap.minzoom || 0,
-    maxNativeZoom: packMax,
-    maxZoom: 19,
-    errorTileUrl: BLANK_TILE,   // outside the box → transparent, OSM base shows through
-  }).addTo(map);
-  if (Array.isArray(_basemap.center) && _basemap.center.length === 2) {
-    map.setView(_basemap.center, packMax ? Math.max(_basemap.minzoom || 0, packMax - 3) : 14);
-  }
-}
 
 const layers = {
   wifi:     L.layerGroup().addTo(map),

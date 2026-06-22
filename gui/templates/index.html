@@ -181,12 +181,6 @@
   </main>
 
   <script src="/static/leaflet/leaflet.js"></script>
-  <script>
-    // Offline basemap config injected by the server: when a local MBTiles pack is
-    // present the map uses /tiles/... (works with no internet); otherwise app.js
-    // falls back to online OSM tiles.
-    window.PV_OFFLINE_BASEMAP = {{ offline_basemap | tojson }};
-  </script>
   <script src="/static/app.js"></script>
 </body>
 </html>

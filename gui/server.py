@@ -16,8 +16,6 @@ import queue
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections import deque
 from pathlib import Path
 from typing import Optional
@@ -26,42 +24,6 @@ logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _MAX_RECENT = 200
-
-# OSM tile proxy: descriptive User-Agent (OSM tile policy) + on-disk cache dir.
-_OSM_UA = "PassiveVigilance/1.0 (offline field node; in-node map proxy)"
-_OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-_OSM_CACHE_DIR = _HERE.parent / "data" / "tiles" / "osm_cache"
-
-
-def _osm_tile(z: int, x: int, y: int):
-    """Return an OSM tile's PNG bytes (disk-cached), or None on any failure.
-
-    Fetches server-side so the browser never talks to OSM directly. Cache makes
-    repeat views instant and survives going offline; failures return None so the
-    caller 404s and Leaflet falls back to the offline pack / a blank tile.
-    """
-    cache = _OSM_CACHE_DIR / str(z) / str(x) / f"{y}.png"
-    try:
-        if cache.is_file():
-            return cache.read_bytes()
-    except OSError:
-        pass
-    url = _OSM_TILE_URL.format(z=z, x=x, y=y)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": _OSM_UA})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            if r.status != 200:
-                return None
-            blob = r.read()
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-        logger.debug("OSM proxy fetch failed z%s/%s/%s: %s", z, x, y, exc)
-        return None
-    try:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        cache.write_bytes(blob)
-    except OSError:
-        pass
-    return blob
 
 # Durable-history bounds (P5): how many events a panel rebuilds from on-disk
 # session logs, and how many session directories to walk back through. Kept
@@ -187,7 +149,7 @@ class GUIServer:
 
     def _build_app(self):
         try:
-            from flask import Flask, Response, abort, jsonify, render_template, stream_with_context
+            from flask import Flask, Response, jsonify, render_template, stream_with_context
         except ImportError:
             logger.error("Flask not installed — GUI disabled. Run: pip install flask")
             return None
@@ -197,12 +159,6 @@ class GUIServer:
             template_folder=str(_HERE / "templates"),
             static_folder=str(_HERE / "static"),
         )
-
-        # Offline basemap: open the local MBTiles pack once (None if absent → the
-        # page falls back to online OSM tiles). Served at /tiles/<z>/<x>/<y>.png for
-        # both this GUI and tar1090 (point tar1090's custom layer at this endpoint).
-        from modules import offline_tiles
-        self._basemap = offline_tiles.load_basemap()
         app.logger.setLevel(logging.WARNING)
 
         # Suppress Flask's default startup banner in our logger
@@ -230,42 +186,8 @@ class GUIServer:
             # cached an OLDER index.html would then pair stale markup with fresh JS —
             # a missing element the new JS expects can break the page. Force the doc
             # to revalidate too so markup and script never drift.
-            basemap = self._basemap.describe() if self._basemap else {"available": False}
-            resp = app.make_response(render_template(template, offline_basemap=basemap))
+            resp = app.make_response(render_template(template))
             resp.headers["Cache-Control"] = "no-cache"
-            return resp
-
-        @app.route("/tiles/<int:z>/<int:x>/<int:y>.png")
-        def offline_tile(z, x, y):
-            # Serve a raster tile from the local MBTiles pack (offline basemap).
-            # 404 when no pack is loaded or the tile is absent — Leaflet just leaves
-            # that tile blank; the auth check above also gates these requests.
-            if self._basemap is None:
-                abort(404)
-            blob = self._basemap.get_tile(z, x, y)
-            if blob is None:
-                abort(404)
-            resp = Response(blob, mimetype=self._basemap.content_type)
-            resp.headers["Cache-Control"] = "public, max-age=604800"  # tiles are immutable
-            return resp
-
-        @app.route("/osm/<int:z>/<int:x>/<int:y>.png")
-        def osm_proxy(z, x, y):
-            # Proxy OSM tiles THROUGH the node. The browser was getting 403'd talking to
-            # OSM directly (and caching the blocked tile, which a page refresh won't
-            # purge); routing via our own origin fixes both — the node fetches OSM fine
-            # (HTTP 200) and the new URL dodges the poisoned browser cache. Small on-disk
-            # cache for politeness/offline reuse. OPSEC: this fetches from OSM
-            # server-side, revealing the node's view area to OSM — accepted for the map
-            # per the operator's call that map opsec isn't a concern here.
-            span = 1 << z
-            if z < 0 or z > 19 or not (0 <= x < span) or not (0 <= y < span):
-                abort(404)
-            blob = _osm_tile(z, x, y)
-            if blob is None:
-                abort(404)  # Leaflet errorTileUrl → blank, offline pack shows through
-            resp = Response(blob, mimetype="image/png")
-            resp.headers["Cache-Control"] = "public, max-age=604800"
             return resp
 
         @app.route("/api/status")
