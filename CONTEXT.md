@@ -17,17 +17,26 @@
 running fixed-mode scoring; the gate is a multi-day soak that crosses the baseline
 freeze. See `docs/design-and-roadmap.md` (design plan + roadmap + soak validation).
 
-**In flight:**
-- **Multi-day soak on `chase`** — 48h learning window (freezes ~2026-06-09 22:55
-  UTC), DroneRF off, running the P0 + P1 + P2 stack. Watching memory/disk bounded
-  across the freeze, post-freeze false-positive rate, and multi-day stability.
-- **P1 approaching trigger** — merged (#75); its operator walk-test runs after the
-  soak's freeze.
-- **P2 egregious-during-baseline** — built and exercised in the soak (branch
-  `feat/egregious-during-baseline`); PR after the walk-test.
+**Recently landed (weekend of 2026-06-21/22):**
+- **SDR pivot** (#158/#160/#159) — DroneRF retired; single dongle runs an N-band
+  time-share of ADS-B + optional AIS + ACARS (on-Pi stress-testing). AIS/ACARS are
+  VHF and antenna-gated.
+- **Dashboard map reverted to plain online OSM** (#161/#162) — the offline-basemap
+  feature was unreliable in the field and was removed in full.
+- **Aircraft live-map push fix** (#163) — positioned contacts reach the map even when
+  the fix isn't advancing.
+- **GPS reader-thread fix** (#165/#166) — gpsd is consumed on a background thread so
+  the stamped position no longer drifts behind real time (was minutes-to-hours on long
+  runs; cosmetic on a fixed node, a real fix for mobile).
 
-**Next (post-soak):** P3 rolling baseline (alert-fatigue), P4 cross-session entity
-resolution, P5 fixed-mode GUI framing — see the roadmap.
+**`chase` config note:** **AIS disabled** (`AIS_ENABLED=false`, `SDR_CYCLE_SLICES=adsb:120`)
+— the 1090 antenna can't receive VHF AIS and the time-share was blanking ADS-B; revisit
+with a 2nd dongle + VHF antenna. Dashboard map = direct online OSM.
+
+**Next:** P3 rolling baseline (alert-fatigue), P4 cross-session entity resolution, P5
+fixed-mode GUI framing, and the SDR-pivot multi-day validation — see the roadmap. One
+open residual: a bounded `_current_fix` oscillation when the asyncio GPS poll stalls
+(separate from the gps.py reader; self-correcting).
 
 **Blocking the broader vision:** multi-node coordination remains unbuilt — the key
 enabling work for the tiered base-station + spoke architecture below.

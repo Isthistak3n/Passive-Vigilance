@@ -3,9 +3,9 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-601%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-750%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.6.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
+[![Release](https://img.shields.io/badge/release-v0.7.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
 
 > A passive RF/WiFi/BT/ADS-B sensor platform for counter-surveillance,
@@ -228,7 +228,7 @@ it is restarted.
 | Component | Recommended | Notes |
 |-----------|-------------|-------|
 | Raspberry Pi | Pi 4B (4 GB RAM) | Pi 3B+ works for dev/test |
-| SDR receiver | RTL-SDR Blog V3 or HackRF | ADS-B + drone RF scanning |
+| SDR receiver | RTL-SDR Blog V3 or HackRF | ADS-B (1090 MHz); optional AIS/ACARS with a VHF antenna |
 | WiFi dongle | Panda PAU0B, Alfa AWUS036ACH | Any monitor-mode capable adapter |
 | Bluetooth dongle | Any CSR-based USB dongle | Or use Pi built-in Bluetooth |
 | GPS dongle | u-blox 7 or 8 (e.g. VK-172) | NMEA over USB to `/dev/ttyUSB0` |

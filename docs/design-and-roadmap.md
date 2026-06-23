@@ -413,13 +413,13 @@ won't receive on the 1090 antenna — both are **best-effort, default-off** unti
 On a single dongle, a VHF window blinds ADS-B; a 2nd VHF dongle (DEDICATED) removes the blackout and
 the cycle is bypassed (each band continuous).
 
-**Status (2026-06-21): in on-Pi stress-test before merge.** Phase 1 + Phase 2 + the GUI overhaul
-(DroneRF tab retired, AIS tab added, ACARS surfaced on the aircraft tab) are implemented on
-`feat/sdr-acars-correlation`. The **make-or-break** validation is SDR handoff stability — the
-2026-06-21 readsb "SDR wedged" crash-loop on every time-share handoff is the headline risk, so the
-stress test forces frequent ADS-B↔AIS frequency switches on a short cycle and watches readsb for
-wedges (`scripts/sdr_watch.sh`). AIS/ACARS reception itself is antenna-gated (VHF), so the stress
-test validates the *handoff machinery*, not decode.
+**Status (2026-06-22): merged to `main`** (#158 Phase 1, #160 Phase 2 + GUI overhaul, #159
+docs). DroneRF tab retired, AIS tab added, ACARS surfaced on the aircraft tab. Still **owes its
+multi-day validation** — the **make-or-break** check is SDR handoff stability: the 2026-06-21
+readsb "SDR wedged" crash-loop on every time-share handoff is the headline risk, watched via
+`scripts/sdr_watch.sh`. AIS/ACARS reception is antenna-gated (VHF), so validation is about the
+*handoff machinery*, not decode. **On `chase`, AIS is currently disabled** (1090 antenna can't
+hear VHF AIS and the time-share blanked ADS-B) — revisit with a 2nd dongle + VHF antenna.
 
 **Phase 1 (shipped):** retire DroneRF; generalize the coordinator to the N-band cycle; add the
 optional AIS band (`modules/ais.py`, AIS-catcher JSON over UDP, deduped per MMSI) + GUI/deploy/sudoers.

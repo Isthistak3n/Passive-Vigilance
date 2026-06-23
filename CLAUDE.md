@@ -54,7 +54,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 
 | File | Class | Responsibility |
 |---|---|---|
-| `modules/gps.py` | `GPSModule` | gpsd streaming client; position/time backbone |
+| `modules/gps.py` | `GPSModule` | gpsd streaming client (background reader thread); position/time backbone |
 | `modules/kismet.py` | `KismetModule` | Kismet REST API; async WiFi + BT device polling |
 | `modules/dump1090.py` | `ADSBModule` | dump1090 JSON output; aircraft polling |
 | `modules/ais.py` | `AISModule` | consume AIS-catcher JSON over UDP; passive marine vessel tracking (optional, VHF, default off) |
@@ -258,6 +258,23 @@ Re-run the monitor mode commands after any NM restart.
 - `main.py` event_dict includes `mac_type` and `locations` fields so KML can use them
 - Session `summary.json` includes `kml_path` key written at shutdown
 - KML path logged in shutdown banner
+
+## GPS Reading (reader thread)
+
+- **A dedicated daemon thread consumes gpsd; `get_fix()` only samples a snapshot.** gpsd
+  emits many reports/sec; reading one per (1 Hz) poll let the socket/line buffer grow
+  without bound so the sampled fix drifted minutes-to-hours behind real time. The reader
+  thread (`_reader_loop` → `_read_once` → `_store_snapshot`) reads continuously and keeps
+  the latest report under a lock; `get_fix()` samples it with no socket I/O, so it never
+  blocks the event loop and always returns the current fix.
+- **All gpsd I/O must stay on the one reader thread.** python3-gps's client (socket +
+  internal line buffer) is not thread-safe; priming a read on the calling thread in
+  `connect()` and then reading on the reader thread wedged the reader's first `read()`
+  forever. `connect()` therefore starts the thread without a prime; the first snapshot
+  lands a beat later (the startup wait loop polls `get_fix()` until then).
+- Known residual: `SensorOrchestrator._current_fix` can still build a *bounded* lag and
+  snap back when the asyncio GPS poll stalls for a stretch — an orchestrator-poll issue,
+  separate from the reader, and self-correcting (not the old unbounded growth).
 
 ## GPS Quality Filtering
 
