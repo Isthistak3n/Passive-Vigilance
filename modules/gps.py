@@ -113,9 +113,13 @@ class GPSModule:
             self._session = GpsSession(mode=WATCH_ENABLE | WATCH_NEWSTYLE)
             self._apply_read_timeout()
             self._stop.clear()
-            # Prime one snapshot synchronously so a get_fix() right after connect()
-            # already has data, then hand ongoing reads to the background thread.
-            self._read_once()
+            # ALL gpsd reads happen on the reader thread. python3-gps's client object
+            # (socket + line buffer) is not safe to touch from two threads — priming a
+            # read here on the calling thread and then reading on the reader thread
+            # wedges the reader's first read() (observed live: the reader logged STARTED
+            # then blocked in read() forever, fix frozen at the prime). The first
+            # snapshot lands as soon as the thread reads; the startup wait loop polls
+            # get_fix() until then.
             self._reader = threading.Thread(
                 target=self._reader_loop, name="gpsd-reader", daemon=True
             )
