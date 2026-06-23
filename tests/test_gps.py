@@ -39,6 +39,22 @@ def _make_session(mode: int, **fix_kwargs):
     return session
 
 
+def _wait_snapshot(gps, timeout=2.0):
+    """Block until the reader thread has captured at least one report.
+
+    connect() no longer primes a read on the calling thread (that wedged the
+    reader); the first snapshot lands once the reader thread reads, so tests that
+    sample get_fix() right after connect() wait for it here.
+    """
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        if gps._latest_raw is not None:
+            return
+        time.sleep(0.01)
+    raise AssertionError("reader thread did not capture a snapshot in time")
+
+
 class TestGPSModuleConnect(unittest.TestCase):
 
     @patch("modules.gps.GpsSession")
@@ -51,6 +67,7 @@ class TestGPSModuleConnect(unittest.TestCase):
         gps = GPSModule()
         gps.connect()
         self.addCleanup(gps.close)
+        _wait_snapshot(gps)
 
         MockGpsSession.assert_called_once()
         self.assertIsNotNone(gps._session)
@@ -97,6 +114,7 @@ class TestGPSModuleGetFix(unittest.TestCase):
         gps = GPSModule()
         gps.connect()
         self.addCleanup(gps.close)
+        _wait_snapshot(gps)
         fix = gps.get_fix()
 
         self.assertIsNotNone(fix)
@@ -118,6 +136,7 @@ class TestGPSModuleGetFix(unittest.TestCase):
         gps = GPSModule()
         gps.connect()
         self.addCleanup(gps.close)
+        _wait_snapshot(gps)
         fix = gps.get_fix()
 
         self.assertIsNotNone(fix)
@@ -134,6 +153,7 @@ class TestGPSModuleGetFix(unittest.TestCase):
         gps = GPSModule()
         gps.connect()
         self.addCleanup(gps.close)
+        _wait_snapshot(gps)
         fix = gps.get_fix()
 
         self.assertIsNone(fix)
@@ -158,6 +178,7 @@ class TestGPSModuleGetFix(unittest.TestCase):
         gps = GPSModule()
         gps.connect()
         self.addCleanup(gps.close)
+        _wait_snapshot(gps)
         gps._stop.set()                      # freeze the reader so the count is stable
         gps._reader.join(timeout=2.0)
         reads_before = session.read.call_count
@@ -288,6 +309,7 @@ class TestReaderThread(unittest.TestCase):
         gps = GPSModule()
         gps.connect()
         self.addCleanup(gps.close)
+        _wait_snapshot(gps)
 
         first = gps.get_fix()["lat"]
         time.sleep(0.2)                       # let the thread consume more reports
@@ -304,6 +326,7 @@ class TestGPSModuleIsFixed(unittest.TestCase):
         gps = GPSModule()
         gps.connect()
         self.addCleanup(gps.close)
+        _wait_snapshot(gps)
         return gps
 
     @patch("modules.gps.GpsSession")
@@ -336,6 +359,7 @@ class TestGPSQualityFilter(unittest.TestCase):
             gps = GPSModule()
             gps.connect()
             self.addCleanup(gps.close)
+            _wait_snapshot(gps)
             fix = gps.get_fix()
 
         self.assertIsNone(fix)
@@ -352,6 +376,7 @@ class TestGPSQualityFilter(unittest.TestCase):
             gps = GPSModule()
             gps.connect()
             self.addCleanup(gps.close)
+            _wait_snapshot(gps)
             fix = gps.get_fix()
 
         self.assertIsNotNone(fix)
@@ -369,6 +394,7 @@ class TestGPSQualityFilter(unittest.TestCase):
             gps = GPSModule()
             gps.connect()
             self.addCleanup(gps.close)
+            _wait_snapshot(gps)
             fix = gps.get_fix()
 
         self.assertIsNotNone(fix)
