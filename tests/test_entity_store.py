@@ -30,10 +30,66 @@ def _device(mac="aa:bb:cc:dd:ee:ff", probe_ssids=None, fp=12345, num=2, signal=-
     }
 
 
+def _ap(bssid="ff:ee:dd:cc:bb:aa", ssid="HomeWiFi", signal=-40, channel=6, crypt=0):
+    return {
+        "macaddr": bssid,
+        "type": "Wi-Fi AP",
+        "name": ssid,
+        "manuf": "Netgear",
+        "last_signal": signal,
+        "is_ap": True,
+        "beaconed_ssid": ssid,
+        "beacon_channel": channel,
+        "beacon_crypt": crypt,
+    }
+
+
 def _poll(store, devices, n, gps_fix=None, start=T0):
     """Run record_poll n times at advancing timestamps."""
     for i in range(n):
         store.record_poll(devices, gps_fix=gps_fix, now=start + timedelta(minutes=i))
+
+
+# ---------------------------------------------------------------------------
+# Beacon capture + network affinity (PR A)
+# ---------------------------------------------------------------------------
+
+
+def test_beacon_evidence_records_ap_with_rssi_stats():
+    s = _store()
+    _poll(s, [_ap(ssid="HomeWiFi", signal=-40)], 3)
+    assert s.count("beacon_evidence") == 1
+    st = s.beacon_rssi("ff:ee:dd:cc:bb:aa", "HomeWiFi")
+    assert st["count"] == 3 and abs(st["mean"] - (-40.0)) < 1e-9
+    s.close()
+
+
+def test_network_affinity_matches_only_locally_beaconed_ssid():
+    s = _store()
+    client = _device(probe_ssids=["HomeWiFi", "CoffeeShop"], fp=999)
+    _poll(s, [client, _ap(ssid="HomeWiFi")], 4)
+    prof = s.network_affinity_profile(999)
+    assert prof == {"HomeWiFi": 4}          # beaconed here -> confirmed affinity
+    assert "CoffeeShop" not in prof         # not beaconed here -> no affinity
+    s.close()
+
+
+def test_network_affinity_empty_without_local_beacon():
+    s = _store()
+    _poll(s, [_device(probe_ssids=["HomeWiFi"], fp=999)], 3)   # no AP beaconing
+    assert s.count("network_affinity") == 0
+    assert s.network_affinity_profile(999) == {}
+    s.close()
+
+
+def test_beacon_capture_disabled_skips_writes(monkeypatch):
+    import modules.entity_store as es
+    monkeypatch.setattr(es, "_BEACON_CAPTURE_ENABLED", False)
+    s = _store()
+    _poll(s, [_device(probe_ssids=["HomeWiFi"], fp=1), _ap(ssid="HomeWiFi")], 2)
+    assert s.count("beacon_evidence") == 0
+    assert s.count("network_affinity") == 0
+    s.close()
 
 
 # ---------------------------------------------------------------------------

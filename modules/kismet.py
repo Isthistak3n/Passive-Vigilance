@@ -39,7 +39,17 @@ _DEVICE_FIELDS = [
     "dot11.device/dot11.device.probed_ssid_map",
     "dot11.device/dot11.device.probe_fingerprint",
     "dot11.device/dot11.device.num_probed_ssids",
+    # AP beacon context (leaf keys below). Present only for beaconing APs; clients
+    # leave these empty. Mirrors the last_beaconed_ssid_record request in remote_id.py.
+    "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.ssid",
+    "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.channel",
+    "dot11.device.last_beaconed_ssid_record/dot11.advertisedssid.crypt_set",
 ]
+
+
+def _is_access_point(device_type) -> bool:
+    """True if Kismet classifies the device as a Wi-Fi access point (beaconing)."""
+    return "ap" in (device_type or "").lower().split()
 
 
 def _extract_probe_ssids(probed_map) -> list:
@@ -252,6 +262,12 @@ class KismetModule:
                 "probe_ssids":   _extract_probe_ssids(entry.get("dot11.device.probed_ssid_map")),
                 "probe_fingerprint": entry.get("dot11.device.probe_fingerprint", None),
                 "num_probed_ssids":  entry.get("dot11.device.num_probed_ssids", 0),
+                # AP beacon context (leaf keys). Empty for clients; an AP's beaconed
+                # SSID lets the entity store confirm which probed networks exist HERE.
+                "is_ap":         _is_access_point(entry.get("kismet.device.base.type", "")),
+                "beaconed_ssid": (entry.get("dot11.advertisedssid.ssid") or "").strip(),
+                "beacon_channel": entry.get("dot11.advertisedssid.channel"),
+                "beacon_crypt":  entry.get("dot11.advertisedssid.crypt_set"),
                 "gps_lat":      gps_fix["lat"]  if gps_fix else None,
                 "gps_lon":      gps_fix["lon"]  if gps_fix else None,
                 "gps_utc":      gps_fix["utc"]  if gps_fix else None,

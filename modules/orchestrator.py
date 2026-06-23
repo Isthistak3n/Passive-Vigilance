@@ -829,16 +829,18 @@ class SensorOrchestrator:
         rotation-stable IE hash, plus a stable PNL-anchored key. BLE: the
         directed-advert / solicited-service "calling out to reconnect" signals.'''
         empty = {"probe_ssids_all": [], "fingerprint_pnl": "",
-                 "reconnect": False, "solicited": []}
+                 "reconnect": False, "solicited": [], "network_affinity": []}
         if not device:
             return empty
         probe_fp = device.get("probe_fingerprint")
         pnl = []
+        affinity = {}
         if self.entity_store is not None and probe_fp:
             try:
                 pnl = self.entity_store.accumulated_pnl(probe_fp)
+                affinity = self.entity_store.network_affinity_profile(probe_fp)
             except Exception:
-                logger.debug("accumulated_pnl lookup failed", exc_info=True)
+                logger.debug("PNL/affinity lookup failed", exc_info=True)
         pnl_fp = compute_pnl_fingerprint(device, pnl)
         solicited = [f"{u:04x}" for u in (device.get("solicited_uuids") or [])]
         solicited += list(device.get("solicited_uuids_128") or [])
@@ -847,6 +849,9 @@ class SensorOrchestrator:
             "fingerprint_pnl": pnl_fp.key if pnl_fp else "",
             "reconnect": bool(device.get("ble_directed")) or bool(solicited),
             "solicited": solicited,
+            # Probed networks confirmed to exist here (probe matched a local beacon),
+            # most-confirmed first — a rotation-surviving "belongs here" signal.
+            "network_affinity": list(affinity.keys()),
         }
 
     def _contact_designator(self, event) -> str:
