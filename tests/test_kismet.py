@@ -265,8 +265,9 @@ def _rec(ssid):
             "dot11.probedssid.first_time": 1700000000, "dot11.probedssid.last_time": 1700000060}
 
 
-def _ap_device(ssid="HomeWiFi", channel=6, crypt=0, mac="ff:ee:dd:cc:bb:aa"):
-    """A beaconing AP, with the last_beaconed_ssid_record fields under their leaf keys."""
+def _ap_device(ssid="HomeWiFi", channel="6", mac="ff:ee:dd:cc:bb:aa"):
+    """A beaconing AP. Kismet carries the beaconed SSID in base.name (the nested
+    advertisedssid.ssid field returns a placeholder, confirmed against the live API)."""
     return {
         "kismet.device.base.macaddr": mac,
         "kismet.device.base.type": "Wi-Fi AP",
@@ -276,9 +277,7 @@ def _ap_device(ssid="HomeWiFi", channel=6, crypt=0, mac="ff:ee:dd:cc:bb:aa"):
         "kismet.device.base.first_time": 1700000000,
         "kismet.device.base.last_time": 1700000060,
         "kismet.common.signal.last_signal": -42,
-        "dot11.advertisedssid.ssid": ssid,
-        "dot11.advertisedssid.channel": channel,
-        "dot11.advertisedssid.crypt_set": crypt,
+        "kismet.device.base.channel": channel,
     }
 
 
@@ -328,12 +327,18 @@ class TestKismetProbeExtraction(unittest.TestCase):
         self.assertEqual(r["probe_ssids"], ["Real"])
 
     @patch("modules.kismet.aiohttp.ClientSession")
-    def test_ap_beacon_fields_extracted_from_leaf_keys(self, MockSession):
-        r = self._poll(MockSession, [_ap_device(ssid="HomeWiFi", channel=6, crypt=0)])[0]
+    def test_ap_beaconed_ssid_from_base_name(self, MockSession):
+        r = self._poll(MockSession, [_ap_device(ssid="HomeWiFi", channel="6")])[0]
         self.assertTrue(r["is_ap"])
         self.assertEqual(r["beaconed_ssid"], "HomeWiFi")
-        self.assertEqual(r["beacon_channel"], 6)
-        self.assertEqual(r["beacon_crypt"], 0)
+        self.assertEqual(r["beacon_channel"], "6")
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_hidden_ap_named_by_mac_yields_no_ssid(self, MockSession):
+        # A hidden AP names itself by its MAC; that's not a real SSID, so it's dropped.
+        r = self._poll(MockSession, [_ap_device(ssid="aa:bb:cc:dd:ee:ff", mac="aa:bb:cc:dd:ee:ff")])[0]
+        self.assertTrue(r["is_ap"])
+        self.assertEqual(r["beaconed_ssid"], "")
 
     @patch("modules.kismet.aiohttp.ClientSession")
     def test_client_has_no_beaconed_ssid(self, MockSession):
