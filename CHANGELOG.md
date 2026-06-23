@@ -5,6 +5,37 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ---
 
+## [Unreleased]
+
+### What's better now
+
+- **The SDR pivot — DroneRF retired, maritime + aviation decode added.** The single
+  dongle now runs an N-band time-share cycle: ADS-B plus optional AIS (marine vessels)
+  and ACARS (aviation datalink, triggered when a contact is held in view past 30 s and
+  correlated back to the aircraft by tail/flight-id). DroneRF is retired — kept in the
+  tree for reversibility but off by default. AIS and ACARS are antenna-gated (they need
+  a VHF antenna) and ship default-off; both are in on-Pi stress-testing.
+- **Aircraft reliably appear on the live map.** A plane visible to readsb but whose
+  position wasn't advancing (fringe reception, a slow or hovering target) could sit in
+  the table yet never get a map marker. Positioned contacts are now pushed to the live
+  map every poll, so the marker shows and tracks even when the fix is momentarily frozen.
+- **GPS fixes no longer lag.** The receiver feed is now consumed on a dedicated reader
+  thread, so the position the platform stamps onto every detection stays current instead
+  of drifting behind real time. The old single-read-per-poll path fell progressively
+  further behind a busy gpsd — minutes to hours on long runs. Harmless on a fixed node
+  (its position is constant) but a real correctness fix for mobile nodes, where every
+  detection was being stamped with a stale location.
+
+### Changed
+
+- **Dashboard map is back to plain online OpenStreetMap.** The offline-basemap feature
+  (a bundled MBTiles pack served by the node) made the field map unreliable, so it was
+  reverted in full — the map, the pack reader/writer, the boot-time provisioning, the
+  build/export scripts, and the related settings are all removed. The browser draws OSM
+  tiles directly again (the operator's view area is visible to OSM — an accepted trade).
+
+---
+
 ## [v0.7.0-alpha] — 2026-06
 
 ### What's better now
