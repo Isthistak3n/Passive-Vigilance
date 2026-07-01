@@ -182,6 +182,27 @@ async def test_settle_invokes_usbreset_when_enabled(coordinator):
     reset.assert_awaited_once()
 
 
+def test_usbreset_passes_vid_pid_not_dev_path(coordinator):
+    # Regression: the coordinator used to pass usbreset a /dev/bus/usb/BBB/DDD path,
+    # which usbreset rejects with "No such device found" — a silent no-op that left
+    # the wedge mitigation dead. It must pass the VVVV:PPPP id instead.
+    with patch.object(coordinator, "_rtl_usb_id", return_value="0bda:2838"), \
+         patch("modules.sdr_coordinator.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stderr="")
+        coordinator._run_usbreset()
+    run.assert_called_once()
+    argv = run.call_args[0][0]
+    assert argv == ["sudo", "usbreset", "0bda:2838"]
+    assert not any("/dev/bus/usb" in a for a in argv)
+
+
+def test_usbreset_skipped_when_no_sdr_found(coordinator):
+    with patch.object(coordinator, "_rtl_usb_id", return_value=""), \
+         patch("modules.sdr_coordinator.subprocess.run") as run:
+        coordinator._run_usbreset()
+    run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # N-slice cycle parsing + decoder owners + preemption window
 # ---------------------------------------------------------------------------
