@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -389,6 +390,49 @@ class TestModeEndpoint(unittest.TestCase):
         for route in ("/api/status", "/api/wifi", "/api/aircraft",
                       "/api/drone", "/api/alerts", "/api/nearby"):
             self.assertEqual(client.get(route).status_code, 200, route)
+
+
+class TestStatusSensorHealthHonesty(unittest.TestCase):
+    """/api/status must not report a disabled sensor as healthy.
+
+    sensor_health is initialised all-True and only flipped False on a poll that
+    raises; a disabled module never polls, so without gating it reports "healthy"
+    forever (AIS/ACARS showing online while off). The endpoint gates health by
+    modules_active so the raw API is honest.
+    """
+
+    def _client(self, orch):
+        from gui.server import GUIServer
+        gui = GUIServer(orchestrator=orch)
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping status tests")
+        return gui.app.test_client()
+
+    def test_disabled_sensor_reported_unhealthy(self):
+        orch = SimpleNamespace(
+            _sensor_health={"adsb": True, "kismet": True, "ais": True,
+                            "acars": True, "sdr": True},
+            _modules_active={"adsb": True, "kismet": True, "ais": False,
+                             "acars": False},
+        )
+        health = self._client(orch).get("/api/status").get_json()["sensor_health"]
+        # Active sensors keep their reported health.
+        self.assertTrue(health["adsb"])
+        self.assertTrue(health["kismet"])
+        # Disabled ones are forced unhealthy, not the initialised True.
+        self.assertFalse(health["ais"])
+        self.assertFalse(health["acars"])
+        # A health key with no modules_active entry (e.g. "sdr") is left as-is.
+        self.assertTrue(health["sdr"])
+
+    def test_active_but_broken_sensor_stays_unhealthy(self):
+        # Gating must not resurrect a genuinely failed-but-active sensor.
+        orch = SimpleNamespace(
+            _sensor_health={"kismet": False},
+            _modules_active={"kismet": True},
+        )
+        health = self._client(orch).get("/api/status").get_json()["sensor_health"]
+        self.assertFalse(health["kismet"])
 
 
 class TestGUIServerNearbyEndpoint(unittest.TestCase):
