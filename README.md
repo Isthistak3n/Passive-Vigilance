@@ -369,6 +369,7 @@ Passive-Vigilance/
 ├── docs/
 │   ├── setup.md                      # Full installation, configuration, and troubleshooting guide
 │   ├── design-and-roadmap.md         # Consolidated design plan + phased roadmap + soak validation (P0–P7)
+│   ├── retrospective-2026-07.md      # The project journey Apr→Jul 2026 (159 PRs), narrated
 │   └── field-*.md                    # Field-test evidence behind the roadmap decisions
 └── data/
     └── ignore_lists/                 # MAC/OUI/SSID ignore list JSON files (git-ignored)
