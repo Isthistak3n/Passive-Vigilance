@@ -3,7 +3,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-750%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-762%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.7.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -197,11 +197,11 @@ it is restarted.
 | Module | Status | Description |
 |--------|--------|-------------|
 | GPS daemon | ✅ Complete | gpsd integration, fix quality, HDOP filter — 12 tests |
-| Kismet integration | ✅ Complete | REST API, API key auth, WiGLE CSV — 10 tests |
+| Kismet integration | ✅ Complete | REST API, cookie auth (2025.09), WiGLE CSV — 10 tests |
 | ADS-B | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
-| SDR decode cycle | 🧪 Stress-testing | N-band single-dongle time-share (`SDRCoordinator`): ADS-B + optional AIS, with ACARS preemption on a held contact. Replaces DroneRF |
-| AIS (marine) | 🧪 Stress-testing | `AISModule` — AIS-catcher JSON over UDP; optional/VHF, default off |
-| ACARS (aviation datalink) | 🧪 Stress-testing | `ACARSModule` — acarsdec/dumpvdl2; >30s-held trigger + tail/flight-id correlation to ADS-B; optional/VHF, default off |
+| SDR decode cycle | ✅ Handoffs validated | N-band single-dongle time-share (`SDRCoordinator`): ADS-B base + optional AIS slice, with ACARS preemption on a held contact. Handoff stability validated — 0 wedges on the live ADS-B+AIS cycle. Replaces DroneRF |
+| AIS (marine) | ✅ Complete | `AISModule` — AIS-catcher JSON over UDP; optional/VHF (needs a VHF antenna), default off |
+| ACARS (aviation datalink) | 🧪 Needs decoder | `ACARSModule` — acarsdec/dumpvdl2; >30s-held trigger + tail/flight-id correlation to ADS-B; optional/VHF, default off; decoder install pending |
 | Drone RF | 🗄️ Retired | Replaced by the SDR decode cycle; `DRONE_RF_ENABLED=false`, code kept for reversibility — 15 tests |
 | WiFi monitor mode | ✅ Complete | RTL8811CU udev + NM unmanaged — 15 tests |
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
@@ -219,7 +219,7 @@ it is restarted.
 | Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle, contact designators, current-sky aircraft + Remote ID tabs, durable detection/alert history across refresh & restart — 63 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown, watchdog, current-sky indexes + bounded tracks — 87 tests |
 
-**601 tests passing** across all modules.
+**762 tests passing** across all modules.
 
 ---
 
@@ -324,7 +324,7 @@ Passive-Vigilance/
 │   ├── __init__.py                   # Empty package marker
 │   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*; mode toggle (/api/mode)
 │   ├── templates/
-│   │   └── index.html                # Dark-theme SPA; 6 tabs (incl. Remote ID); Leaflet map; SSE client
+│   │   └── index.html                # Dark-theme SPA; 5 tabs (incl. Remote ID); Leaflet map; SSE client
 │   └── static/
 │       ├── app.js                    # SSE client; Leaflet markers; table rendering; tab switching
 │       └── style.css                 # Dark theme; KML-matched alert colors; touch-friendly

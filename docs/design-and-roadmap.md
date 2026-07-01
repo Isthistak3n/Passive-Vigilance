@@ -413,13 +413,19 @@ won't receive on the 1090 antenna — both are **best-effort, default-off** unti
 On a single dongle, a VHF window blinds ADS-B; a 2nd VHF dongle (DEDICATED) removes the blackout and
 the cycle is bypassed (each band continuous).
 
-**Status (2026-06-22): merged to `main`** (#158 Phase 1, #160 Phase 2 + GUI overhaul, #159
-docs). DroneRF tab retired, AIS tab added, ACARS surfaced on the aircraft tab. Still **owes its
-multi-day validation** — the **make-or-break** check is SDR handoff stability: the 2026-06-21
-readsb "SDR wedged" crash-loop on every time-share handoff is the headline risk, watched via
-`scripts/sdr_watch.sh`. AIS/ACARS reception is antenna-gated (VHF), so validation is about the
-*handoff machinery*, not decode. **On `chase`, AIS is currently disabled** (1090 antenna can't
-hear VHF AIS and the time-share blanked ADS-B) — revisit with a 2nd dongle + VHF antenna.
+**Status (2026-06-30): merged to `main`** (#158 Phase 1, #160 Phase 2 + GUI overhaul, #159
+docs). DroneRF tab retired, AIS tab added, ACARS surfaced on the aircraft tab. **SDR handoff
+stability — validated.** The make-or-break check (the 2026-06-21 readsb "SDR wedged" crash-loop
+on every time-share handoff) is cleared on the live ADS-B+AIS cycle: readsb exits gracefully for
+the AIS slice and re-acquires the tuner with **0 wedges** — the settle barrier alone carries the
+handoff. **On `chase`, AIS is now ENABLED**: a VHF antenna was added via an SMA splitter, so the
+node runs `SDR_CYCLE_SLICES=adsb:600,ais:30` (10 min ADS-B, 30 s AIS). AIS *reception* is still
+being confirmed — VHF line-of-sight to sea-level vessels is marginal from this site (aircraft, at
+altitude, are the stronger VHF target). **ACARS stays off** — no decoder installed yet (acarsdec
+vs dumpvdl2 undecided); the band reports unavailable and is skipped cleanly until one is chosen.
+*Handoff note:* `SDR_HANDOFF_USB_RESET` was found to be a no-op (it passed `usbreset` a
+`/dev/bus/usb` path it rejects) — fixed to VID:PID in #171; not needed in practice since the
+settle barrier holds.
 
 **Phase 1 (shipped):** retire DroneRF; generalize the coordinator to the N-band cycle; add the
 optional AIS band (`modules/ais.py`, AIS-catcher JSON over UDP, deduped per MMSI) + GUI/deploy/sudoers.
@@ -564,11 +570,13 @@ multi-node correlation (the follower-resolves-to-fixed pattern, §5.5). All genu
 
 ## Standing risks
 
-- **SDR-wedge on time-share handoff (open, under test).** The 2026-06-21 readsb "SDR wedged"
-  crash-loop on every dongle handoff is the headline risk for the SDR pivot (§11). The settle
-  barrier + start/stop handshakes are the mitigation; `SDR_HANDOFF_USB_RESET=true` and a second
-  (VHF) dongle are the escalations. Gated by the on-Pi stress test (`scripts/sdr_watch.sh`) before
-  the pivot merges.
+- **SDR-wedge on time-share handoff — validated clean (2026-06-30).** The 2026-06-21 readsb "SDR
+  wedged" crash-loop was the headline risk for the SDR pivot (§11). On the live ADS-B+AIS cycle
+  (`adsb:600,ais:30`) it did **not** recur: readsb exits gracefully for the AIS slice and
+  re-acquires with **0 wedges** — the settle barrier + start/stop handshakes carry the handoff on
+  their own. `SDR_HANDOFF_USB_RESET` is the escalation but was a no-op (usbreset got a `/dev` path
+  it rejects) → fixed to VID:PID in #171; unneeded in practice. A 2nd VHF dongle (DEDICATED) would
+  remove the ADS-B blackout during AIS slices entirely. Residual risk is low.
 - **Post-freeze memory leak — RETIRED.** Soak #3 ran ~42 h post-freeze, RSS bounded
   (~116–200 MB, no drift); `all_events` dedups per device.
 - **Alert fatigue — largely addressed.** Soak #1 novelty flood and soak #2 off-schedule flood

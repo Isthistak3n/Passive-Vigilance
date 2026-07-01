@@ -17,7 +17,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
   UA type, and status; fires alerts per unique UAS ID with configurable rate limiting
 - **WiFi and Bluetooth device tracking** — Kismet captures and correlates devices; devices
   are logged and geo-stamped
-- **ADS-B aircraft detection** — dump1090 decodes Mode S transponders; flights enriched via
+- **ADS-B aircraft detection** — readsb (dump1090-compatible) decodes Mode S transponders; flights enriched via
   the adsb.lol API (ADSBexchange-compatible format, free tier)
 - **GPS-stamped detections** — every sensor event carries lat, lon, altitude, and UTC from
   the GPS module
@@ -39,7 +39,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 |---|---|---|
 | Orchestrator | Python asyncio | Non-blocking polling of multiple slow I/O sources |
 | WiFi + BT capture | Kismet (REST API) | Kismet handles monitor mode, deauth avoidance, BTLE |
-| ADS-B source | dump1090 JSON output | Lowest-latency local decode |
+| ADS-B source | readsb JSON output (dump1090-compatible) | Lowest-latency local decode |
 | ADS-B enrichment | adsb.lol API | Free, ADSBexchange-compatible |
 | GPS backbone | gpsd + python3-gps | Every event must carry lat/lon/UTC |
 | Alert pluggability | `AlertBackend` ABC | Swap backends without touching orchestrator |
