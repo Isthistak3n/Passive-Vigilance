@@ -53,3 +53,20 @@ Keep system packages updated:
 sudo apt update && sudo apt upgrade
 
 Use Tailscale for remote access. Do not expose SSH directly to the internet.
+
+## Operational security (OPSEC) in a public repo
+
+This is a passive counter-surveillance tool, so keep the deployment operator and
+site un-identifiable in anything you commit:
+
+- **Never commit a precise location.** Keep the node's real coordinates, address, or
+  town out of code, tests, fixtures, and docs. Use a neutral placeholder — the test
+  suite standardizes on `51.5, -0.1` (the app's default map center), and all
+  air/AIS geometry is node-relative, so a placeholder reference preserves behavior.
+  Real position belongs only in `.env` / the live GPS feed, never in the tree.
+- **Keep committed times timezone-neutral.** Prefer UTC in logs and notes; a local
+  timezone label narrows the region.
+- **Don't commit captured data.** Real SSIDs, MACs, or vessel/aircraft identifiers
+  and raw session logs can fingerprint a place or the people near it — commit only
+  aggregates.
+- **Secrets stay in `.env`** (git-ignored) — never in code, tests, or docs.
