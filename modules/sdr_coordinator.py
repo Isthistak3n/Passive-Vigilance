@@ -456,22 +456,27 @@ class SDRCoordinator:
         await loop.run_in_executor(None, self._run_usbreset)
 
     def _run_usbreset(self) -> None:
-        node = self._rtl_usb_node()
-        if not node:
-            logger.debug("usbreset skipped — RTL-SDR /dev/bus/usb node not found")
+        usb_id = self._rtl_usb_id()
+        if not usb_id:
+            logger.debug("usbreset skipped — no RTL-SDR found in sysfs")
             return
         try:
-            result = subprocess.run(["sudo", "usbreset", node], capture_output=True, text=True, timeout=15)
+            # usbreset takes VVVV:PPPP (or BBB/DDD) — NOT a /dev/bus/usb path, which
+            # fails with "No such device found". VID:PID also stays valid across the
+            # device re-enumeration a reset triggers.
+            result = subprocess.run(["sudo", "usbreset", usb_id], capture_output=True, text=True, timeout=15)
             if result.returncode != 0:
-                logger.warning("usbreset %s exited %d: %s", node, result.returncode, result.stderr.strip())
+                logger.warning("usbreset %s exited %d: %s", usb_id, result.returncode, result.stderr.strip())
             else:
-                logger.debug("usbreset %s: OK", node)
+                logger.debug("usbreset %s: OK", usb_id)
         except Exception as exc:
-            logger.warning("usbreset %s failed: %s", node, exc)
+            logger.warning("usbreset %s failed: %s", usb_id, exc)
 
     @staticmethod
-    def _rtl_usb_node() -> str:
-        """Resolve the RTL-SDR's /dev/bus/usb/BBB/DDD node from sysfs, or '' if absent."""
+    def _rtl_usb_id() -> str:
+        """Resolve the RTL-SDR's ``VVVV:PPPP`` USB id from sysfs (e.g. ``0bda:2838``),
+        or '' if absent. This is the form ``usbreset`` accepts and, unlike a bus/device
+        node, it stays valid across the re-enumeration a reset causes."""
         base = "/sys/bus/usb/devices"
         try:
             entries = os.listdir(base)
@@ -487,12 +492,5 @@ class SDRCoordinator:
             except OSError:
                 continue
             if vendor == RTL_SDR_VENDOR and product in RTL_SDR_PRODUCTS:
-                try:
-                    with open(os.path.join(dev, "busnum")) as fh:
-                        bus = int(fh.read().strip())
-                    with open(os.path.join(dev, "devnum")) as fh:
-                        num = int(fh.read().strip())
-                except (OSError, ValueError):
-                    return ""
-                return "/dev/bus/usb/%03d/%03d" % (bus, num)
+                return "%s:%s" % (vendor, product)
         return ""
