@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from modules.air_scoring import AirParams, InterestFlags, score_air_contact
 
-REF = (21.4, -157.7)
+REF = (51.5, -0.1)
 _T0 = datetime(2026, 6, 16, 0, 0, 0, tzinfo=timezone.utc)
 
 
@@ -61,7 +61,7 @@ def test_high_overflight_not_in_range():
 
 
 def test_single_inrange_point_is_not_scorable():
-    one = [{"lat": 21.4, "lon": -157.7, "altitude": 1500,
+    one = [{"lat": 51.5, "lon": -0.1, "altitude": 1500,
             "timestamp": _T0.isoformat()}]
     s = score_air_contact(one, REF)
     assert s.score == 0.0
@@ -77,7 +77,7 @@ def test_returns_amplify_score():
 def test_return_count_alone_never_scores_a_distant_contact():
     # A far transit with a big return count must still not alert — returns only
     # amplify a real in-range presence.
-    far = [{"lat": 30.0, "lon": -157.7, "altitude": 1500,
+    far = [{"lat": 30.0, "lon": -0.1, "altitude": 1500,
             "timestamp": (_T0 + timedelta(seconds=i * 60)).isoformat()} for i in range(5)]
     s = score_air_contact(far, REF, return_count=10)
     assert s.score == 0.0

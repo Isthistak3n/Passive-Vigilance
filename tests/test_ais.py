@@ -15,12 +15,12 @@ def _mod():
 
 def test_position_report_parses():
     m = _mod()
-    m._ingest(json.dumps({"mmsi": 366000001, "lat": 21.30, "lon": -157.86,
+    m._ingest(json.dumps({"mmsi": 366000001, "lat": 51.40, "lon": -0.26,
                           "shipname": "ALOHA", "shiptype": 70}))
     out = m.drain_detections()
     assert len(out) == 1
     d = out[0]
-    assert d["mmsi"] == 366000001 and d["lat"] == 21.30 and d["lon"] == -157.86
+    assert d["mmsi"] == 366000001 and d["lat"] == 51.40 and d["lon"] == -0.26
     assert d["name"] == "ALOHA" and d["ship_type"] == 70 and d["timestamp"]
 
 
@@ -61,6 +61,6 @@ def test_malformed_json_and_non_object_ignored():
 
 def test_uppercase_mmsi_key_accepted():
     m = _mod()
-    m._ingest(json.dumps({"MMSI": "366000002", "lat": "21.4", "lon": "-157.7"}))
+    m._ingest(json.dumps({"MMSI": "366000002", "lat": "51.5", "lon": "-0.1"}))
     d = m.drain_detections()[0]
-    assert d["mmsi"] == 366000002 and d["lat"] == 21.4 and d["lon"] == -157.7
+    assert d["mmsi"] == 366000002 and d["lat"] == 51.5 and d["lon"] == -0.1
