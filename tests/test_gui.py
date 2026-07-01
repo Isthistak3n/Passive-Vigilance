@@ -712,9 +712,11 @@ class TestGUIStatusModulesActive(unittest.TestCase):
         if gui.app is None:
             self.skipTest("Flask not installed")
         body = gui.app.test_client().get("/api/status").get_json()
-        # health reports drone_rf True, but it isn't active — the dashboard needs
-        # both to avoid a green chiclet for a disabled sensor.
-        self.assertTrue(body["sensor_health"]["drone_rf"])
+        # sensor_health is now gated by modules_active server-side: an inactive
+        # sensor can't report healthy (it used to stay True and rely on the
+        # dashboard to combine the two). modules_active is still exposed raw.
+        self.assertFalse(body["sensor_health"]["drone_rf"])
+        self.assertTrue(body["sensor_health"]["kismet"])
         self.assertFalse(body["modules_active"]["drone_rf"])
         self.assertTrue(body["modules_active"]["kismet"])
 
