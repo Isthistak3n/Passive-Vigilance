@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -391,6 +392,49 @@ class TestModeEndpoint(unittest.TestCase):
             self.assertEqual(client.get(route).status_code, 200, route)
 
 
+class TestStatusSensorHealthHonesty(unittest.TestCase):
+    """/api/status must not report a disabled sensor as healthy.
+
+    sensor_health is initialised all-True and only flipped False on a poll that
+    raises; a disabled module never polls, so without gating it reports "healthy"
+    forever (AIS/ACARS showing online while off). The endpoint gates health by
+    modules_active so the raw API is honest.
+    """
+
+    def _client(self, orch):
+        from gui.server import GUIServer
+        gui = GUIServer(orchestrator=orch)
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping status tests")
+        return gui.app.test_client()
+
+    def test_disabled_sensor_reported_unhealthy(self):
+        orch = SimpleNamespace(
+            _sensor_health={"adsb": True, "kismet": True, "ais": True,
+                            "acars": True, "sdr": True},
+            _modules_active={"adsb": True, "kismet": True, "ais": False,
+                             "acars": False},
+        )
+        health = self._client(orch).get("/api/status").get_json()["sensor_health"]
+        # Active sensors keep their reported health.
+        self.assertTrue(health["adsb"])
+        self.assertTrue(health["kismet"])
+        # Disabled ones are forced unhealthy, not the initialised True.
+        self.assertFalse(health["ais"])
+        self.assertFalse(health["acars"])
+        # A health key with no modules_active entry (e.g. "sdr") is left as-is.
+        self.assertTrue(health["sdr"])
+
+    def test_active_but_broken_sensor_stays_unhealthy(self):
+        # Gating must not resurrect a genuinely failed-but-active sensor.
+        orch = SimpleNamespace(
+            _sensor_health={"kismet": False},
+            _modules_active={"kismet": True},
+        )
+        health = self._client(orch).get("/api/status").get_json()["sensor_health"]
+        self.assertFalse(health["kismet"])
+
+
 class TestGUIServerNearbyEndpoint(unittest.TestCase):
     """/api/nearby — live proximity feed for the mobile GUI."""
 
@@ -668,9 +712,11 @@ class TestGUIStatusModulesActive(unittest.TestCase):
         if gui.app is None:
             self.skipTest("Flask not installed")
         body = gui.app.test_client().get("/api/status").get_json()
-        # health reports drone_rf True, but it isn't active — the dashboard needs
-        # both to avoid a green chiclet for a disabled sensor.
-        self.assertTrue(body["sensor_health"]["drone_rf"])
+        # sensor_health is now gated by modules_active server-side: an inactive
+        # sensor can't report healthy (it used to stay True and rely on the
+        # dashboard to combine the two). modules_active is still exposed raw.
+        self.assertFalse(body["sensor_health"]["drone_rf"])
+        self.assertTrue(body["sensor_health"]["kismet"])
         self.assertFalse(body["modules_active"]["drone_rf"])
         self.assertTrue(body["modules_active"]["kismet"])
 

@@ -195,10 +195,20 @@ class GUIServer:
             orch = self._orchestrator
             if orch is None:
                 return jsonify({"status": "no_orchestrator"})
-            health = dict(getattr(orch, "_sensor_health", {}))
             # Which sensors are actually active — so the dashboard can show a
             # disabled sensor (e.g. DroneRF off) as off rather than healthy.
             active = dict(getattr(orch, "_modules_active", {}))
+            # sensor_health is initialised all-True and only flipped False when a
+            # poll *raises*; a disabled module never polls, so it would report
+            # "healthy" forever (AIS/ACARS showing online while off). Gate health by
+            # modules_active so the raw API is honest — a sensor that isn't running
+            # can't be healthy. A health key with no modules_active entry (e.g. "sdr")
+            # is left as-is. The dashboard already greys inactive sensors via
+            # modules_active, so this only corrects direct API consumers.
+            health = {
+                k: bool(v) and active.get(k, True) is not False
+                for k, v in getattr(orch, "_sensor_health", {}).items()
+            }
             stats = dict(getattr(orch, "_stats", {}))
             fix = getattr(orch, "_current_fix", None)
             # Scoring/baseline state for the header — guarded so a status()

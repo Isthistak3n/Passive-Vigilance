@@ -1825,12 +1825,15 @@ class SensorOrchestrator:
         logger.info("Session: %s | Uptime: %s", self.session_id, uptime_str)
         logger.info("GPS:     %s | %s", gps_status, gps_loc)
         logger.info("Kismet:    %s | Devices seen: %d", _status("kismet"), self._stats["kismet_devices_seen"])
-        logger.info("ADS-B:     %s | Aircraft: %d", _status("adsb"), self._stats["aircraft_seen"])
+        # "Sightings" not "Aircraft": aircraft_seen is a cumulative per-poll sighting
+        # tally (one bump per plane per 5s poll, pre-dedup), not the count of distinct
+        # airframes — the GUI Aircraft tab is the distinct count.
+        logger.info("ADS-B:     %s | Sightings: %d", _status("adsb"), self._stats["aircraft_seen"])
         logger.info("DroneRF:   %s | Detections: %d", _status("drone_rf"), self._stats["drone_detections"])
         logger.info("RemoteID:  %s | Detections: %d", _status("remote_id"), self._stats["remote_id_detections"])
         logger.info("SDR:       %s | Mode: %s | Owner: %s", sdr_status, self.sdr_mode.value, self.sdr_coordinator.current_owner)
         logger.info("Alerts:    %s | Sent: %d | Rate-limited: %d | Dropped: %d", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"], self._stats["alerts_dropped"])
-        logger.info("Events:    %d persistent | %d aircraft | %d drone | %d remote_id", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"], self._stats["remote_id_detections"])
+        logger.info("Events:    %d persistent | %d aircraft-sightings | %d drone | %d remote_id", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"], self._stats["remote_id_detections"])
         logger.info(sep)
 
     # ------------------------------------------------------------------
