@@ -345,6 +345,42 @@ class PassiveVigilance:
             if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
                 logger.error("Task %s raised %s: %s", task.get_name(), type(result).__name__, result)
 
+    async def _connect_kismet_with_retry(self) -> None:
+        """Connect to Kismet at startup, retrying across the boot-readiness window.
+
+        Kismet's REST API starts accepting connections several seconds after its
+        systemd unit reports "active", so a single connect at startup races that
+        window and silently disables WiFi/BT (and Remote ID, which shares the same
+        endpoint) for the whole session — the boot race that greys out WiFi after a
+        reboot until someone manually restarts the service. Retry a bounded number
+        of times so a cold boot recovers on its own. Defaults span ~70s, over the
+        ~60s a full stack needs to come up. A 401 means a genuinely bad API key,
+        which retrying cannot fix, so stop immediately. connect() closes its own
+        session on every failure path, so retrying does not leak sessions.
+        """
+        retries = max(1, int(os.getenv("KISMET_CONNECT_RETRIES", "15")))
+        interval = float(os.getenv("KISMET_CONNECT_RETRY_INTERVAL_SECONDS", "5"))
+        for attempt in range(1, retries + 1):
+            try:
+                await self.kismet.connect()
+                self._kismet_active = True
+                if attempt > 1:
+                    logger.info("Kismet: connected on attempt %d/%d", attempt, retries)
+                return
+            except Exception as exc:
+                if "401" in str(exc):
+                    logger.warning("Kismet: %s — WiFi/BT capture disabled", exc)
+                    return
+                if attempt < retries:
+                    logger.info(
+                        "Kismet not ready yet (%s) — retry %d/%d in %.0fs",
+                        exc, attempt, retries, interval,
+                    )
+                    await asyncio.sleep(interval)
+        logger.warning(
+            "Kismet: unavailable after %d attempts — WiFi/BT capture disabled", retries
+        )
+
     async def startup(self) -> None:
         logger.info("Starting Passive Vigilance %s — session %s", _VERSION, self.session_id)
 
@@ -378,11 +414,7 @@ class PassiveVigilance:
             if not _got_fix:
                 logger.warning("⚠  No GPS fix within %ds — detections will not be location-stamped", gps_timeout)
 
-        try:
-            await self.kismet.connect()
-            self._kismet_active = True
-        except Exception as exc:
-            logger.warning("Kismet: unavailable (%s) — WiFi/BT capture disabled", exc)
+        await self._connect_kismet_with_retry()
 
         try:
             await self.remote_id.connect()
