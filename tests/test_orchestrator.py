@@ -231,7 +231,9 @@ async def test_startup_graceful_when_gps_unavailable(mock_sdr, orch):
 @patch("main.detect_sdr_count", return_value=2)
 async def test_startup_graceful_when_kismet_unavailable(mock_sdr, orch):
     orch.kismet.connect.side_effect = ConnectionError("Kismet not running")
-    await orch.startup()
+    # Single attempt keeps the test fast; the retry behaviour is covered separately.
+    with patch.dict(os.environ, {"KISMET_CONNECT_RETRIES": "1"}):
+        await orch.startup()
     assert orch._kismet_active is False
     assert orch._gps_active is True
     assert orch._adsb_active is True
@@ -262,6 +264,56 @@ async def test_startup_shared_keeps_adsb_active_despite_startup_connect_failure(
     with patch.dict(os.environ, {"DRONE_RF_ENABLED": "true", "SDR_MODE": "shared"}):
         await orch.startup()
     assert orch._adsb_active is True
+
+
+# ---------------------------------------------------------------------------
+# Kismet startup connect retry (boot-readiness race)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("main.asyncio.sleep", new_callable=AsyncMock)
+async def test_kismet_connect_retries_then_succeeds(mock_sleep, orch):
+    # Kismet's API is not ready for the first two attempts, then accepts the
+    # connection — WiFi must come up, not stay greyed for the whole session.
+    orch._kismet_active = False
+    orch.kismet.connect.side_effect = [
+        ConnectionError("Cannot reach Kismet — is it running?"),
+        ConnectionError("Cannot reach Kismet — is it running?"),
+        None,
+    ]
+    await orch._connect_kismet_with_retry()
+    assert orch._kismet_active is True
+    assert orch.kismet.connect.await_count == 3
+
+
+@pytest.mark.asyncio
+@patch("main.asyncio.sleep", new_callable=AsyncMock)
+async def test_kismet_connect_stops_early_on_bad_key(mock_sleep, orch):
+    # A 401 is a genuinely bad API key — retrying can't fix it, so give up at once
+    # instead of stalling startup for the full retry window.
+    orch._kismet_active = False
+    orch.kismet.connect.side_effect = ConnectionError(
+        "Kismet rejected the API key (HTTP 401) — check KISMET_API_KEY"
+    )
+    with patch.dict(os.environ, {"KISMET_CONNECT_RETRIES": "15"}):
+        await orch._connect_kismet_with_retry()
+    assert orch._kismet_active is False
+    assert orch.kismet.connect.await_count == 1
+    mock_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("main.asyncio.sleep", new_callable=AsyncMock)
+async def test_kismet_connect_gives_up_after_retries(mock_sleep, orch):
+    # Kismet never comes up: exhaust the bounded retries and disable WiFi rather
+    # than retry forever.
+    orch._kismet_active = False
+    orch.kismet.connect.side_effect = ConnectionError("Cannot reach Kismet")
+    with patch.dict(os.environ, {"KISMET_CONNECT_RETRIES": "3"}):
+        await orch._connect_kismet_with_retry()
+    assert orch._kismet_active is False
+    assert orch.kismet.connect.await_count == 3
 
 
 # ---------------------------------------------------------------------------
