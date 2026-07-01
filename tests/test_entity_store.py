@@ -277,11 +277,11 @@ def test_observation_position_null_without_fix():
 
 def test_observation_position_gps_node_with_fix():
     s = _store()
-    s.record_poll([_device()], gps_fix={"lat": 21.4, "lon": -157.7}, now=T0)
+    s.record_poll([_device()], gps_fix={"lat": 51.5, "lon": -0.1}, now=T0)
     row = s._conn.execute(
         "SELECT lat, lon, pos_source, pos_confidence, signal FROM observations"
     ).fetchone()
-    assert row["lat"] == 21.4 and row["lon"] == -157.7
+    assert row["lat"] == 51.5 and row["lon"] == -0.1
     assert row["pos_source"] == "gps_node"
     assert row["pos_confidence"] == 1.0
     assert row["signal"] == -55
@@ -335,7 +335,7 @@ def test_records_in_fixed_mode(tmp_path):
     s = _store()
     eng = FixedScoring(db_path=":memory:", baseline_hours=72)   # learning -> [] events
     orch = _make_orch(eng, s, [_device(probe_ssids=["HomeWiFi"])], tmp_path,
-                      current_fix={"lat": 21.4, "lon": -157.7})
+                      current_fix={"lat": 51.5, "lon": -0.1})
     asyncio.run(orch._poll_kismet())
     assert s.count("entities") == 1
     assert s.probe_evidence_row("aa:bb:cc:dd:ee:ff", "HomeWiFi")["probe_count"] == 1

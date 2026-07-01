@@ -55,7 +55,7 @@ Sampled every 5 minutes by an on-box logger (power, thermal, memory, service sta
 ## 4. The defect we found (and fixed)
 
 ### What happened
-After ~20 h of zero restarts, the orchestrator entered a tight crash loop: **0 → 60 systemd auto-restarts between 17:16 and 18:26 HST** (~1 restart / 75 s), then self-recovered and stayed up.
+After ~20 h of zero restarts, the orchestrator entered a tight crash loop: **0 → 60 systemd auto-restarts between 17:16 and 18:26 UTC** (~1 restart / 75 s), then self-recovered and stayed up.
 
 ### Initial (wrong) hypothesis
 The ~75 s cadence matched the SDR time-share handoff, so the single-dongle thrash was the first suspect. We could not confirm it: the SDR coordinator logged a full handoff/duty cycle every ~75 s, flooding the journal (~149 MB / 2 h) and rotating the crash window out before it could be read.

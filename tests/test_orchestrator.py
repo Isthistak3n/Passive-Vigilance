@@ -578,13 +578,13 @@ async def test_poll_ais_dedups_vessel_by_mmsi(orch, tmp_path):
     ])
     await so._poll_ais()
     so.ais.drain_detections = MagicMock(return_value=[
-        {"mmsi": 366000123, "lat": 21.3, "lon": -157.8, "name": None, "ship_type": None,
+        {"mmsi": 366000123, "lat": 51.4, "lon": -0.2, "name": None, "ship_type": None,
          "timestamp": "2026-01-01T12:00:05+00:00"},
     ])
     await so._poll_ais()
     assert len(so.ais_detections) == 1                     # one row per MMSI
     ev = so.ais_detections[0]
-    assert ev["lat"] == 21.3 and ev["name"] == "TUG"       # position + static merged
+    assert ev["lat"] == 51.4 and ev["name"] == "TUG"       # position + static merged
     assert ev["observation_count"] == 2
     assert so._stats["ais_vessels_seen"] == 1
 
@@ -599,12 +599,12 @@ async def test_poll_ais_drops_out_of_range_misdecode(orch, tmp_path):
     so.ais = MagicMock()
     so._modules_active["ais"] = True
     so._ais_max_range_km = 100.0
-    so._current_fix = {"lat": 21.40, "lon": -157.76}        # Oʻahu
+    so._current_fix = {"lat": 51.50, "lon": -0.16}        # node reference
     so.ais.drain_detections = MagicMock(return_value=[
-        {"mmsi": 367634290, "lat": 21.42, "lon": -157.79, "name": None, "ship_type": None,
+        {"mmsi": 367634290, "lat": 51.52, "lon": -0.19, "name": None, "ship_type": None,
          "timestamp": "2026-01-01T12:00:00+00:00"},          # ~3 km — kept
-        {"mmsi": 112088045, "lat": 28.28, "lon": 66.02, "name": None, "ship_type": None,
-         "timestamp": "2026-01-01T12:00:00+00:00"},          # Pakistan — dropped
+        {"mmsi": 112088045, "lat": 10.0, "lon": 100.0, "name": None, "ship_type": None,
+         "timestamp": "2026-01-01T12:00:00+00:00"},          # far — dropped as misdecode
         {"mmsi": 999, "lat": None, "lon": None, "name": "DOCKED", "ship_type": 52,
          "timestamp": "2026-01-01T12:00:00+00:00"},          # no position — kept
     ])
@@ -624,7 +624,7 @@ async def test_poll_ais_no_gps_fix_disables_range_filter(orch, tmp_path):
     so._modules_active["ais"] = True
     so._current_fix = None
     so.ais.drain_detections = MagicMock(return_value=[
-        {"mmsi": 112088045, "lat": 28.28, "lon": 66.02, "name": None, "ship_type": None,
+        {"mmsi": 112088045, "lat": 10.0, "lon": 100.0, "name": None, "ship_type": None,
          "timestamp": "2026-01-01T12:00:00+00:00"},
     ])
     await so._poll_ais()
@@ -961,7 +961,7 @@ async def test_poll_adsb_skips_idless_aircraft(orch):
 
 def _orbit_positions(n=12, dt_s=60, alt=1500):
     import math
-    clat, clon = 21.4, -157.7
+    clat, clon = 51.5, -0.1
     r = 0.5 / 60.0
     out = []
     for i in range(n):
@@ -979,7 +979,7 @@ def _orbit_positions(n=12, dt_s=60, alt=1500):
 async def test_score_aircraft_orbit_flags_of_interest(orch):
     """_score_aircraft stashes an of-interest score for an orbit near the node."""
     so = orch.sensor_orchestrator
-    so._current_fix = {"lat": 21.4, "lon": -157.7, "utc": "2026-06-16T00:10:00Z"}
+    so._current_fix = {"lat": 51.5, "lon": -0.1, "utc": "2026-06-16T00:10:00Z"}
     event = {"callsign": "TEST1", "positions": _orbit_positions()}
     air = so._score_aircraft(event)
     assert air.of_interest
