@@ -263,7 +263,8 @@ const tables = {
       { k: 'contact', label: 'Contact' }, { k: 'mac', label: 'MAC' }, { k: 'ssid', label: 'SSID' },
       { k: 'mac_type', label: 'MAC Type' }, { k: 'score', label: 'Score' }, { k: 'alert_level', label: 'Alert' },
       { k: 'seen', label: 'Seen' }, { k: 'manufacturer', label: 'Manufacturer' },
-      { k: 'pnl', label: 'Known Networks' }, { k: 'reconnect', label: 'Reconnect' }, { k: 'last', label: 'Last' },
+      { k: 'pnl', label: 'Known Networks' }, { k: 'affinity', label: 'Local networks' },
+      { k: 'reconnect', label: 'Reconnect' }, { k: 'last', label: 'Last' },
     ],
     filters: [{ k: 'manufacturer', label: 'Mfr' }, { k: 'mac_type', label: 'MAC type' }, { k: 'alert_level', label: 'Alert' }],
     min: { k: 'seen', label: 'Seen ≥' },
@@ -277,9 +278,10 @@ const tables = {
       for (const e of state.wifi) {
         const id = wifiIdentity(e);
         let g = groups.get(id);
-        if (!g) { g = { latest: e, macs: new Set(), pnl: new Set(), reconnect: false }; groups.set(id, g); }
+        if (!g) { g = { latest: e, macs: new Set(), pnl: new Set(), affinity: new Set(), reconnect: false }; groups.set(id, g); }
         if (e.mac) g.macs.add(e.mac);
         for (const s of (e.probe_ssids_all || [])) g.pnl.add(s);
+        for (const s of (e.network_affinity || [])) g.affinity.add(s);
         if (e.reconnect) g.reconnect = true;
         const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
         const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
@@ -292,7 +294,8 @@ const tables = {
           mac: e.mac || '', ssid: e.ssid || '', mac_type: e.mac_type || '',
           score: e.score != null ? e.score : 0, alert_level: e.alert_level || '',
           seen: e.observation_count || 0, manufacturer: e.manufacturer || '',
-          pnl: [...g.pnl].sort().join(', '), reconnect: g.reconnect ? 'yes' : '',
+          pnl: [...g.pnl].sort().join(', '), affinity: [...g.affinity].sort().join(', '),
+          reconnect: g.reconnect ? 'yes' : '',
           last: e.last_seen || e.timestamp || '', _addr: g.macs.size, _pnlCount: g.pnl.size,
         };
       });
@@ -307,6 +310,9 @@ const tables = {
       const reconnectCell = r.reconnect
         ? '<span class="reconnect-badge" title="directed advert / solicited service — calling out to reconnect">↩ yes</span>'
         : '—';
+      const affinityCell = r.affinity
+        ? `<span title="probed networks confirmed beaconing here: ${esc(r.affinity)}">${esc(r.affinity)}</span>`
+        : '—';
       return `
     <tr>
       <td>${r.contact ? esc(r.contact) : '—'}</td>
@@ -318,6 +324,7 @@ const tables = {
       <td>${r.seen || '—'}</td>
       <td>${r.manufacturer ? esc(r.manufacturer) : '—'}</td>
       <td class="pnl-cell">${pnlCell}</td>
+      <td class="pnl-cell">${affinityCell}</td>
       <td>${reconnectCell}</td>
       <td>${fmtTime(r.last)}</td>
     </tr>`;

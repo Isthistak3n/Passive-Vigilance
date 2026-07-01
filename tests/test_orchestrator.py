@@ -1900,7 +1900,7 @@ def test_enriched_identity_fields_none_device(orch):
     so = orch.sensor_orchestrator
     fields = so._enriched_identity_fields(None)
     assert fields == {"probe_ssids_all": [], "fingerprint_pnl": "",
-                      "reconnect": False, "solicited": []}
+                      "reconnect": False, "solicited": [], "network_affinity": []}
 
 
 # ---------------------------------------------------------------------------

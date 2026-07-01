@@ -34,6 +34,10 @@ _DEFAULT_ENTITY_DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / 
 _DEFAULT_RETENTION_DAYS = int(os.getenv("ENTITY_OBSERVATION_RETENTION_DAYS", "30"))
 _DEFAULT_PRUNE_INTERVAL_S = int(os.getenv("ENTITY_PRUNE_INTERVAL_SECONDS", "3600"))
 
+# AP-beacon capture + network-affinity recording. Pure capture (no scoring effect),
+# default on; set false to skip the beacon_evidence / network_affinity writes.
+_BEACON_CAPTURE_ENABLED = os.getenv("BEACON_CAPTURE_ENABLED", "true").strip().lower() != "false"
+
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
@@ -156,6 +160,42 @@ class EntityStore:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_contact_group ON contact_designator(group_key)"
         )
+        # AP beacon evidence — per beaconing AP + advertised SSID, with running RSSI
+        # stats (Welford). Lets us confirm which networks actually exist HERE and how
+        # strongly, so a client's probe for a locally-beaconed SSID is meaningful.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS beacon_evidence (
+                bssid        TEXT    NOT NULL,
+                ssid         TEXT    NOT NULL,
+                channel      INTEGER,
+                crypt        INTEGER,
+                first_seen   TEXT    NOT NULL,
+                last_seen    TEXT    NOT NULL,
+                beacon_count INTEGER NOT NULL DEFAULT 1,
+                sig_n        INTEGER NOT NULL DEFAULT 0,
+                sig_mean     REAL    NOT NULL DEFAULT 0.0,
+                sig_m2       REAL    NOT NULL DEFAULT 0.0,
+                PRIMARY KEY (bssid, ssid)
+            )
+            """
+        )
+        # Network affinity — keyed on the rotation-stable IE hash (like pnl_evidence):
+        # a probed SSID that is ALSO being beaconed locally. The set of a device's
+        # locally-confirmed networks is a robust, rotation-surviving cross-session
+        # matcher; a shift in it is a fixed-mode deviation.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS network_affinity (
+                probe_fingerprint INTEGER NOT NULL,
+                ssid        TEXT    NOT NULL,
+                first_seen  TEXT    NOT NULL,
+                last_seen   TEXT    NOT NULL,
+                match_count INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (probe_fingerprint, ssid)
+            )
+            """
+        )
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -177,6 +217,19 @@ class EntityStore:
             lat = lon = pos_source = pos_confidence = None
 
         cur = self._conn.cursor()
+
+        # First pass: record beaconing APs and collect the SSIDs being beaconed
+        # locally THIS poll, so a client's probe for one of them counts as a network
+        # confirmed to exist here (network affinity, below).
+        beaconed_ssids = set()
+        if _BEACON_CAPTURE_ENABLED:
+            for device in devices:
+                ssid_b = (device.get("beaconed_ssid") or "").strip()
+                bssid = device.get("macaddr", "")
+                if ssid_b and bssid:
+                    beaconed_ssids.add(ssid_b)
+                    self._upsert_beacon(cur, bssid, ssid_b, device, ts)
+
         for device in devices:
             mac = device.get("macaddr", "")
             if not mac:
@@ -221,6 +274,19 @@ class EntityStore:
                         "  probe_count = probe_count + 1",
                         (probe_fp, ssid, ts, ts),
                     )
+                    # Network affinity — this probed SSID is being beaconed locally,
+                    # so it's a network confirmed to exist here. Keyed on the IE hash
+                    # so it survives MAC rotation.
+                    if ssid in beaconed_ssids:
+                        cur.execute(
+                            "INSERT INTO network_affinity "
+                            "(probe_fingerprint, ssid, first_seen, last_seen, match_count) "
+                            "VALUES (?, ?, ?, ?, 1) "
+                            "ON CONFLICT(probe_fingerprint, ssid) DO UPDATE SET "
+                            "  last_seen = excluded.last_seen, "
+                            "  match_count = match_count + 1",
+                            (probe_fp, ssid, ts, ts),
+                        )
 
             # entities — upsert the wifi entity, then read its id for the FK.
             cur.execute(
@@ -248,6 +314,36 @@ class EntityStore:
 
         self._conn.commit()
         self._maybe_prune(now)
+
+    def _upsert_beacon(self, cur, bssid: str, ssid: str, device: dict, ts: str) -> None:
+        """Upsert one beaconing AP + advertised SSID, folding its RSSI into a running
+        Welford mean/variance (zero/None readings skipped, like baseline_store)."""
+        signal = device.get("last_signal")
+        row = cur.execute(
+            "SELECT sig_n, sig_mean, sig_m2 FROM beacon_evidence WHERE bssid = ? AND ssid = ?",
+            (bssid, ssid),
+        ).fetchone()
+        sig_n, sig_mean, sig_m2 = row if row else (0, 0.0, 0.0)
+        if signal is not None and signal != 0:
+            sig_n += 1
+            delta = signal - sig_mean
+            sig_mean += delta / sig_n
+            sig_m2 += delta * (signal - sig_mean)
+        cur.execute(
+            "INSERT INTO beacon_evidence "
+            "(bssid, ssid, channel, crypt, first_seen, last_seen, beacon_count, sig_n, sig_mean, sig_m2) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?) "
+            "ON CONFLICT(bssid, ssid) DO UPDATE SET "
+            "  last_seen = excluded.last_seen, "
+            "  channel = excluded.channel, "
+            "  crypt = excluded.crypt, "
+            "  beacon_count = beacon_count + 1, "
+            "  sig_n = excluded.sig_n, "
+            "  sig_mean = excluded.sig_mean, "
+            "  sig_m2 = excluded.sig_m2",
+            (bssid, ssid, device.get("beacon_channel"), device.get("beacon_crypt"),
+             ts, ts, sig_n, sig_mean, sig_m2),
+        )
 
     # ------------------------------------------------------------------
     # Observation history retention
@@ -292,7 +388,8 @@ class EntityStore:
 
     def count(self, table: str) -> int:
         if table not in ("probe_evidence", "device_fingerprint", "entities",
-                         "observations", "contact_designator", "pnl_evidence"):
+                         "observations", "contact_designator", "pnl_evidence",
+                         "beacon_evidence", "network_affinity"):
             raise ValueError(f"unknown table {table!r}")
         return self._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
 
@@ -307,6 +404,30 @@ class EntityStore:
             "ORDER BY probe_count DESC, ssid ASC", (probe_fingerprint,),
         ).fetchall()
         return [r["ssid"] for r in rows]
+
+    def network_affinity_profile(self, probe_fingerprint) -> dict:
+        """Locally-confirmed networks for this IE-set hash → match_count (the times a
+        probed SSID coincided with a local beacon), most-confirmed first. Empty when
+        the fingerprint is falsy or unseen. Read-only — safe from the poll thread."""
+        if not probe_fingerprint:
+            return {}
+        rows = self._conn.execute(
+            "SELECT ssid, match_count FROM network_affinity WHERE probe_fingerprint = ? "
+            "ORDER BY match_count DESC, ssid ASC", (probe_fingerprint,),
+        ).fetchall()
+        return {r["ssid"]: r["match_count"] for r in rows}
+
+    def beacon_rssi(self, bssid: str, ssid: str):
+        """Running RSSI stats (mean, variance, sample count) for one beaconing AP +
+        SSID, or None if unseen. Variance is population variance (m2 / n)."""
+        row = self._conn.execute(
+            "SELECT sig_n, sig_mean, sig_m2 FROM beacon_evidence WHERE bssid = ? AND ssid = ?",
+            (bssid, ssid),
+        ).fetchone()
+        if not row or not row["sig_n"]:
+            return None
+        n = row["sig_n"]
+        return {"mean": row["sig_mean"], "var": row["sig_m2"] / n, "count": n}
 
     def distinctive_anchors(self, max_df: int = 3) -> dict:
         """Map each IE-set hash → its rarest *distinctive* probed SSID, or omit it.
