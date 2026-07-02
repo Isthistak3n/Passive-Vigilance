@@ -468,5 +468,67 @@ class TestKismetActiveWindow(unittest.TestCase):
         self.assertEqual(len(result), 1)
 
 
+# ---------------------------------------------------------------------------
+# connect() must not block the event loop on the `iw dev` subprocess
+# (get_interface_status shells out; connect() runs on the asyncio loop and is
+# retried at startup / awaited on reconnect while the watchdog heartbeat is live)
+# ---------------------------------------------------------------------------
+
+
+class TestKismetConnectOffloadsInterfaceCheck(unittest.TestCase):
+
+    @patch("modules.kismet.KISMET_API_KEY", "valid-key")
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_interface_status_runs_off_the_loop_thread(self, MockSession):
+        """The blocking interface check must run in a worker thread, not on the
+        event loop thread."""
+        import threading
+
+        from modules.kismet import KismetModule
+
+        MockSession.return_value = _mock_session(get_status=200)
+        km = KismetModule()
+
+        loop_thread = {}
+        call_thread = {}
+
+        real_status = km.get_interface_status
+
+        def _record_thread():
+            call_thread["id"] = threading.get_ident()
+            return {"interface": "wlan1", "mode": "monitor",
+                    "phy": "phy0", "is_monitor": True}
+
+        km.get_interface_status = _record_thread
+
+        async def _go():
+            loop_thread["id"] = threading.get_ident()
+            await km.connect()
+
+        _run(_go())
+        self.assertIn("id", call_thread)
+        self.assertNotEqual(call_thread["id"], loop_thread["id"])
+        _run(km.close())
+        del real_status
+
+    @patch("modules.kismet.KISMET_API_KEY", "valid-key")
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_connect_still_warns_when_not_monitor(self, MockSession):
+        """Offloading the check must not lose the not-in-monitor warning."""
+        from modules.kismet import KismetModule
+
+        MockSession.return_value = _mock_session(get_status=200)
+        km = KismetModule()
+        km.get_interface_status = lambda: {
+            "interface": "wlan1", "mode": "managed",
+            "phy": "phy0", "is_monitor": False,
+        }
+
+        with self.assertLogs("modules.kismet", level="WARNING") as cm:
+            _run(km.connect())
+        self.assertTrue(any("not monitor" in m for m in cm.output))
+        _run(km.close())
+
+
 if __name__ == "__main__":
     unittest.main()
