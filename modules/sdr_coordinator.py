@@ -186,9 +186,17 @@ class SDRCoordinator:
                 continue
             try:
                 name, secs = part.split(":")
-                out.append((name.strip(), int(secs)))
+                secs_i = int(secs)
             except ValueError:
                 logger.warning("SDR_CYCLE_SLICES: ignoring malformed slice %r", part)
+                continue
+            if secs_i <= 0:
+                # A zero/negative slice makes _run_slice return immediately, so the
+                # cycle would hand the dongle off and back with no dwell — tight
+                # handoff churn that wedges the SDR. Drop it.
+                logger.warning("SDR_CYCLE_SLICES: ignoring non-positive slice %r", part)
+                continue
+            out.append((name.strip(), secs_i))
         return out or [("adsb", self._adsb_slice)]
 
     def register_owner(self, owner: _BandOwner) -> None:
@@ -243,6 +251,12 @@ class SDRCoordinator:
                 await self._drone_rf.stop_scan()
             except Exception as exc:
                 logger.debug("SDR coordinator stop — DroneRF stop error: %s", exc)
+        # Settle before reopening the dongle for readsb. Starting readsb inline on a
+        # decoder's still-releasing device is the exact "SDR wedged, exiting!"
+        # crash-loop the settle barrier exists to prevent — and on shutdown nothing
+        # re-hands-off to recover it, so readsb crash-loops until it wins the race.
+        # Mid-cycle handoffs already settle here; stop() was the one path that didn't.
+        await self._settle_sdr()
         await self._start_readsb()
         self._current_owner = "none"
         self._healthy = True
@@ -342,6 +356,13 @@ class SDRCoordinator:
                 self._current_owner = band
                 self._healthy = True
             else:
+                # The previous owner was already released above, so nothing holds
+                # the dongle now — record "none", NOT the stale prior owner. Leaving
+                # it stale is a real trap: the next handoff back to that band matches
+                # on name and short-circuits the early return below, so the released
+                # device is never re-opened (e.g. adsb→ais fails, then the next adsb
+                # slice thinks readsb is still up and never restarts it).
+                self._current_owner = "none"
                 self._healthy = False
                 logger.warning("SDR handoff to %s failed — marking unhealthy", band)
 
