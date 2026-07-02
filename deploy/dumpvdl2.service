@@ -1,0 +1,23 @@
+[Unit]
+Description=dumpvdl2 — VDL Mode 2 / ACARS decoder for Passive Vigilance
+Documentation=https://github.com/szpajder/dumpvdl2
+After=network.target
+
+[Service]
+# Coordinator-managed: PV's SDR coordinator starts/stops this on an ACARS preemption
+# window (a >30s-held aircraft), single dongle, via sudo systemctl. NOT enabled at
+# boot, Restart=no — so systemd never auto-restarts it mid-ADS-B-slice and grabs the
+# shared dongle. (Set ACARS_SERVICE=dumpvdl2 in .env; sudoers must scope
+# `systemctl start/stop dumpvdl2.service`.) On a DEDICATED VHF dongle, point --rtlsdr
+# at that device index and let it run continuously instead.
+Type=simple
+# Decode VDL2 and emit JSON over UDP to the ACARSModule's localhost listener (:5555).
+# --rtlsdr 0 = the shared dongle; the channels cluster around the US VDL2 common
+# signalling channel 136.975 MHz, all inside one ~2 MHz tuner window. Tune --gain and
+# the channel list to your region/antenna.
+ExecStart=/usr/local/bin/dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5555 --rtlsdr 0 --gain 40 136650000 136725000 136775000 136975000
+Restart=no
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
