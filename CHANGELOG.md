@@ -9,6 +9,32 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ### What's better now
 
+- **A randomized device that leaves and comes back is recognised as the same
+  contact.** Modern phones rotate their address constantly, so a returning device
+  used to reappear as a brand-new contact. Now a device is identified by *what it
+  broadcasts* at one of two confidence tiers, and its rotating addresses collapse
+  into a single contact line on the dashboard (with a count of how many addresses
+  it has cycled through). A device that leaves the area and returns is flagged as
+  a **return** rather than shown as new.
+- **The platform remembers devices across days and restarts.** A contact seen on a
+  previous session or a previous day is now flagged as a **returning entity**
+  ("seen before") — the "has this been here before / are you being cased?" signal.
+  This memory is durable, so it survives reboots.
+- **A person's devices are grouped together.** When a phone appears as *both* a
+  Wi-Fi client and a Bluetooth device — or someone carries a phone and a wearable —
+  the radios that travel together are linked into one **person**, so one person
+  isn't counted as several separate threats. Linking is deliberately conservative:
+  a device only joins a person on strong, sustained co-presence, and access points
+  are never grouped as people.
+- **Residents vs. visitors.** The access points around a fixed node now serve as the
+  "environment." A mobile device that probes for a network that exists here, or that
+  the node already learned during its baseline, is a **resident**; a brand-new device
+  with no tie to any local network that lingers is flagged as a **visitor of
+  interest**. This is a display/awareness signal — it never changes what pages you.
+- **ACARS actually enriches the aircraft view.** Decoded datalink messages now yield
+  an aircraft's origin and destination and, where present, position reports; those
+  bind a message to the nearest aircraft even when it broadcasts no callsign, and the
+  enrichment is shown on the aircraft row and survives a page refresh.
 - **The SDR pivot — DroneRF retired, maritime + aviation decode added.** The single
   dongle now runs an N-band time-share cycle: ADS-B plus optional AIS (marine vessels)
   and ACARS (aviation datalink, triggered when a contact is held in view past 30 s and

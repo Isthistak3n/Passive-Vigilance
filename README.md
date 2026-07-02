@@ -3,7 +3,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-762%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-848%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.7.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -171,12 +171,27 @@ That is exactly why mode is an explicit, fail-loud deployment choice.
   recomputed on boot. Per-device RSSI statistics are also banked during learning
   for future approaching-signal work.
 
+**Contact identity, returns, and people:** a device's contact is kept stable across
+address rotation at two confidence tiers (a rare, distinctive probed network is a
+*strong* anchor; a less-rare one is a *medium*, "likely-same" anchor), and the
+dashboard collapses a device's rotating addresses into one contact row. A contact
+re-seen after leaving is flagged a **return**; one seen on a **prior session or day**
+is a **returning entity** ("seen before"), remembered durably across restarts. A
+person's mobile radios that travel together (a phone that is both a Wi-Fi client and
+a Bluetooth device, or a phone + a wearable) are conservatively linked into one
+**person** — access points are excluded, and a device only joins on strong, sustained
+co-presence. Finally, the local access points act as the **environment**: a mobile
+device tied to a local network or already in the baseline is a **resident**, while a
+brand-new device with no local tie that lingers is flagged a **visitor of interest**.
+These identity signals are display/awareness only — they never change what alerts.
+
 **Entity / observation foundation:** independently of scoring, every poll is
 recorded into a durable SQLite store (what each device probes for, a per-device
-fingerprint, one entity per device, and a growing observation history). This runs
-at the capture layer for **both** node modes and is the substrate for
-cross-session device identity. It uses real upserts, so a stable device set
-produces a fixed number of rows rather than growing per poll.
+fingerprint, one entity per device, a growing observation history, plus the durable
+cross-session contact registry and person links above). This runs at the capture
+layer for **both** node modes and is the substrate for cross-session device
+identity. It uses real upserts, so a stable device set produces a fixed number of
+rows rather than growing per poll.
 
 **Switching modes from the dashboard:** when the optional web GUI is enabled with
 a `GUI_TOKEN` set, the dashboard header has a small **Mode** control to write
@@ -210,7 +225,8 @@ it is restarted.
 | Detection modes | ✅ Phase 2 | `NODE_MODE` selector, ScoringEngine fork, FixedScoring (novelty + off-schedule + graduated severity), durable crash-safe SQLite baseline; randomized devices keyed by content fingerprint (`wifi-fp:`/`ble-fp:`) so identity survives MAC rotation |
 | BLE advertisement capture | ✅ Complete | Passive raw-HCI listener (`BLE_SCANNER_ENABLED`); recovers vendor data, service UUIDs, and real RSSI; auto-detects the HCI controller — 18 tests |
 | Device fingerprinting | ✅ Complete | Randomization-resistant BLE + WiFi signatures (vendor/services/name; probed SSIDs + IE hash) with over-merge safeguards — 27 tests |
-| Entity/observation store | ✅ Complete | Durable SQLite (probe evidence, fingerprint, entities, observation history); recorded at the poll site for both modes; thread-safe reads for the GUI |
+| Randomized-device identity (P4) | ✅ Complete | Strong/medium contact-identity tiers; within-session **return** + durable cross-session **returning-entity**; conservative cross-PHY **person** linking (Wi-Fi client + BLE, APs excluded); **resident vs. visitor** from local-AP affinity + baseline. Display/identity only — never changes scoring |
+| Entity/observation store | ✅ Complete | Durable SQLite (probe evidence, fingerprint, entities, observation history, cross-session contact registry + person links); recorded at the poll site for both modes; thread-safe reads for the GUI |
 | Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 24 tests |
 | Remote ID | ✅ Complete | FAA Remote ID (ASTM F3411-22a) decode via Kismet 802.11 vendor IE; GUI tab + `/api/remote_id` — 22 tests |
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
@@ -219,7 +235,7 @@ it is restarted.
 | Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle, contact designators, current-sky aircraft + Remote ID tabs, durable detection/alert history across refresh & restart — 63 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown, watchdog, current-sky indexes + bounded tracks — 87 tests |
 
-**762 tests passing** across all modules.
+**848 tests passing** across all modules.
 
 ---
 
@@ -302,7 +318,8 @@ Passive-Vigilance/
 │   ├── ble_scanner.py                # BLEScanner — passive raw-HCI LE advertisement capture (vendor/services/name + real RSSI)
 │   ├── ble_fingerprint.py            # BLE advertisement → rotation-resistant signature (ble-fp:)
 │   ├── wifi_fingerprint.py           # WiFi probe SSIDs + IE-set hash → rotation-resistant signature (wifi-fp:)
-│   ├── device_identity.py            # Shared strong-fingerprint / label helpers used by both scoring engines
+│   ├── device_identity.py            # Shared strong/medium contact-identity tiers used by both scoring engines
+│   ├── copresence.py                 # Cross-PHY co-presence linking — a person's Wi-Fi + BLE radios into one "person" (over-merge-safe)
 │   ├── contact_designator.py         # CLASS-IDENT-# naval/air-style track labels for WiFi/BT contacts
 │   ├── sdr_manager.py                # SDRManager — RTL-SDR inventory detection; SDRMode resolution
 │   ├── sdr_coordinator.py            # SDRCoordinator — asyncio time-share scheduler for single-dongle setups
@@ -352,7 +369,8 @@ Passive-Vigilance/
 │   ├── test_ble_scanner.py           # passive raw-HCI BLE advertisement capture
 │   ├── test_ble_fingerprint.py       # BLE signature (ble-fp:)
 │   ├── test_wifi_fingerprint.py      # WiFi signature (wifi-fp:)
-│   ├── test_device_identity.py       # shared fingerprint/label helpers
+│   ├── test_device_identity.py       # shared fingerprint/label helpers + contact-identity tiers
+│   ├── test_copresence.py            # cross-PHY co-presence linking + over-merge guards
 │   ├── test_contact_designator.py    # CLASS-IDENT-# track labels
 │   ├── test_orchestrator.py          # 87 tests — PassiveVigilance orchestrator
 │   ├── test_gui.py                   # 63 tests — GUIServer, durable history, mode toggle
@@ -416,6 +434,11 @@ Key variables:
 | `GUI_ENABLED` | Enable live web dashboard | `false` |
 | `GUI_PORT` | Web dashboard port | `8080` |
 | `GUI_TOKEN` | Bearer/`?token=` for the dashboard; **required** to use the mode toggle | — |
+| `FP_MEDIUM_MAX_DF` | Looser SSID-rarity bar for the *medium* contact-identity tier (display/re-link only) | `12` |
+| `WIFI_RETURN_GAP_SECONDS` | Absence after which a returning WiFi/BT contact is flagged a **return** | `900` |
+| `ENTITY_RETURN_MIN_GAP_SECONDS` | Cross-session: min age of a prior sighting to count as a **returning entity** (guards quick restarts) | `3600` |
+| `CROSS_PHY_LINKING_ENABLED` | Group a person's co-present mobile radios (Wi-Fi + BLE) into one **person**; APs excluded | `true` |
+| `VISITOR_ALERT_MIN_OBS` | Observations a novel, no-local-affinity **visitor** must linger before a display-only alert | `20` |
 | `NODE_DENSITY` | Fixed mode: egregious-threshold preset (`dense`/`suburban`/`rural`) | `suburban` |
 | `EGREGIOUS_SIGNAL_DBM` | Fixed mode: explicit WiFi egregious threshold (overrides preset) | preset |
 | `EGREGIOUS_BLE_SIGNAL_DBM` | Fixed mode: BLE egregious threshold (modality-specific, not density-keyed) | `-50` |

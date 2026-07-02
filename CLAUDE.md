@@ -74,7 +74,8 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/persistence.py` | `PersistenceEngine` | **Mobile** scoring (location-diversity); the `ScoringEngine` used when `NODE_MODE=mobile` |
 | `modules/fixed_scoring.py` | `FixedScoring` | **Fixed** scoring (baseline-deviation): novelty + off-schedule + graduated severity |
 | `modules/baseline_store.py` | `BaselineStore` | Durable SQLite baseline; crash-safe learning window; per-device hour-mask + RSSI stats |
-| `modules/entity_store.py` | `EntityStore` | Durable SQLite entity/observation store; recorded at the poll site for both modes |
+| `modules/entity_store.py` | `EntityStore` | Durable SQLite entity/observation store; recorded at the poll site for both modes; also the P4 `contact_registry` (cross-session returning-entity) + `contact_links` (cross-PHY person links) |
+| `modules/copresence.py` | `CoPresenceLinker` | P4-C cross-PHY person linking — groups a person's co-present MOBILE radios (Wi-Fi client + BLE; APs excluded) via co-presence count + Jaccard + transience guard; over-merge-safe, bounded, pure |
 | `gui/__init__.py` | — | Empty package marker |
 | `gui/server.py` | `GUIServer` | Flask in daemon thread; SSE `/stream`; REST `/api/*` |
 | `gui/templates/index.html` | — | Dark-theme SPA; 5 tabs; Leaflet map |
@@ -210,15 +211,26 @@ Re-run the monitor mode commands after any NM restart.
   on reopen — a crash loop resumes the existing window instead of relearning
   forever (the critical correctness property; default path `data/baseline.db`,
   override `BASELINE_DB_PATH`).
-- **EntityStore** (`modules/entity_store.py`): durable SQLite, four tables
-  (`probe_evidence`, `device_fingerprint`, `entities`, `observations`). Written
-  via `record_poll()` at the **poll site** in `SensorOrchestrator._poll_kismet`,
-  so it records for **both** node modes (orthogonal to scoring). Per-device rows
-  are real upserts (flat for a stable device set); only `observations` grows by
-  design and is bounded by a time-based retention sweep
-  (`ENTITY_OBSERVATION_RETENTION_DAYS`, default 30; 0 = keep forever; swept at
-  most every `ENTITY_PRUNE_INTERVAL_SECONDS`, default 3600). Guarded — a store
-  failure never affects capture or detection.
+- **EntityStore** (`modules/entity_store.py`): durable SQLite. Written via
+  `record_poll()` at the **poll site** in `SensorOrchestrator._poll_kismet`, so it
+  records for **both** node modes (orthogonal to scoring). Per-device rows are real
+  upserts (flat for a stable device set); only `observations` grows by design and is
+  bounded by a **batched, WAL-backed** retention sweep (`ENTITY_OBSERVATION_RETENTION_DAYS`
+  default 30; 0 = keep forever; swept at most every `ENTITY_PRUNE_INTERVAL_SECONDS`
+  default 3600 — batched so a big backlog can't block the loop past the watchdog).
+  Guarded — a store failure never affects capture or detection.
+- **P4 identity (display/identity only — never changes scoring), on branch
+  `feat/contact-identity-tiers`:** the DISPLAY contact identity is separate from the
+  scoring key. `device_identity.contact_identity()` returns a *strong* (rare distinctive
+  SSID anchor, == scoring key) or *medium* (`FP_MEDIUM_MAX_DF`, looser anchor) tier so
+  more randomized devices re-link; weak → stays `mac:`. `SensorOrchestrator._resolve_contact`
+  uses it; NOTE FixedScoring's `event.fingerprint` is `mac:<mac>` for un-fingerprinted
+  devices, so a `mac:` fingerprint must resolve to *weak*, not strong. Within-session
+  **return** (`_note_wifi_return`), cross-session **returning-entity** (`contact_registry`,
+  `_note_cross_session_return`), and cross-PHY **person** linking (`copresence.py` fed by
+  `_update_copresence` once per poll; `contact_links`) + **resident/visitor**
+  (`_resident_status`, mobile-only; APs are the environment) all ride the WiFi event dict
+  to the GUI. Conservative + off via `CROSS_PHY_LINKING_ENABLED`.
 - GUI mode toggle: `POST /api/mode` (requires `GUI_TOKEN`) writes `NODE_MODE` to
   `.env` surgically/atomically; mode is read only at startup, so the change needs
   a restart.
