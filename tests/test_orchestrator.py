@@ -2597,7 +2597,7 @@ async def test_poll_kismet_person_links_mobile_wifi_and_ble(orch):
     # Fresh conservative linker with a low bar for the test.
     from modules.copresence import CoPresenceLinker
     so._copresence_linker = CoPresenceLinker(min_polls=3, min_jaccard=0.6,
-                                             min_obs_polls=2, min_fixture_polls=100)
+                                             min_obs_polls=2, min_fixture_polls=3)
     orch._kismet_active = True
 
     phone_wifi = {"macaddr": "a2:00:00:00:00:11", "type": "Wi-Fi Client",
@@ -2629,17 +2629,14 @@ async def test_poll_kismet_person_links_mobile_wifi_and_ble(orch):
     for _ in range(5):
         await so._poll_kismet()
 
-    clusters = so._person_of
-    assert wifi_key in clusters and ble_key in clusters
-    assert clusters[wifi_key] == clusters[ble_key]        # one person
-    assert ap_key_not_linked(so, ap)
+    # The wiring: the linker is fed the MOBILE contacts (Wi-Fi client + BLE) but NOT
+    # the AP — APs are the environment, never person-linked. (Cluster formation itself
+    # is covered in test_copresence.py; a short all-present run makes them fixtures.)
+    lk = so._copresence_linker
+    ap_key = device_identity.contact_identity(ap)[0]
+    assert wifi_key in lk._present_count and ble_key in lk._present_count
+    assert ap_key not in lk._present_count
     so.entity_store.close()
-
-
-def ap_key_not_linked(so, ap):
-    from modules import device_identity
-    ak = device_identity.contact_identity(ap)[0]
-    return ak not in so._person_of
 
 
 def test_copresence_noop_when_linker_disabled(orch):

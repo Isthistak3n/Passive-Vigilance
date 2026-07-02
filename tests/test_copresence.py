@@ -88,22 +88,35 @@ def test_three_devices_one_person_cluster():
     assert set(clusters) == {"wifi-fp:phone", "ble-fp:phone", "ble-fp:watch"}
 
 
-def test_prior_link_relinks_fast_across_session():
-    lk = _linker(min_polls=100)   # would never link within this short run on its own
+def test_prior_link_relinks_when_present_again():
+    """A pair known from a prior session skips the co-presence THRESHOLDS, so a
+    genuinely returning (transient) person re-links without re-earning the bar."""
+    lk = _linker(min_polls=100, min_fixture_polls=20)   # never link on its own
     lk.load_prior_links([("wifi-fp:a", "ble-fp:b")])
-    for _ in range(3):
-        lk.observe({"wifi-fp:a", "ble-fp:b"})
+    # Present together for an 11-poll visit inside a 30-poll run (transient, gate active).
+    _visit(lk, {"wifi-fp:a", "ble-fp:b"}, start=5, length=11, total=30)
     links = lk.established_links()
     assert len(links) == 1 and {links[0][0], links[0][1]} == {"wifi-fp:a", "ble-fp:b"}
 
 
-def test_fixture_gate_dormant_in_short_window():
-    """Below min_fixture_polls, a contact present throughout is NOT a fixture, so a
-    real person present the whole short window still links (Jaccard guards ambient)."""
-    lk = _linker(min_polls=3, min_fixture_polls=50)
-    for _ in range(10):
-        lk.observe({"wifi-fp:a", "ble-fp:b"})   # 10 polls < 50 -> not fixtures
-    assert len(lk.established_links()) == 1
+def test_no_link_before_fixture_gate_engages():
+    """Regression (caught live): before min_fixture_polls, NOTHING links — otherwise
+    the persistent ambient background fuses into one false 'person' in the first minutes."""
+    lk = _linker(min_polls=3, min_fixture_polls=30)
+    for _ in range(20):                       # 20 polls < 30 -> gate dormant
+        lk.observe({"wifi-fp:a", "ble-fp:b", "wifi-fp:c"})
+    assert lk.established_links() == []
+    assert lk.clusters() == {}
+
+
+def test_prior_link_between_fixtures_does_not_reestablish():
+    """A stale false link (two always-on devices) must NOT re-cluster on reload —
+    the fixture exclusion applies to prior links too."""
+    lk = _linker(min_polls=3, min_fixture_polls=20)
+    lk.load_prior_links([("wifi-fp:apish", "wifi-fp:iot")])
+    for _ in range(40):                       # both present in 100% of polls -> fixtures
+        lk.observe({"wifi-fp:apish", "wifi-fp:iot"})
+    assert lk.established_links() == []
 
 
 def test_burst_over_cap_skips_pairing_but_counts_presence():

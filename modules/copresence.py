@@ -120,11 +120,22 @@ class CoPresenceLinker:
     def established_links(self) -> list:
         """Pairs that meet the co-presence bar: ``[(a, b, co_polls, jaccard), ...]``.
 
-        A pair known from a prior session (``load_prior_links``) qualifies as soon as
-        both have been co-present at all this run, so a returning person re-links fast.
+        NOTHING links until at least ``min_fixture_polls`` polls have been seen — until
+        then we can't tell an always-on ambient device from a visitor present throughout
+        a still-short window, and linking on that thin/early data fuses the whole
+        persistent background into one false "person" (observed live: 12 ambient devices
+        in the first few minutes). The FIXTURE exclusion applies to EVERY link, including
+        one restored from a prior session: an always-on device is never part of a person,
+        so a stale false link between two fixtures never re-clusters. A prior link still
+        skips the co-presence/Jaccard *thresholds* (it was established before), so a
+        genuinely returning person — transient, present together again — re-links quickly.
         """
         out = []
+        if self._total_polls < self._min_fixture_polls:
+            return out
         for (a, b), co in self._copresent.items():
+            if self._is_fixture(a) or self._is_fixture(b):
+                continue
             ca = self._present_count.get(a, 0)
             cb = self._present_count.get(b, 0)
             union = ca + cb - co
@@ -134,8 +145,6 @@ class CoPresenceLinker:
                 if co < self._min_polls or jac < self._min_jaccard:
                     continue
                 if min(ca, cb) < self._min_obs_polls:
-                    continue
-                if self._is_fixture(a) or self._is_fixture(b):
                     continue
             out.append((a, b, co, round(jac, 3)))
         return out
