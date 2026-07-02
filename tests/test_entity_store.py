@@ -419,3 +419,109 @@ def test_contact_number_survives_reopen():
     s2 = EntityStore(path)
     assert s2.assign_contact_number("wifi-fp:a", "AP-NETGEAR") == n   # stable across restart
     s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Retention sweep is bounded — the 2026-06 crash-loop regression tests
+# (one unbounded DELETE over a ~28M-row backlog held the asyncio loop past
+# systemd's watchdog, and as one transaction rolled back on every kill)
+# ---------------------------------------------------------------------------
+
+
+def _seed_old_rows(store, n, mac_prefix="aa:bb:cc:dd:ee"):
+    """n observations at T0 (old) + one recent row; retention 7 days."""
+    for i in range(n):
+        store.record_poll([_device(mac=f"{mac_prefix}:{i:02x}")], now=T0)
+    store.record_poll([_device()], now=T0 + timedelta(days=30))
+
+
+def test_prune_batches_clear_a_multi_batch_backlog():
+    s = EntityStore(":memory:", retention_days=7, prune_interval_s=10 ** 9,
+                    prune_batch_rows=2, prune_time_budget_s=60.0)
+    _seed_old_rows(s, 7)
+    assert s.count("observations") == 8
+    removed = s.prune_observations(now=T0 + timedelta(days=30))
+    assert removed == 7                      # whole backlog, across 4 batches
+    assert s.count("observations") == 1      # the recent row survives
+    s.close()
+
+
+def test_prune_time_budget_bounds_one_sweep_and_resumes():
+    # Budget 0 -> the sweep stops after its first batch; the rest of the
+    # backlog must survive to be drained by the NEXT sweep, so a single sweep
+    # can never hold the poll thread longer than its budget.
+    s = EntityStore(":memory:", retention_days=7, prune_interval_s=10 ** 9,
+                    prune_batch_rows=2, prune_time_budget_s=0.0)
+    _seed_old_rows(s, 6)
+    first = s.prune_observations(now=T0 + timedelta(days=30))
+    assert first == 2                        # exactly one batch
+    assert s.count("observations") == 5      # 4 old left + 1 recent
+    second = s.prune_observations(now=T0 + timedelta(days=30))
+    assert second == 2                       # the next sweep resumes the backlog
+    s.close()
+
+
+def test_prune_commits_per_batch_so_progress_survives_a_kill(tmp_path):
+    # The old single-transaction DELETE rolled back when systemd killed the
+    # node mid-sweep, so a crash-looping node made NO progress on each pass.
+    # Per-batch commits must leave completed batches durable even if the sweep
+    # stops early (budget 0 stands in for the kill).
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, retention_days=7, prune_interval_s=10 ** 9,
+                    prune_batch_rows=2, prune_time_budget_s=0.0)
+    _seed_old_rows(s, 6)
+    s.prune_observations(now=T0 + timedelta(days=30))   # one batch, then "killed"
+    s.close()
+    reopened = EntityStore(db, retention_days=7, prune_interval_s=10 ** 9)
+    assert reopened.count("observations") == 5           # the batch stayed deleted
+    reopened.close()
+
+
+def test_first_auto_sweep_after_restart_is_deferred(tmp_path):
+    # A restart over a database holding a backlog must NOT sweep on the first
+    # poll — that put the big delete squarely in the startup window and drove
+    # the restart crash-loop. The sweep runs one interval later instead.
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, retention_days=7, prune_interval_s=3600)
+    s.record_poll([_device()], now=T0)
+    s.close()
+
+    later = T0 + timedelta(days=30)
+    restarted = EntityStore(db, retention_days=7, prune_interval_s=3600)
+    restarted.record_poll([_device()], now=later)        # first poll: deferred
+    assert restarted.count("observations") == 2          # old row still there
+    restarted.record_poll([_device()], now=later + timedelta(hours=2))
+    assert restarted.count("observations") == 2          # T0 row swept, +1 new row
+    row_ts = {r["timestamp"] for r in
+              restarted._conn.execute("SELECT timestamp FROM observations")}
+    assert not any(ts.startswith("2026-01-01T00:00") for ts in row_ts)
+    restarted.close()
+
+
+def test_file_backed_store_runs_in_wal_mode(tmp_path):
+    s = EntityStore(str(tmp_path / "entities.db"))
+    mode = s._conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode == "wal"
+    s.close()
+
+
+def test_incremental_vacuum_actually_reclaims_pages(tmp_path):
+    # PRAGMA incremental_vacuum does its work as the statement is STEPPED —
+    # an un-drained cursor silently reclaims nothing (the fetchall gotcha).
+    s = EntityStore(str(tmp_path / "vac.db"), retention_days=7)
+    s._conn.execute(
+        "INSERT INTO entities (entity_type, identifier, first_seen, last_seen, obs_count) "
+        "VALUES ('wifi','x','t','t',1)")
+    eid = s._conn.execute("SELECT entity_id FROM entities").fetchone()[0]
+    s._conn.executemany(
+        "INSERT INTO observations (entity_id, timestamp) VALUES (?, ?)",
+        ((eid, "2026-01-01T00:00:00+00:00") for _ in range(20000)))
+    s._conn.commit()
+    s._conn.execute("DELETE FROM observations")
+    s._conn.commit()
+    before = s._conn.execute("PRAGMA freelist_count").fetchone()[0]
+    assert before > 0
+    s._reclaim_pages()
+    after = s._conn.execute("PRAGMA freelist_count").fetchone()[0]
+    assert after < before
+    s.close()
