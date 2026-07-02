@@ -920,7 +920,11 @@ class SensorOrchestrator:
             contact_key, confidence = device_identity.contact_identity(device)
         if contact_key:
             identity_key = contact_key
-        elif event.fingerprint:
+        elif event.fingerprint and not str(event.fingerprint).startswith("mac:"):
+            # A real content fingerprint from the scorer (wifi-fp:/ble-fp:). Note
+            # FixedScoring sets event.fingerprint to "mac:<mac>" for un-fingerprinted
+            # devices (PersistenceEngine leaves it ""), so guard against a mac: key
+            # here — it is NOT a strong identity and must stay weak/mac-keyed.
             identity_key, confidence = event.fingerprint, "strong"
         else:
             identity_key, confidence = "mac:" + event.mac, "weak"

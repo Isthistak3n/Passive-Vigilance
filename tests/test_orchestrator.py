@@ -2537,3 +2537,23 @@ def test_cross_session_result_cached_per_session(orch):
     # Recorded once this session (the registry advanced a single visit, not two).
     assert so.entity_store.contact_registry_row("wifi-fp:k")["visits"] == 2
     so.entity_store.close()
+
+
+def test_resolve_contact_mac_scoring_fingerprint_is_weak_not_strong(orch):
+    """Regression (caught on chase): FixedScoring sets event.fingerprint to
+    'mac:<mac>' for un-fingerprinted devices; that is NOT a strong content
+    fingerprint, so the contact must be labeled weak and mac:-keyed, not strong."""
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:07", fingerprint="mac:a2:00:00:00:00:07")
+    device = {"macaddr": "a2:00:00:00:00:07", "type": "Wi-Fi Client"}  # no anchor/IE
+    _, confidence, identity_key = so._resolve_contact(ev, device)
+    assert confidence == "weak"
+    assert identity_key.startswith("mac:")
+
+
+def test_resolve_contact_real_fingerprint_still_strong(orch):
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:08", fingerprint="wifi-fp:deadbeef")
+    _, confidence, identity_key = so._resolve_contact(ev, device=None)
+    assert confidence == "strong"
+    assert identity_key == "wifi-fp:deadbeef"
