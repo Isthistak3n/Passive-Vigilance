@@ -2460,3 +2460,80 @@ async def test_poll_kismet_marks_returning_contact_on_wifi_event(orch):
     assert row["returning"] is True
     assert row["contact_confidence"] == "medium"
     assert row["contact_key"] == ck
+
+
+# ---------------------------------------------------------------------------
+# Cross-session returning entity (Phase B) — durable "seen before" recognition
+# ---------------------------------------------------------------------------
+
+
+def test_cross_session_return_flags_prior_session(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    so._entity_return_min_gap_s = 3600
+    # Seed a prior session's sighting a day ago.
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    so.entity_store.record_contact_sighting("wifi-fp:known1", past, "sess-1")
+
+    res = so._note_cross_session_return("wifi-fp:known1", "strong", datetime.now(timezone.utc))
+    assert res["returning_entity"] is True
+    assert res["entity_visits"] == 2
+    assert res["entity_days_known"] >= 1
+    so.entity_store.close()
+
+
+def test_cross_session_first_ever_sighting_not_returning(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-1"
+    res = so._note_cross_session_return("wifi-fp:brandnew", "strong", datetime.now(timezone.utc))
+    assert res["returning_entity"] is False
+    # But it IS now recorded for next time.
+    assert so.entity_store.contact_registry_row("wifi-fp:brandnew") is not None
+    so.entity_store.close()
+
+
+def test_cross_session_quick_restart_not_a_return(orch):
+    """A prior sighting only minutes ago (a crash-restart, new session id) must NOT
+    read as a return visit — the min-gap guard, unless it's a different UTC day."""
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    so._entity_return_min_gap_s = 3600
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    so.entity_store.record_contact_sighting(
+        "wifi-fp:recent", now - timedelta(minutes=3), "sess-1")
+    res = so._note_cross_session_return("wifi-fp:recent", "strong", now)
+    assert res["returning_entity"] is False   # 3 min ago, same day -> not a return
+    so.entity_store.close()
+
+
+def test_cross_session_ignores_mac_identity(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    res = so._note_cross_session_return("mac:a2:00:00:00:00:01", "weak", datetime.now(timezone.utc))
+    assert res["returning_entity"] is False
+    assert so.entity_store.count("contact_registry") == 0   # mac: never recorded
+    so.entity_store.close()
+
+
+def test_cross_session_result_cached_per_session(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    so._entity_return_min_gap_s = 3600
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    so.entity_store.record_contact_sighting("wifi-fp:k", past, "sess-1")
+    r1 = so._note_cross_session_return("wifi-fp:k", "strong", datetime.now(timezone.utc))
+    r2 = so._note_cross_session_return("wifi-fp:k", "strong", datetime.now(timezone.utc))
+    assert r1 == r2 and r1["returning_entity"] is True
+    # Recorded once this session (the registry advanced a single visit, not two).
+    assert so.entity_store.contact_registry_row("wifi-fp:k")["visits"] == 2
+    so.entity_store.close()

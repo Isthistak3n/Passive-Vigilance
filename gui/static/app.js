@@ -301,6 +301,10 @@ const tables = {
         if (e.reconnect) g.reconnect = true;
         if (e.returning) g.returning = true;
         if (e.return_count) g.returnCount = Math.max(g.returnCount, e.return_count);
+        if (e.returning_entity) g.returningEntity = true;
+        if (e.entity_visits) g.entityVisits = Math.max(g.entityVisits || 0, e.entity_visits);
+        if (e.entity_days_known) g.entityDays = Math.max(g.entityDays || 0, e.entity_days_known);
+        if (e.entity_last_seen) g.entityLastSeen = e.entity_last_seen;
         const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
         const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
         if (t2 >= t1) g.latest = e;
@@ -311,6 +315,8 @@ const tables = {
           contact: e.contact || e.fingerprint_label || '',
           confidence: e.contact_confidence || '',
           returning: g.returning, return_count: g.returnCount,
+          returning_entity: !!g.returningEntity, entity_visits: g.entityVisits || 0,
+          entity_days: g.entityDays || 0, entity_last_seen: g.entityLastSeen || '',
           mac: e.mac || '', ssid: e.ssid || '', mac_type: e.mac_type || '',
           score: e.score != null ? e.score : 0, alert_level: e.alert_level || '',
           seen: e.observation_count || 0, manufacturer: e.manufacturer || '',
@@ -342,9 +348,14 @@ const tables = {
       const ret = r.returning
         ? ` <span class="returning" title="Re-seen after an absence — same contact (${r.return_count || 1}×)">↩ RETURN${(r.return_count || 1) > 1 ? ' ×' + r.return_count : ''}</span>`
         : '';
+      // Cross-session: this contact was here on a PRIOR session/day — the "seen before"
+      // (are-you-being-cased) signal, distinct from a within-session return above.
+      const known = r.returning_entity
+        ? ` <span class="known-entity" title="Seen on a prior session/day — last ${r.entity_last_seen || '?'}, known across ${r.entity_days || 1} day(s)">⌂ KNOWN${r.entity_visits > 1 ? ' ×' + r.entity_visits : ''}</span>`
+        : '';
       return `
-    <tr class="${r.returning ? 'returning-row' : ''}">
-      <td>${r.contact ? esc(r.contact) : '—'}${conf}${ret}</td>
+    <tr class="${r.returning || r.returning_entity ? 'returning-row' : ''}">
+      <td>${r.contact ? esc(r.contact) : '—'}${conf}${ret}${known}</td>
       <td>${macCell}</td>
       <td>${r.ssid ? esc(r.ssid) : '—'}</td>
       <td>${r.mac_type || '—'}</td>

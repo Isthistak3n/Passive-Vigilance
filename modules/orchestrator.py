@@ -252,6 +252,15 @@ class SensorOrchestrator:
         self._contact_return_counts: dict[str, int] = {}
         self._wifi_return_gap_s = float(os.getenv("WIFI_RETURN_GAP_SECONDS", "900"))
         self._contact_track_max = int(os.getenv("CONTACT_TRACK_MAX", "20000"))
+        # Cross-session returning-entity (P4 phase B): the durable contact registry in
+        # the EntityStore remembers a contact identity across restarts/days, so a device
+        # seen on a prior session/day is recognised as a RETURNING ENTITY. Consulted once
+        # per contact per session; the result is cached here and re-applied to every
+        # sighting of that contact this run. A quick restart is not a "prior session":
+        # the prior sighting must be older than this gap (or fall on a different UTC day).
+        self._contact_seen_this_session: set = set()
+        self._returning_entities: dict[str, dict] = {}
+        self._entity_return_min_gap_s = float(os.getenv("ENTITY_RETURN_MIN_GAP_SECONDS", "3600"))
         self.aircraft_detections: list[dict] = []
         # Index icao -> the aircraft event already in aircraft_detections, so a
         # plane re-seen every poll becomes ONE event accumulating a positions[]
@@ -944,6 +953,69 @@ class SensorOrchestrator:
                 self._contact_return_counts.pop(k, None)
         return returning, self._contact_return_counts.get(identity_key, 0)
 
+    def _note_cross_session_return(self, contact_key: str, confidence: str,
+                                   now: datetime) -> dict:
+        '''Recognise a contact seen on a PRIOR session/day as a returning entity (P4-B).
+
+        Consults the EntityStore's durable contact registry once per contact per
+        session (cached in ``_returning_entities`` and re-applied to every later
+        sighting this run), and records this session's sighting. Returns a dict of
+        display fields — ``returning_entity`` plus prior-visit context — or an
+        all-False default. Never claims a return on a ``mac:`` identity (rotates,
+        can't be tracked across sessions) or without a durable store.
+        '''
+        default = {"returning_entity": False, "entity_visits": 0,
+                   "entity_days_known": 0, "entity_last_seen": None}
+        if (not contact_key or contact_key.startswith("mac:")
+                or self.entity_store is None):
+            return default
+        cached = self._returning_entities.get(contact_key)
+        if cached is not None:
+            return cached
+        if contact_key in self._contact_seen_this_session:
+            # Seen this session but not flagged returning — cache the negative too.
+            self._returning_entities[contact_key] = default
+            return default
+        self._contact_seen_this_session.add(contact_key)
+        try:
+            prior = self.entity_store.record_contact_sighting(
+                contact_key, now, self.session_id)
+        except Exception as exc:
+            logger.debug("contact registry sighting failed: %s", exc)
+            return default
+        result = default
+        if prior.get("known") and prior.get("last_session") != self.session_id:
+            prior_seen = prior.get("prior_last_seen")
+            gap_ok = True
+            if prior_seen is not None:
+                gap_ok = (now - prior_seen).total_seconds() >= self._entity_return_min_gap_s
+                # A different UTC day always counts, even inside the min gap.
+                if not gap_ok and prior_seen.astimezone(timezone.utc).date() != now.astimezone(timezone.utc).date():
+                    gap_ok = True
+            if gap_ok:
+                result = {
+                    "returning_entity": True,
+                    "entity_visits": prior.get("visits", 0) + 1,
+                    "entity_days_known": prior.get("distinct_days", 0),
+                    "entity_last_seen": prior_seen.isoformat() if prior_seen else None,
+                    "entity_confidence": confidence,
+                }
+                label = contact_key.split(":", 1)[-1][:12]
+                logger.info(
+                    "Returning entity: contact %s seen again — visit ~%d, last seen %s",
+                    label, result["entity_visits"], result["entity_last_seen"],
+                )
+                self._record_alert(
+                    "wifi", "Returning contact — seen before",
+                    f"A contact last seen {result['entity_last_seen']} is back "
+                    f"(visit ~{result['entity_visits']}, known across "
+                    f"{result['entity_days_known']} day(s)).",
+                    severity="default", contact_key=contact_key,
+                    returning_entity=True, entity_visits=result["entity_visits"],
+                )
+        self._returning_entities[contact_key] = result
+        return result
+
     def _assign_contact_number(self, identity_key: str, group_key: str) -> int:
         '''Persisted-stable instance number via the entity store; a stable hash
         fallback when the store is unavailable.'''
@@ -1058,8 +1130,10 @@ class SensorOrchestrator:
             # Resolve the display contact ONCE (stable across MAC rotation) and check
             # whether this identity is returning after an absence.
             contact, contact_confidence, contact_key = self._resolve_contact(event, device)
-            returning, return_count = self._note_wifi_return(
-                contact_key, datetime.now(timezone.utc))
+            now_dt = datetime.now(timezone.utc)
+            returning, return_count = self._note_wifi_return(contact_key, now_dt)
+            # Cross-session: was this contact here on a prior session/day? (P4-B)
+            xsession = self._note_cross_session_return(contact_key, contact_confidence, now_dt)
             existing = self._wifi_event_index.get(event.mac)
             if existing is not None:
                 # Same device flagged again — update the ongoing detection in place
@@ -1081,6 +1155,10 @@ class SensorOrchestrator:
                     "contact_confidence": contact_confidence,
                     "returning": returning or existing.get("returning", False),
                     "return_count": return_count,
+                    "returning_entity": xsession["returning_entity"] or existing.get("returning_entity", False),
+                    "entity_visits": xsession["entity_visits"],
+                    "entity_days_known": xsession["entity_days_known"],
+                    "entity_last_seen": xsession["entity_last_seen"],
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 if event.alert_level != prev_level or returning:
@@ -1099,6 +1177,10 @@ class SensorOrchestrator:
                     "contact_key": contact_key,
                     "contact_confidence": contact_confidence,
                     "returning": returning, "return_count": return_count,
+                    "returning_entity": xsession["returning_entity"],
+                    "entity_visits": xsession["entity_visits"],
+                    "entity_days_known": xsession["entity_days_known"],
+                    "entity_last_seen": xsession["entity_last_seen"],
                     # Which signal(s) fired — so a soak can decompose the flag mix.
                     "score_breakdown": event.score_breakdown,
                     "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
