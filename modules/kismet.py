@@ -4,6 +4,7 @@ Talks to the Kismet sensor daemon over its REST API and returns
 GPS-stamped device records. Also handles monitor-mode interface checks.
 """
 
+import asyncio
 import logging
 import os
 import subprocess
@@ -117,8 +118,15 @@ class KismetModule:
                 "KISMET_API_KEY is not set — generate one in the Kismet web UI"
             )
 
-        # Warn if the capture interface is not in monitor mode
-        status = self.get_interface_status()
+        # Warn if the capture interface is not in monitor mode. get_interface_status
+        # shells out to `iw dev` (blocking, up to a 5s timeout), and connect() runs
+        # on the asyncio loop — at startup it is retried up to ~15× against the boot
+        # window, and mid-run it is awaited from the reconnect path while the
+        # watchdog heartbeat is live. Running the subprocess inline would stall the
+        # whole loop for the call, so offload it to a worker thread (the project's
+        # "never block the event loop" rule). The method stays sync for direct callers.
+        loop = asyncio.get_running_loop()
+        status = await loop.run_in_executor(None, self.get_interface_status)
         if not status["is_monitor"]:
             logger.warning(
                 "Interface %s is in '%s' mode, not monitor — "
