@@ -129,6 +129,9 @@ function acarsSummary(latest, e) {
 // A device's rotation-stable identity: its strong fingerprint if it has one,
 // else its MAC. Rows sharing an identity are one logical device.
 function wifiIdentity(e) {
+  // The rotation-stable DISPLAY identity (strong or medium tier) collapses a
+  // device's rotating addresses — and a returning device — into one contact.
+  if (e.contact_key) return e.contact_key;
   const fp = e.fingerprint || '';
   return (fp.indexOf('wifi-fp:') === 0 || fp.indexOf('ble-fp:') === 0) ? fp : (e.mac || '');
 }
@@ -291,11 +294,13 @@ const tables = {
       for (const e of state.wifi) {
         const id = wifiIdentity(e);
         let g = groups.get(id);
-        if (!g) { g = { latest: e, macs: new Set(), pnl: new Set(), affinity: new Set(), reconnect: false }; groups.set(id, g); }
+        if (!g) { g = { latest: e, macs: new Set(), pnl: new Set(), affinity: new Set(), reconnect: false, returning: false, returnCount: 0 }; groups.set(id, g); }
         if (e.mac) g.macs.add(e.mac);
         for (const s of (e.probe_ssids_all || [])) g.pnl.add(s);
         for (const s of (e.network_affinity || [])) g.affinity.add(s);
         if (e.reconnect) g.reconnect = true;
+        if (e.returning) g.returning = true;
+        if (e.return_count) g.returnCount = Math.max(g.returnCount, e.return_count);
         const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
         const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
         if (t2 >= t1) g.latest = e;
@@ -304,6 +309,8 @@ const tables = {
         const e = g.latest;
         return {
           contact: e.contact || e.fingerprint_label || '',
+          confidence: e.contact_confidence || '',
+          returning: g.returning, return_count: g.returnCount,
           mac: e.mac || '', ssid: e.ssid || '', mac_type: e.mac_type || '',
           score: e.score != null ? e.score : 0, alert_level: e.alert_level || '',
           seen: e.observation_count || 0, manufacturer: e.manufacturer || '',
@@ -326,9 +333,18 @@ const tables = {
       const affinityCell = r.affinity
         ? `<span title="probed networks confirmed beaconing here: ${esc(r.affinity)}">${esc(r.affinity)}</span>`
         : '—';
+      // Medium-confidence contacts are "likely same" (a looser identity anchor), so
+      // mark them so an operator doesn't read a medium link as certain. Returning =
+      // this contact came back after an absence, like a returning aircraft.
+      const conf = r.confidence === 'medium'
+        ? ' <span class="conf-medium" title="likely the same device — matched on a less-distinctive signature">~</span>'
+        : '';
+      const ret = r.returning
+        ? ` <span class="returning" title="Re-seen after an absence — same contact (${r.return_count || 1}×)">↩ RETURN${(r.return_count || 1) > 1 ? ' ×' + r.return_count : ''}</span>`
+        : '';
       return `
-    <tr>
-      <td>${r.contact ? esc(r.contact) : '—'}</td>
+    <tr class="${r.returning ? 'returning-row' : ''}">
+      <td>${r.contact ? esc(r.contact) : '—'}${conf}${ret}</td>
       <td>${macCell}</td>
       <td>${r.ssid ? esc(r.ssid) : '—'}</td>
       <td>${r.mac_type || '—'}</td>

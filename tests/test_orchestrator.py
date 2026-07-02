@@ -2357,3 +2357,106 @@ async def test_poll_acars_tail_still_wins_over_position(orch, tmp_path):
     await so._poll_acars()
     assert so._aircraft_index["byreg"].get("acars")       # tail match won
     assert "acars" not in so._aircraft_index["bypos"]
+
+
+# ---------------------------------------------------------------------------
+# Contact identity tiers + WiFi/BT return detection (Phase A fingerprinting)
+# ---------------------------------------------------------------------------
+
+
+def _wifi_event(mac, fingerprint="", device_type="Wi-Fi Client", ssid=""):
+    return _make_detection_event(
+        mac=mac, score=0.85, alert_level="likely",
+        manufacturer="Acme", device_type=device_type, ssid=ssid,
+        first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        locations=[], observation_count=5,
+    ) if False else DetectionEvent(
+        mac=mac, score=0.85,
+        score_breakdown={"novelty": 1.0},
+        first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        locations=[], observation_count=5, manufacturer="Acme",
+        device_type=device_type, alert_level="likely", mac_type="randomized",
+        ssid=ssid, fingerprint=fingerprint, fingerprint_label="Acme",
+    )
+
+
+def test_resolve_contact_uses_medium_tier_from_device(orch):
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:01", fingerprint="")   # scoring key is mac: (weak)
+    device = {"macaddr": "a2:00:00:00:00:01", "type": "Wi-Fi Client",
+              "probe_fingerprint": 4242, "fp_anchor_medium": "GymWiFi"}
+    designator, confidence, identity_key = so._resolve_contact(ev, device)
+    assert confidence == "medium"
+    assert identity_key.startswith("wifi-fp:")   # NOT mac: — re-linkable
+
+
+def test_resolve_contact_stable_across_mac_rotation(orch):
+    """The whole point: two different MACs of one device resolve to the SAME contact
+    identity (and, via the persisted number, the same designator)."""
+    so = orch.sensor_orchestrator
+    dev_a = {"macaddr": "a2:00:00:00:00:aa", "type": "Wi-Fi Client",
+             "probe_fingerprint": 555, "fp_anchor_medium": "HomeX"}
+    dev_b = {"macaddr": "a2:00:00:00:00:bb", "type": "Wi-Fi Client",
+             "probe_fingerprint": 555, "fp_anchor_medium": "HomeX"}
+    _, _, key_a = so._resolve_contact(_wifi_event("a2:00:00:00:00:aa"), dev_a)
+    _, _, key_b = so._resolve_contact(_wifi_event("a2:00:00:00:00:bb"), dev_b)
+    assert key_a == key_b
+
+
+def test_resolve_contact_falls_back_to_mac_when_weak(orch):
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:01", fingerprint="")
+    device = {"macaddr": "a2:00:00:00:00:01", "type": "Wi-Fi Client"}  # no anchor/IE
+    _, confidence, identity_key = so._resolve_contact(ev, device)
+    assert confidence == "weak"
+    assert identity_key == "mac:a2:00:00:00:00:01"
+
+
+def test_note_wifi_return_flags_after_gap(orch):
+    so = orch.sensor_orchestrator
+    so._wifi_return_gap_s = 900
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    r1, c1 = so._note_wifi_return("wifi-fp:abc", t0)
+    assert r1 is False and c1 == 0                     # first sighting: not a return
+    r2, c2 = so._note_wifi_return("wifi-fp:abc", t0 + timedelta(minutes=5))
+    assert r2 is False                                 # still present: not a return
+    r3, c3 = so._note_wifi_return("wifi-fp:abc", t0 + timedelta(minutes=30))
+    assert r3 is True and c3 == 1                      # back after a 25-min gap
+
+
+def test_note_wifi_return_never_claims_on_mac_identity(orch):
+    so = orch.sensor_orchestrator
+    so._wifi_return_gap_s = 900
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    so._note_wifi_return("mac:a2:00:00:00:00:01", t0)
+    r, _ = so._note_wifi_return("mac:a2:00:00:00:00:01", t0 + timedelta(hours=2))
+    assert r is False   # a rotating mac: identity can't be a trusted "same device"
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_marks_returning_contact_on_wifi_event(orch):
+    so = orch.sensor_orchestrator
+    orch._kismet_active = True
+    so._wifi_return_gap_s = 900
+    # The mocked entity store's distinctive_anchors returns a truthy MagicMock that
+    # would pollute fp_anchor; drop it so the device's own medium anchor is used (a
+    # real store returns a dict, so this only isolates the mock).
+    so.entity_store = None
+    # Seed the contact as last seen 30 min ago so this poll reads as a return.
+    dev = {"macaddr": "a2:00:00:00:00:cc", "type": "Wi-Fi Client",
+           "probe_fingerprint": 777, "fp_anchor_medium": "HomeY", "last_signal": -50}
+    ev = _wifi_event("a2:00:00:00:00:cc")
+    _, _, ck = so._resolve_contact(ev, dev)
+    so._contact_last_seen[ck] = datetime.now(timezone.utc) - timedelta(minutes=30)
+
+    orch.kismet.poll_devices = AsyncMock(return_value=[dev])
+    orch.persistence.update.return_value = [ev]
+    so.gui_server = MagicMock()
+    await so._poll_kismet()
+
+    row = so._wifi_event_index["a2:00:00:00:00:cc"]
+    assert row["returning"] is True
+    assert row["contact_confidence"] == "medium"
+    assert row["contact_key"] == ck

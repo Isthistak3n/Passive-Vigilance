@@ -80,3 +80,62 @@ class TestFingerprintLabel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# contact_identity — tiered DISPLAY identity (strong / medium / weak)
+# ---------------------------------------------------------------------------
+
+from modules.device_identity import contact_identity  # noqa: E402
+
+
+class TestContactIdentity(unittest.TestCase):
+    def test_strong_anchor_is_strong_tier_and_matches_scoring_key(self):
+        d = _wifi(probe_fingerprint=123, fp_anchor="HomeNet")
+        key, conf = contact_identity(d)
+        self.assertEqual(conf, "strong")
+        # The strong contact key lines up with the scoring fingerprint.
+        self.assertEqual(key, strong_fingerprint(d))
+
+    def test_medium_anchor_is_medium_tier(self):
+        # No distinctive (strong) anchor, but a less-rare medium anchor is present.
+        d = _wifi(probe_fingerprint=456)
+        d["fp_anchor_medium"] = "coffeeshop"
+        key, conf = contact_identity(d)
+        self.assertEqual(conf, "medium")
+        self.assertTrue(key.startswith("wifi-fp:"))
+
+    def test_strong_anchor_preferred_over_medium(self):
+        d = _wifi(probe_fingerprint=789, fp_anchor="HomeNet")
+        d["fp_anchor_medium"] = "coffeeshop"
+        key, conf = contact_identity(d)
+        self.assertEqual(conf, "strong")
+        self.assertEqual(key, strong_fingerprint(d))
+
+    def test_no_anchor_no_ie_is_weak_none(self):
+        key, conf = contact_identity(_wifi(probe_fingerprint=None))
+        self.assertIsNone(key)
+        self.assertEqual(conf, "weak")
+
+    def test_ie_but_no_anchor_is_weak_none(self):
+        # IE hash alone would over-merge (groups by stack/model) — not a contact key.
+        key, conf = contact_identity(_wifi(probe_fingerprint=999))
+        self.assertIsNone(key)
+        self.assertEqual(conf, "weak")
+
+    def test_medium_key_stable_across_mac_rotation(self):
+        a = _wifi(probe_fingerprint=321, mac="a2:00:00:00:00:aa")
+        a["fp_anchor_medium"] = "GymWiFi"
+        b = _wifi(probe_fingerprint=321, mac="a2:00:00:00:00:bb")  # rotated MAC
+        b["fp_anchor_medium"] = "GymWiFi"
+        self.assertEqual(contact_identity(a)[0], contact_identity(b)[0])
+
+    def test_ble_strong_advert_is_strong(self):
+        key, conf = contact_identity(_ble(service_uuids=[0x180D], name="Watch"))
+        self.assertEqual(conf, "strong")
+        self.assertTrue(key.startswith("ble-fp:"))
+
+    def test_ble_bare_vendor_is_weak_none(self):
+        key, conf = contact_identity(_ble(company_ids=[0x004C]))  # bare Apple id
+        self.assertIsNone(key)
+        self.assertEqual(conf, "weak")

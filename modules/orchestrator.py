@@ -244,6 +244,14 @@ class SensorOrchestrator:
         # devices (the post-freeze growth fix); the dict values ARE the list
         # elements, so all_events stays a plain list for the shutdown writers.
         self._wifi_event_index: dict[str, dict] = {}
+        # Per-contact return tracking (keyed by the rotation-stable contact identity,
+        # NOT the MAC): last-seen datetime + a return counter, so a device that leaves
+        # the area and comes back is flagged a RETURN instead of a new contact — the
+        # WiFi/BT analogue of returning-aircraft detection.
+        self._contact_last_seen: dict[str, datetime] = {}
+        self._contact_return_counts: dict[str, int] = {}
+        self._wifi_return_gap_s = float(os.getenv("WIFI_RETURN_GAP_SECONDS", "900"))
+        self._contact_track_max = int(os.getenv("CONTACT_TRACK_MAX", "20000"))
         self.aircraft_detections: list[dict] = []
         # Index icao -> the aircraft event already in aircraft_detections, so a
         # plane re-seen every poll becomes ONE event accumulating a positions[]
@@ -832,6 +840,11 @@ class SensorOrchestrator:
             try:
                 self._anchor_map = self.entity_store.distinctive_anchors(
                     max_df=int(os.getenv("FP_DISTINCTIVE_MAX_DF", "3")))
+                # Medium tier: a looser rarity bar (df <= FP_MEDIUM_MAX_DF) so a device
+                # whose rarest SSID is only moderately common still gets a stable
+                # display anchor — the contact identity, NOT the scoring key.
+                self._anchor_map_medium = self.entity_store.distinctive_anchors(
+                    max_df=int(os.getenv("FP_MEDIUM_MAX_DF", "12")))
                 self._anchor_map_ts = time.monotonic()
             except Exception:
                 logger.debug("distinctive_anchors refresh failed", exc_info=True)
@@ -870,12 +883,21 @@ class SensorOrchestrator:
             "network_affinity": list(affinity.keys()),
         }
 
-    def _contact_designator(self, event) -> str:
-        '''Build the stable CLASS-IDENT-# contact designator for a WiFi/BT event.
+    def _contact_designator(self, event, device=None) -> str:
+        '''Build the stable CLASS-IDENT-# contact designator for a WiFi/BT event.'''
+        return self._resolve_contact(event, device)[0]
 
-        Class + IDENT come from fields already on the DetectionEvent; the instance
-        number is the persisted, rotation-stable assignment keyed by the device's
-        fingerprint (design-contact-designators.md).
+    def _resolve_contact(self, event, device=None) -> tuple:
+        '''Resolve ``(designator, confidence, identity_key)`` for a WiFi/BT event.
+
+        Class + IDENT come from fields on the DetectionEvent; the instance number is
+        the persisted, rotation-stable assignment keyed by the device's identity. The
+        identity prefers the more-inclusive DISPLAY contact key (design 6 tiers) when
+        the raw device record is available — so a randomized device re-links to one
+        contact across rotation/return even when its content is too weak to score on —
+        falling back to the scoring fingerprint, then the MAC. The confidence tier
+        (strong/medium/weak) rides along for the GUI so a medium (over-merge-possible)
+        link is shown as "likely same", not certain.
         '''
         cls = contact_designator.class_token(event.device_type)
         ident = contact_designator.ident_token(
@@ -884,9 +906,43 @@ class SensorOrchestrator:
             mac=event.mac,
         )
         group = contact_designator.group_key(cls, ident)
-        identity_key = event.fingerprint or ("mac:" + event.mac)
+        contact_key, confidence = (None, "weak")
+        if device is not None:
+            contact_key, confidence = device_identity.contact_identity(device)
+        if contact_key:
+            identity_key = contact_key
+        elif event.fingerprint:
+            identity_key, confidence = event.fingerprint, "strong"
+        else:
+            identity_key, confidence = "mac:" + event.mac, "weak"
         number = self._assign_contact_number(identity_key, group)
-        return contact_designator.designator(cls, ident, number)
+        return contact_designator.designator(cls, ident, number), confidence, identity_key
+
+    def _note_wifi_return(self, identity_key: str, now: datetime) -> tuple:
+        '''Track per-contact last-seen so a device that left the area and came back is
+        marked a RETURN (like a returning aircraft) instead of a fresh contact.
+
+        Returns ``(returning, return_count)``. A gap longer than WIFI_RETURN_GAP_SECONDS
+        since this identity was last seen counts as a return; continuous sightings do
+        not. A weak (``mac:``) identity rotates, so returns are never claimed on it.
+        '''
+        store = self._contact_last_seen
+        prev = store.get(identity_key)
+        returning = False
+        if prev is not None and not identity_key.startswith("mac:"):
+            gap = (now - prev).total_seconds()
+            if gap > self._wifi_return_gap_s:
+                returning = True
+                self._contact_return_counts[identity_key] = (
+                    self._contact_return_counts.get(identity_key, 0) + 1)
+        store[identity_key] = now
+        # Bound the tracking dicts across a long session (distinct identities only).
+        if len(store) > self._contact_track_max:
+            oldest = sorted(store.items(), key=lambda kv: kv[1])[: len(store) // 5]
+            for k, _ in oldest:
+                store.pop(k, None)
+                self._contact_return_counts.pop(k, None)
+        return returning, self._contact_return_counts.get(identity_key, 0)
 
     def _assign_contact_number(self, identity_key: str, group_key: str) -> int:
         '''Persisted-stable instance number via the entity store; a stable hash
@@ -945,13 +1001,20 @@ class SensorOrchestrator:
         # signature. TTL-cached; a device with no distinctive anchor is left without
         # one and stays mac:-keyed (un-trackable, as before).
         anchor_map = self._distinctive_anchor_map()
-        if anchor_map:
+        anchor_map_medium = getattr(self, "_anchor_map_medium", {})
+        if anchor_map or anchor_map_medium:
             for d in devices:
                 fp = d.get("probe_fingerprint")
-                if fp:
-                    anchor = anchor_map.get(fp)
-                    if anchor:
-                        d["fp_anchor"] = anchor
+                if not fp:
+                    continue
+                anchor = anchor_map.get(fp)
+                if anchor:
+                    d["fp_anchor"] = anchor
+                # Medium anchor drives the display CONTACT identity only (not scoring),
+                # so a device with no strong anchor can still re-link on return.
+                medium = anchor_map_medium.get(fp)
+                if medium:
+                    d["fp_anchor_medium"] = medium
 
         # Live "nearby" feed for the mobile GUI — every currently-polled device
         # (WiFi + BLE), independent of the persistence engine's score/GPS-cluster
@@ -990,7 +1053,13 @@ class SensorOrchestrator:
         dev_by_mac = {d.get("macaddr"): d for d in devices}
         for event in detection_events:
             self._stats["persistent_detections"] += 1
-            enriched = self._enriched_identity_fields(dev_by_mac.get(event.mac))
+            device = dev_by_mac.get(event.mac)
+            enriched = self._enriched_identity_fields(device)
+            # Resolve the display contact ONCE (stable across MAC rotation) and check
+            # whether this identity is returning after an absence.
+            contact, contact_confidence, contact_key = self._resolve_contact(event, device)
+            returning, return_count = self._note_wifi_return(
+                contact_key, datetime.now(timezone.utc))
             existing = self._wifi_event_index.get(event.mac)
             if existing is not None:
                 # Same device flagged again — update the ongoing detection in place
@@ -1008,9 +1077,13 @@ class SensorOrchestrator:
                     "lat": event.locations[0]["lat"] if event.locations else None,
                     "lon": event.locations[0]["lon"] if event.locations else None,
                     "locations": event.locations,
+                    "contact": contact, "contact_key": contact_key,
+                    "contact_confidence": contact_confidence,
+                    "returning": returning or existing.get("returning", False),
+                    "return_count": return_count,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
-                if event.alert_level != prev_level:
+                if event.alert_level != prev_level or returning:
                     self._append_jsonl(self._session_dir / "events.jsonl", existing)
                     if self.gui_server is not None:
                         self.gui_server.push_event("wifi", existing)
@@ -1022,7 +1095,10 @@ class SensorOrchestrator:
                     "ssid": event.ssid,
                     "fingerprint": event.fingerprint,
                     "fingerprint_label": event.fingerprint_label,
-                    "contact": self._contact_designator(event),
+                    "contact": contact,
+                    "contact_key": contact_key,
+                    "contact_confidence": contact_confidence,
+                    "returning": returning, "return_count": return_count,
                     # Which signal(s) fired — so a soak can decompose the flag mix.
                     "score_breakdown": event.score_breakdown,
                     "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
@@ -1049,7 +1125,6 @@ class SensorOrchestrator:
             elif await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
                 self._stats["alerts_sent"] += 1
-                contact = self._contact_designator(event)
                 self._record_alert(
                     "wifi", f"{contact} — {event.alert_level}",
                     f"{event.device_type or 'device'} {event.mac}: score "
