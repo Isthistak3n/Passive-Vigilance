@@ -289,3 +289,78 @@ async def test_run_slice_services_pending_window():
         await c._run_slice(1)
     sw.assert_awaited_once_with("acars", 20)
     assert c._pending_window is None
+
+
+# ---------------------------------------------------------------------------
+# Shutdown settle barrier + failed-acquire state + non-positive slice guard
+# (the "SDR wedged" crash-loop class — the module's headline historical risk)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_settles_before_restarting_readsb():
+    """Releasing a decoder then starting readsb inline on the still-releasing
+    dongle is the 'SDR wedged, exiting!' crash-loop; stop() must settle between
+    the release and the restart, like every mid-cycle handoff does."""
+    c = SDRCoordinator(cycle_slices=[("adsb", 800), ("ais", 60)])
+    ais = _fake_owner("ais")
+    c.register_owner(ais)
+    c._current_owner = "ais"
+
+    order = []
+
+    async def rec_settle():
+        order.append("settle")
+
+    async def rec_start():
+        order.append("start_readsb")
+
+    with patch.object(c, "_settle_sdr", rec_settle), \
+         patch.object(c, "_start_readsb", rec_start):
+        await c.stop()
+
+    ais.release.assert_awaited_once()
+    assert order == ["settle", "start_readsb"]   # settle BEFORE reopening
+    assert c.current_owner == "none"
+    assert c.healthy is True
+
+
+@pytest.mark.asyncio
+async def test_failed_acquire_resets_owner_and_allows_readsb_retry():
+    """After the previous owner is released and the new acquire fails, the dongle
+    is unowned — current_owner must read 'none', not the stale prior owner. Left
+    stale, the next handoff back to that band short-circuits on the name match and
+    never reopens the released device (readsb stays dark)."""
+    c = SDRCoordinator(cycle_slices=[("adsb", 800), ("ais", 60)])
+    ais = _fake_owner("ais")
+    ais.acquire = AsyncMock(return_value=False)     # acquire fails
+    c.register_owner(ais)
+    c._handoff_settle = 0
+
+    with patch.object(c, "_start_readsb_with_handshake", AsyncMock(return_value=True)), \
+         patch.object(c, "_stop_readsb_with_handshake", AsyncMock(return_value=True)):
+        await c._handoff_to("adsb")                 # none -> adsb (ok)
+        assert c.current_owner == "adsb"
+        await c._handoff_to("ais")                  # releases adsb, ais acquire fails
+
+    assert c.current_owner == "none"                # not the stale "adsb"
+    assert c.healthy is False
+
+    # readsb must be genuinely re-acquired next slice — the name-match short-circuit
+    # must NOT fire (it would, if current_owner were still "adsb").
+    restart = AsyncMock(return_value=True)
+    with patch.object(c, "_start_readsb_with_handshake", restart), \
+         patch.object(c, "_stop_readsb_with_handshake", AsyncMock(return_value=True)):
+        await c._handoff_to("adsb")
+    restart.assert_awaited_once()
+    assert c.current_owner == "adsb"
+    assert c.healthy is True
+
+
+def test_parse_slices_drops_non_positive():
+    with patch.dict(os.environ, {
+        "SDR_CYCLE_SLICES": "adsb:600,ais:0,acars:-5",
+        "SDR_HANDOFF_SETTLE_SECONDS": "0",
+    }):
+        c = SDRCoordinator()
+    assert c.slices == [("adsb", 600)]   # ais:0 and acars:-5 dropped
