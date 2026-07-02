@@ -518,6 +518,35 @@ class TestGUIServerAuth(unittest.TestCase):
         response = client.get("/api/status")
         self.assertEqual(response.status_code, 200)
 
+    def test_token_via_query_sets_cookie_that_authorizes_sub_resources(self):
+        # Regression: a token-gated dashboard could not load its own CSS/JS/stream —
+        # a browser attaches no token to <script src>/<link href> or to EventSource,
+        # so those requests 401'd and the page rendered blank. The page load now
+        # authenticates once via ?token=, sets a cookie, and every same-origin
+        # sub-request (static, /api/*, /stream) is carried by that cookie.
+        client = self._make_client("secret123")
+        # No token, no cookie -> gated.
+        self.assertEqual(client.get("/api/status").status_code, 401)
+        self.assertEqual(client.get("/static/style.css").status_code, 401)
+        # Page load with ?token= authorizes AND sets the cookie.
+        r = client.get("/?token=secret123")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("pv_gui_token", r.headers.get("Set-Cookie", ""))
+        # The test client now holds the cookie; sub-resources load WITHOUT ?token=.
+        self.assertEqual(client.get("/api/status").status_code, 200)
+        self.assertNotEqual(client.get("/static/style.css").status_code, 401)
+
+    def test_wrong_token_query_does_not_set_cookie(self):
+        client = self._make_client("secret123")
+        r = client.get("/?token=nope")
+        self.assertEqual(r.status_code, 401)
+        self.assertNotIn("pv_gui_token", r.headers.get("Set-Cookie", ""))
+
+    def test_valid_cookie_alone_authorizes(self):
+        client = self._make_client("secret123")
+        client.set_cookie("pv_gui_token", "secret123")
+        self.assertEqual(client.get("/api/status").status_code, 200)
+
 
 def _make_orch_stub():
     """Return a minimal SensorOrchestrator stub for poll method tests."""
