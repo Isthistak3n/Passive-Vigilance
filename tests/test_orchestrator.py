@@ -2575,12 +2575,16 @@ def test_is_mobile_contact_excludes_aps_and_bridges(orch):
 
 def test_resident_status_classification(orch):
     so = orch.sensor_orchestrator
-    # Probes a locally-beaconed network -> resident.
-    assert so._resident_status({"network_affinity": ["HomeWiFi"]}, {}) == "resident"
-    # Novel with no local affinity -> visitor.
-    assert so._resident_status({"network_affinity": []}, {"novelty": 1.0}) == "visitor"
-    # Neither signal -> unknown (conservative).
-    assert so._resident_status({"network_affinity": []}, {}) == "unknown"
+    # Non-mobile (AP/bridge) is the environment — never resident/visitor.
+    assert so._resident_status(False, {"network_affinity": []}, {"novelty": 1.0}) == ""
+    # Mobile, probes a locally-beaconed network -> resident.
+    assert so._resident_status(True, {"network_affinity": ["HomeWiFi"]}, {}) == "resident"
+    # Mobile, novel with no local affinity -> visitor.
+    assert so._resident_status(True, {"network_affinity": []}, {"novelty": 1.0}) == "visitor"
+    # Mobile, a known baseline device (novelty off) -> resident.
+    assert so._resident_status(True, {"network_affinity": []}, {"novelty": 0.0, "off_schedule": 1.0}) == "resident"
+    # Mobile, no baseline signal at all -> unknown.
+    assert so._resident_status(True, {"network_affinity": []}, {}) == "unknown"
 
 
 @pytest.mark.asyncio

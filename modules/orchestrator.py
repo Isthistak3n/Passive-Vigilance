@@ -1064,20 +1064,26 @@ class SensorOrchestrator:
         return "client" in dt or "btle" in dt or "ble" in dt or "bluetooth" in dt
 
     @staticmethod
-    def _resident_status(enriched: dict, score_breakdown: dict) -> str:
-        '''Classify a mobile contact against the local environment:
+    def _resident_status(is_mobile: bool, enriched: dict, score_breakdown: dict) -> str:
+        '''Classify a MOBILE contact against the local environment (the APs):
 
-          * ``resident`` — it probes for a network that is BEACONED here
-            (network_affinity), i.e. it belongs to this place.
-          * ``visitor``  — novel (not in the learned baseline) AND shows no affinity
-            to any local network: a device that does not belong and is lingering.
-          * ``unknown``  — neither signal (thin probe data, or mobile-mode with no
-            novelty). Conservative: we only say "visitor" when we have real evidence.
+          * ``""``       — not a mobile device (AP / bridge). Infrastructure IS the
+            environment, so it is never called resident or visitor.
+          * ``resident`` — probes for a network beaconed HERE (network_affinity), or
+            is a known baseline device (novelty off) — it belongs to this place.
+          * ``visitor``  — novel (not in the learned baseline) AND no affinity to any
+            local network: a device that does not belong.
+          * ``unknown``  — a mobile device with no baseline signal (e.g. mobile-mode
+            scoring, which has no novelty). Conservative: only say "visitor" on real
+            baseline evidence.
         '''
+        if not is_mobile:
+            return ""
         if enriched and enriched.get("network_affinity"):
             return "resident"
-        if (score_breakdown or {}).get("novelty"):
-            return "visitor"
+        sb = score_breakdown or {}
+        if "novelty" in sb:  # fixed-mode: baseline membership is known
+            return "visitor" if sb.get("novelty") else "resident"
         return "unknown"
 
     def _update_copresence(self, present_keys: set, now: datetime) -> None:
@@ -1260,8 +1266,8 @@ class SensorOrchestrator:
             # Environment (P4-C): resident vs visitor, and person clustering of the
             # mobile radios. Only mobile contacts (Wi-Fi client / BLE) are linked;
             # APs are the fixed environment behind the resident/visitor call.
-            belongs = self._resident_status(enriched, event.score_breakdown)
             is_mobile = self._is_mobile_contact(event.device_type)
+            belongs = self._resident_status(is_mobile, enriched, event.score_breakdown)
             if is_mobile and contact_key and not contact_key.startswith("mac:"):
                 present_mobile_keys.add(contact_key)
             person_id = self._person_of.get(contact_key)
