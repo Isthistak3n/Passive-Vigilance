@@ -198,6 +198,7 @@ class PassiveVigilance:
             acars=self.acars, aircraft_registry=self.aircraft_registry,
             session_id=self.session_id, session_start=self.session_start,
             session_dir=self._session_dir, sdr_mode=self.sdr_mode,
+            node_mode=self.node_mode,
             stop_event=self._stop,
             gps_poll_interval=int(os.getenv("GPS_POLL_INTERVAL_SECONDS", "1")),
             adsb_poll_interval=int(os.getenv("ADSB_POLL_INTERVAL_SECONDS", "5")),
@@ -556,6 +557,12 @@ class PassiveVigilance:
             expected.add("adsb")
         if drone_enabled:
             expected.add("drone_rf")
+        # AIS/ACARS auto-disable flips their active flag mid-run; being in the
+        # expected set is what turns that flip into an operator alert.
+        if self.ais is not None:
+            expected.add("ais")
+        if self.acars is not None:
+            expected.add("acars")
         self.sensor_orchestrator.startup_health_report(expected)
 
     def _validate_config(self) -> None:
@@ -661,9 +668,14 @@ class PassiveVigilance:
         }
         self._session_dir.mkdir(parents=True, exist_ok=True)
         summary_path = self._session_dir / "summary.json"
+        summary_tmp = self._session_dir / "summary.json.tmp"
         try:
-            with open(summary_path, "w", encoding="utf-8") as fh:
+            # Atomic (tmp + replace), matching the incremental writer — a crash
+            # mid-shutdown must not corrupt the summary the incremental path
+            # kept intact all session.
+            with open(summary_tmp, "w", encoding="utf-8") as fh:
                 json.dump(summary, fh, indent=2, default=str)
+            os.replace(summary_tmp, summary_path)
             logger.info("Session summary written → %s", summary_path)
         except Exception as exc:
             logger.error("Failed to write session summary: %s", exc)
@@ -684,12 +696,11 @@ class PassiveVigilance:
                 logger.error("GeoJSON write failed: %s", exc)
         if kml_path:
             try:
-                with open(summary_path, "r+", encoding="utf-8") as fh:
-                    data = json.load(fh)
-                    data["kml_path"] = kml_path
-                    fh.seek(0)
+                data = json.loads(summary_path.read_text(encoding="utf-8"))
+                data["kml_path"] = kml_path
+                with open(summary_tmp, "w", encoding="utf-8") as fh:
                     json.dump(data, fh, indent=2, default=str)
-                    fh.truncate()
+                os.replace(summary_tmp, summary_path)
             except Exception as exc:
                 logger.debug("Could not update summary with kml_path: %s", exc)
         if self.gui_server is not None:

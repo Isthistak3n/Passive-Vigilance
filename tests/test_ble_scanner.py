@@ -178,5 +178,40 @@ class TestParseHciAdvertisingReport(unittest.TestCase):
         self.assertEqual(adv.company_ids, [])
 
 
+
+class TestDeadControllerTeardown(unittest.TestCase):
+    """A fatal read error (USB drop) must flip `available` and unregister the
+    reader — previously it was swallowed, leaving a dead-but-"readable" fd
+    spinning the event loop while the scanner still reported itself up."""
+
+    def _scanner_with_dead_socket(self):
+        from unittest.mock import MagicMock
+
+        from modules.ble_scanner import BLEScanner
+        scanner = BLEScanner()
+        scanner.available = True
+        scanner._sock = MagicMock()
+        scanner._sock.recv.side_effect = OSError(19, "No such device")
+        scanner._sock.fileno.return_value = 42
+        scanner._loop = MagicMock()
+        return scanner
+
+    def test_fatal_read_error_marks_unavailable_and_removes_reader(self):
+        scanner = self._scanner_with_dead_socket()
+        sock, loop = scanner._sock, scanner._loop
+        scanner._on_readable()
+        self.assertFalse(scanner.available)
+        self.assertIsNone(scanner._sock)
+        loop.remove_reader.assert_called_once_with(42)
+        sock.close.assert_called_once()
+
+    def test_blocking_io_error_is_not_fatal(self):
+        scanner = self._scanner_with_dead_socket()
+        scanner._sock.recv.side_effect = BlockingIOError()
+        scanner._on_readable()
+        self.assertTrue(scanner.available)
+        self.assertIsNotNone(scanner._sock)
+
+
 if __name__ == "__main__":
     unittest.main()

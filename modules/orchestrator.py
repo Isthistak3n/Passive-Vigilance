@@ -78,6 +78,7 @@ class SensorOrchestrator:
         session_start: datetime,
         session_dir: Path,
         sdr_mode,
+        node_mode: str = "",
         stop_event: asyncio.Event,
         gps_poll_interval: int,
         adsb_poll_interval: int,
@@ -127,6 +128,8 @@ class SensorOrchestrator:
         self.session_start = session_start
         self._session_dir = session_dir
         self.sdr_mode = sdr_mode
+        # Resolved NODE_MODE ("fixed"/"mobile"); gates the mobile-only nearby feed.
+        self._node_mode = node_mode
         self._stop_event = stop_event
 
         self._gps_poll_interval = gps_poll_interval
@@ -661,10 +664,18 @@ class SensorOrchestrator:
             body = (f"{label}: alt {aircraft.get('altitude', '?')} ft, "
                     f"spd {aircraft.get('speed', '?')} kt")
             if emergency:
-                self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
-                self._stats["alerts_sent"] += 1
-                self._record_alert("aircraft", f"EMERGENCY — {label}", body,
-                                   severity="high", icao=icao)
+                # Emergencies rate-limit on their OWN key so a routine
+                # of-interest alert can never suppress the first emergency page
+                # — but a squawk held in view must not re-page on every 5 s
+                # poll (it did: one backend send + one alerts.jsonl line per
+                # poll for the whole duration).
+                if await self.rate_limiter.is_allowed(f"aircraft-emergency:{icao}"):
+                    self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
+                    self._stats["alerts_sent"] += 1
+                    self._record_alert("aircraft", f"EMERGENCY — {label}", body,
+                                       severity="high", icao=icao)
+                else:
+                    self._stats["alerts_rate_limited"] += 1
             elif air.of_interest:
                 # P7: only an aircraft OF INTEREST alerts — a loiterer/orbiter near
                 # the node, or a returner — never routine transit (which used to
@@ -941,7 +952,11 @@ class SensorOrchestrator:
         # (WiFi + BLE), independent of the persistence engine's score/GPS-cluster
         # gate. Pushed AFTER anchor attachment so WiFi devices carry fp_anchor and
         # can generate the enriched, rotation-stable fingerprint label.
-        if self.gui_server is not None:
+        # Mobile-only: nothing on a fixed node consumes "nearby", and a fixed
+        # node keeps Kismet's full historical device list — pushing thousands of
+        # events per poll overflows the 500-slot SSE queues and evicts every
+        # connected dashboard client as "dead".
+        if self.gui_server is not None and self._node_mode == "mobile":
             now_iso = datetime.now(timezone.utc).isoformat()
             for d in devices:
                 fp = device_identity.strong_fingerprint(d) or ""
@@ -982,6 +997,7 @@ class SensorOrchestrator:
                 prev_level = existing["alert_level"]
                 existing.update({
                     "score": event.score, "alert_level": event.alert_level,
+                    "score_breakdown": event.score_breakdown,
                     "last_seen": event.last_seen.isoformat(),
                     "observation_count": event.observation_count,
                     "lat": event.locations[0]["lat"] if event.locations else None,
@@ -1461,7 +1477,29 @@ class SensorOrchestrator:
     # ------------------------------------------------------------------
 
     _RADIO_LABELS = {"kismet": "WiFi", "ble": "BLE", "adsb": "ADS-B",
-                     "drone_rf": "DroneRF", "gps": "GPS", "remote_id": "Remote ID"}
+                     "drone_rf": "DroneRF", "gps": "GPS", "remote_id": "Remote ID",
+                     "ais": "AIS", "acars": "ACARS"}
+
+    def _radio_is_up(self, name: str) -> bool:
+        '''Effective "is this radio capturing?" — module enabled AND healthy.
+
+        ``_modules_active`` alone misses a mid-run death that never disables
+        the module: a readsb/USB drop only flips ``_sensor_health`` (the poll
+        keeps failing), and a BLE controller loss only flips the scanner's
+        ``available`` flag. Folding those in is what lets the watchdog alert a
+        2026-06-20-style USB drop on the radios most likely to suffer one.
+        '''
+        if not self._modules_active.get(name):
+            return False
+        if name == "ble":
+            scanner = self.ble_scanner
+            return scanner is None or bool(getattr(scanner, "available", True))
+        if name == "adsb" and self._modules_active.get("sdr_coordinator"):
+            # Time-share blackouts make ADS-B poll health flap by design (the
+            # decoder is stopped during other bands' slices) — never read a
+            # scheduled blackout as a dead radio.
+            return True
+        return self._sensor_health.get(name, True)
 
     def startup_health_report(self, expected: set) -> None:
         '''Assess each expected radio after startup bring-up: log a one-line health
@@ -1482,7 +1520,7 @@ class SensorOrchestrator:
         so a startup-disabled radio and a mid-run drop are handled identically — the
         gap that let the 2026-06-20 USB drop go unnoticed for ~7 h.'''
         for name in self._expected_radios:
-            up = bool(self._modules_active.get(name))
+            up = self._radio_is_up(name)
             if not up and name not in self._radio_down_alerted:
                 self._radio_down_alerted.add(name)
                 self._alert_radio_down(name)
@@ -1503,6 +1541,8 @@ class SensorOrchestrator:
             "ble": "BT controller unavailable — replug the dongle or reboot",
             "adsb": "no RTL-SDR detected — reseat the SDR or reboot",
             "drone_rf": "no RTL-SDR detected — reseat the SDR or reboot",
+            "gps": "gpsd unreachable — check the gpsd service and antenna",
+            "kismet": "Kismet REST unreachable — check the kismet service",
         }.get(name, "sensor unavailable — check the device")
         body = f"{label} is DOWN: {hint}."
         logger.warning("Sensor down: %s", body)
@@ -1844,8 +1884,16 @@ class SensorOrchestrator:
         '''Attempt to close and reconnect a named module up to max_reconnect_attempts times.
 
         Returns True on success, False after exhausting all attempts.
-        Supports: "gps", "kismet", "adsb", "sdr".
+        Supports: "gps", "kismet", "adsb", "sdr", "remote_id".
         '''
+        if module_name not in ("gps", "kismet", "adsb", "sdr", "remote_id") or (
+                module_name == "remote_id" and self.remote_id is None):
+            # DroneRF (subprocess/coordinator-managed) and anything unknown
+            # have no in-place reconnect path. Returning False lets the stall
+            # handler escalate to the crash-guarded self-restart deliberately,
+            # not by falling through an unknown-module branch.
+            logger.warning("_reconnect: no reconnect path for %r — skipping", module_name)
+            return False
         max_attempts = self._max_reconnect_attempts
         for attempt in range(1, max_attempts + 1):
             logger.warning("Attempting reconnect %s (%d/%d)...", module_name, attempt, max_attempts)
@@ -1868,6 +1916,14 @@ class SensorOrchestrator:
                     except Exception:
                         pass
                     await self.adsb.connect()
+                elif module_name == "remote_id":
+                    # Shares Kismet's REST endpoint — its natural recovery is
+                    # a fresh session, same as the Kismet path.
+                    try:
+                        await self.remote_id.close()
+                    except Exception:
+                        pass
+                    await self.remote_id.connect()
                 elif module_name == "sdr":
                     try:
                         await self.sdr_coordinator.stop()
@@ -1875,9 +1931,6 @@ class SensorOrchestrator:
                         pass
                     await self.sdr_coordinator.start()
                     self._modules_active["sdr_coordinator"] = True
-                else:
-                    logger.warning("_reconnect: unknown module %r — skipping", module_name)
-                    return False
                 logger.info("Sensor %s reconnected successfully", module_name)
                 self._sensor_health[module_name] = True
                 return True

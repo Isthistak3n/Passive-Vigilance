@@ -313,7 +313,15 @@ class BLEScanner:
                 pkt = self._sock.recv(260)
             except BlockingIOError:
                 return
-            except OSError:
+            except OSError as exc:
+                # A raw-HCI read error means the controller is gone (USB drop),
+                # not a transient hiccup. Tear down: a dead fd stays "readable"
+                # forever, so leaving the reader registered spins the event
+                # loop, and flipping `available` is what lets the watchdog's
+                # radio-health check alert the drop instead of silently
+                # capturing nothing (previously this error was swallowed and
+                # the scanner kept reporting itself up).
+                self._teardown_dead_socket(exc)
                 return
             advert = parse_hci_advertising_report(pkt)
             if advert is None or self.on_advert is None:
@@ -324,6 +332,24 @@ class BLEScanner:
                     self._loop.create_task(result)
             except Exception:  # a bad callback must never kill capture
                 logger.exception("BLEScanner: on_advert callback raised")
+
+    def _teardown_dead_socket(self, exc: OSError) -> None:
+        """Release a controller whose socket errored mid-run (USB drop)."""
+        sock, self._sock = self._sock, None
+        self.available = False
+        if sock is not None:
+            if self._loop is not None:
+                try:
+                    self._loop.remove_reader(sock.fileno())
+                except (ValueError, OSError):
+                    pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        logger.warning(
+            "BLEScanner: HCI read failed on hci%d (%s) — controller lost, "
+            "BLE capture down", self.hci_dev, exc)
 
     async def close(self) -> None:
         """Stop scanning and release the controller."""

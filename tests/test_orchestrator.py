@@ -2059,3 +2059,196 @@ async def test_poll_drone_rf_leaves_active_when_running(orch):
     so.drone_rf.drain_detections.return_value = []
     await so._poll_drone_rf()
     assert so._modules_active["drone_rf"] is True
+
+
+# ---------------------------------------------------------------------------
+# Emergency aircraft paging — rate-limited on its own key
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_adsb_emergency_repeat_is_rate_limited(orch):
+    """An emergency held in view pages once per cooldown, not on every poll.
+
+    (Pre-fix, the emergency path skipped the rate limiter entirely — a squawk
+    overhead re-paged every 5 s poll for its whole stay.)"""
+    em = _make_aircraft(emergency=True, icao="EMG002")
+    orch.adsb.poll_aircraft = AsyncMock(return_value=[em])
+    orch._adsb_active = True
+
+    await orch.sensor_orchestrator._poll_adsb()
+    await orch.sensor_orchestrator._poll_adsb()
+    await _drain_alerts(orch)
+
+    orch._mock_backend.send_aircraft_alert.assert_called_once()
+    assert orch.sensor_orchestrator._stats["alerts_rate_limited"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Radio health — mid-run deaths that never flip _modules_active
+# ---------------------------------------------------------------------------
+
+
+def test_radio_health_alerts_adsb_dead_mid_run(orch):
+    """A readsb/USB death mid-run only flips sensor health (the module stays
+    optimistically active) — the radio-down alert must still fire."""
+    so = orch.sensor_orchestrator
+    so._expected_radios = {"adsb"}
+    so._modules_active["adsb"] = True
+    so._modules_active["sdr_coordinator"] = False
+    so._sensor_health["adsb"] = False
+    so._record_alert = MagicMock()
+    so._console_alert = MagicMock()
+
+    so._check_radio_health()
+    assert so._record_alert.call_count == 1
+    assert so._record_alert.call_args.kwargs["sensor"] == "adsb"
+
+    so._sensor_health["adsb"] = True
+    so._check_radio_health()              # recovered -> recovery alert
+    assert so._record_alert.call_count == 2
+    assert "adsb" not in so._radio_down_alerted
+
+
+def test_radio_health_ignores_adsb_health_during_time_share(orch):
+    """A scheduled time-share blackout (SDR coordinator running) stops readsb
+    by design — degraded ADS-B poll health must not read as a dead radio."""
+    so = orch.sensor_orchestrator
+    so._expected_radios = {"adsb"}
+    so._modules_active["adsb"] = True
+    so._modules_active["sdr_coordinator"] = True
+    so._sensor_health["adsb"] = False
+    so._record_alert = MagicMock()
+    so._console_alert = MagicMock()
+
+    so._check_radio_health()
+    so._record_alert.assert_not_called()
+
+
+def test_radio_health_alerts_ble_controller_loss(orch):
+    """A BLE controller drop mid-run flips only the scanner's `available`
+    flag — the radio-down alert must fire from that signal."""
+    so = orch.sensor_orchestrator
+    so._expected_radios = {"ble"}
+    so._modules_active["ble"] = True
+    so.ble_scanner = MagicMock(available=False)
+    so._record_alert = MagicMock()
+    so._console_alert = MagicMock()
+
+    so._check_radio_health()
+    assert so._record_alert.call_count == 1
+    assert so._record_alert.call_args.kwargs["sensor"] == "ble"
+
+    so.ble_scanner.available = True
+    so._check_radio_health()              # recovered
+    assert "ble" not in so._radio_down_alerted
+
+
+# ---------------------------------------------------------------------------
+# _reconnect() / _handle_stall() — remote_id recovers, drone_rf escalates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconnect_remote_id_closes_and_connects(orch):
+    so = orch.sensor_orchestrator
+    so.remote_id.close = AsyncMock()
+    so.remote_id.connect = AsyncMock()
+
+    assert await so._reconnect("remote_id") is True
+    so.remote_id.close.assert_awaited_once()
+    so.remote_id.connect.assert_awaited_once()
+    assert so._sensor_health["remote_id"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_stall_remote_id_reconnects_without_restart(orch):
+    """A stalled Remote ID poll gets a real reconnect attempt before any
+    escalation (pre-fix it fell through the unknown-module branch straight
+    into a self-restart)."""
+    so = orch.sensor_orchestrator
+    so.remote_id.close = AsyncMock()
+    so.remote_id.connect = AsyncMock()
+
+    with patch.object(so, "_self_restart") as mock_restart:
+        await so._handle_stall(["remote_id"])
+    mock_restart.assert_not_called()
+    assert "remote_id" in so._stalled_since_reconnect
+
+
+@pytest.mark.asyncio
+async def test_handle_stall_drone_rf_escalates_deliberately(orch):
+    """DroneRF has no in-place reconnect path (subprocess/coordinator-managed)
+    — a stall escalates to the crash-guarded self-restart by design."""
+    so = orch.sensor_orchestrator
+    with patch.object(so, "_self_restart") as mock_restart:
+        await so._handle_stall(["drone_rf"])
+    mock_restart.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# In-place WiFi update refreshes score_breakdown
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_inplace_update_refreshes_breakdown(orch):
+    """A re-flagged device's ongoing detection must carry the CURRENT signal
+    mix — the level-change line written to events.jsonl was shipping the first
+    flag's stale breakdown."""
+    so = orch.sensor_orchestrator
+    orch._kismet_active = True
+    orch.kismet.poll_devices = AsyncMock(return_value=[])
+    first = _make_detection_event(score_breakdown={"novelty": 0.5},
+                                  score=0.5, alert_level="suspicious")
+    second = _make_detection_event(score_breakdown={"novelty": 0.5, "off_schedule": 0.3},
+                                   score=0.8, alert_level="likely")
+
+    orch.persistence.update.return_value = [first]
+    await so._poll_kismet()
+    orch.persistence.update.return_value = [second]
+    await so._poll_kismet()
+
+    ev = so._wifi_event_index[first.mac]
+    assert ev["score_breakdown"] == {"novelty": 0.5, "off_schedule": 0.3}
+
+
+# ---------------------------------------------------------------------------
+# Nearby feed is mobile-only at the producer
+# ---------------------------------------------------------------------------
+
+
+def _make_nearby_device(mac="aa:bb:cc:dd:ee:01"):
+    return {"macaddr": mac, "type": "Wi-Fi Client", "name": "", "manuf": "",
+            "last_signal": -60, "mac_type": "static", "probe_ssids": []}
+
+
+@pytest.mark.asyncio
+async def test_nearby_feed_not_pushed_on_fixed_node(orch):
+    """A fixed node keeps Kismet's full historical device list — pushing it as
+    'nearby' every poll overflowed the SSE queues and evicted dashboard
+    clients. Nothing on a fixed node consumes the feed, so it must not push."""
+    so = orch.sensor_orchestrator
+    so._node_mode = "fixed"
+    so.gui_server = MagicMock()
+    orch._kismet_active = True
+    orch.kismet.poll_devices = AsyncMock(return_value=[_make_nearby_device()])
+    orch.persistence.update.return_value = []
+
+    await so._poll_kismet()
+    pushed_types = [c.args[0] for c in so.gui_server.push_event.call_args_list]
+    assert "nearby" not in pushed_types
+
+
+@pytest.mark.asyncio
+async def test_nearby_feed_pushed_on_mobile_node(orch):
+    so = orch.sensor_orchestrator
+    so._node_mode = "mobile"
+    so.gui_server = MagicMock()
+    orch._kismet_active = True
+    orch.kismet.poll_devices = AsyncMock(return_value=[_make_nearby_device()])
+    orch.persistence.update.return_value = []
+
+    await so._poll_kismet()
+    pushed_types = [c.args[0] for c in so.gui_server.push_event.call_args_list]
+    assert "nearby" in pushed_types
