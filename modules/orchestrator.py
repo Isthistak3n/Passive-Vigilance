@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from modules import air_geometry, air_scoring, contact_designator, device_identity
+from modules.copresence import CoPresenceLinker
 from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
 from modules.sdr_manager import SDRMode
 from modules.wifi_fingerprint import compute_pnl_fingerprint
@@ -261,6 +262,33 @@ class SensorOrchestrator:
         self._contact_seen_this_session: set = set()
         self._returning_entities: dict[str, dict] = {}
         self._entity_return_min_gap_s = float(os.getenv("ENTITY_RETURN_MIN_GAP_SECONDS", "3600"))
+        # Cross-PHY co-presence linking (P4 phase C): group a PERSON's mobile radios
+        # (Wi-Fi client + BLE) that travel together into one person. APs are excluded
+        # — they don't move; they're the fixed environment used for resident-vs-visitor.
+        # Conservative by design (bias to a missed link over a false merge); off via
+        # CROSS_PHY_LINKING_ENABLED=false. Needs the durable store for prior links.
+        self._copresence_linker = None
+        self._person_of: dict = {}        # contact_key -> person_id (cluster)
+        self._person_size: dict = {}      # person_id -> member count
+        self._persisted_links: set = set()
+        self._person_alerted: set = set()
+        self._visitor_alerted: set = set()
+        if (os.getenv("CROSS_PHY_LINKING_ENABLED", "true").strip().lower() != "false"
+                and entity_store is not None):
+            self._copresence_linker = CoPresenceLinker(
+                min_polls=int(os.getenv("COPRESENCE_MIN_POLLS", "12")),
+                min_jaccard=float(os.getenv("COPRESENCE_MIN_JACCARD", "0.7")),
+                fixture_fraction=float(os.getenv("COPRESENCE_FIXTURE_FRACTION", "0.5")),
+                min_obs_polls=int(os.getenv("COPRESENCE_MIN_OBS_POLLS", "6")),
+                min_fixture_polls=int(os.getenv("COPRESENCE_MIN_FIXTURE_POLLS", "30")),
+            )
+            try:
+                self._copresence_linker.load_prior_links(entity_store.known_links())
+            except Exception:
+                logger.debug("loading prior contact links failed", exc_info=True)
+        # Resident-vs-visitor: a persistent visitor (novel, no local-network affinity)
+        # fires one display alert once it has lingered this many observations.
+        self._visitor_alert_min_obs = int(os.getenv("VISITOR_ALERT_MIN_OBS", "20"))
         self.aircraft_detections: list[dict] = []
         # Index icao -> the aircraft event already in aircraft_detections, so a
         # plane re-seen every poll becomes ONE event accumulating a positions[]
@@ -1020,6 +1048,96 @@ class SensorOrchestrator:
         self._returning_entities[contact_key] = result
         return result
 
+    # ------------------------------------------------------------------
+    # Cross-PHY co-presence linking + resident/visitor (P4 phase C)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_mobile_contact(device_type: str) -> bool:
+        '''True for a MOBILE device a person carries (Wi-Fi client / BLE), False for
+        infrastructure (AP, bridge). Only mobile contacts are person-linked; APs are
+        the fixed environment used for resident-vs-visitor.'''
+        dt = (device_type or "").lower()
+        toks = dt.split()
+        if "ap" in toks or "bridged" in dt or "wds" in toks:
+            return False
+        return "client" in dt or "btle" in dt or "ble" in dt or "bluetooth" in dt
+
+    @staticmethod
+    def _resident_status(enriched: dict, score_breakdown: dict) -> str:
+        '''Classify a mobile contact against the local environment:
+
+          * ``resident`` — it probes for a network that is BEACONED here
+            (network_affinity), i.e. it belongs to this place.
+          * ``visitor``  — novel (not in the learned baseline) AND shows no affinity
+            to any local network: a device that does not belong and is lingering.
+          * ``unknown``  — neither signal (thin probe data, or mobile-mode with no
+            novelty). Conservative: we only say "visitor" when we have real evidence.
+        '''
+        if enriched and enriched.get("network_affinity"):
+            return "resident"
+        if (score_breakdown or {}).get("novelty"):
+            return "visitor"
+        return "unknown"
+
+    def _update_copresence(self, present_keys: set, now: datetime) -> None:
+        '''Feed this poll's present MOBILE contact identities to the linker, refresh
+        the person clusters, and durably persist any newly-established link (once).
+        Runs once per Kismet poll, after the per-device loop — off the per-device
+        hot path, and bounded inside the linker.'''
+        linker = self._copresence_linker
+        if linker is None:
+            return
+        try:
+            linker.observe(present_keys)
+            self._person_of = linker.clusters()
+        except Exception as exc:
+            logger.debug("co-presence update failed: %s", exc)
+            return
+        # person sizes for the GUI
+        sizes: dict = {}
+        for pid in self._person_of.values():
+            sizes[pid] = sizes.get(pid, 0) + 1
+        self._person_size = sizes
+        # Persist newly-established links once, and announce a newly-formed person.
+        try:
+            for a, b, _co, _jac in linker.established_links():
+                pair = (a, b) if a <= b else (b, a)
+                if pair in self._persisted_links:
+                    continue
+                self._persisted_links.add(pair)
+                if self.entity_store is not None:
+                    self.entity_store.record_contact_link(a, b, now)
+                pid = self._person_of.get(a)
+                if pid and pid not in self._person_alerted:
+                    self._person_alerted.add(pid)
+                    members = self._person_size.get(pid, 2)
+                    self._record_alert(
+                        "wifi", "Linked contacts — likely one person",
+                        f"{members} mobile radios appear to travel together "
+                        f"(person {str(pid).split(':', 1)[-1][:10]}).",
+                        severity="default", person_id=pid, member_count=members,
+                    )
+        except Exception as exc:
+            logger.debug("co-presence link persist failed: %s", exc)
+
+    def _maybe_alert_visitor(self, contact_key: str, belongs: str,
+                             observation_count: int, contact: str) -> None:
+        '''One display alert (no phone page) when a persistent VISITOR — novel, no
+        local-network affinity — has lingered past the observation threshold.'''
+        if (belongs != "visitor" or not contact_key
+                or contact_key.startswith("mac:")
+                or observation_count < self._visitor_alert_min_obs
+                or contact_key in self._visitor_alerted):
+            return
+        self._visitor_alerted.add(contact_key)
+        self._record_alert(
+            "wifi", f"Visitor of interest — {contact}",
+            f"A device with no affinity to any local network has lingered "
+            f"({observation_count} obs) and is not part of the baseline.",
+            severity="default", contact_key=contact_key, belongs="visitor",
+        )
+
     def _assign_contact_number(self, identity_key: str, group_key: str) -> int:
         '''Persisted-stable instance number via the entity store; a stable hash
         fallback when the store is unavailable.'''
@@ -1127,6 +1245,7 @@ class SensorOrchestrator:
             logger.warning("PersistenceEngine update error: %s", exc)
             return
         dev_by_mac = {d.get("macaddr"): d for d in devices}
+        present_mobile_keys: set = set()
         for event in detection_events:
             self._stats["persistent_detections"] += 1
             device = dev_by_mac.get(event.mac)
@@ -1138,6 +1257,16 @@ class SensorOrchestrator:
             returning, return_count = self._note_wifi_return(contact_key, now_dt)
             # Cross-session: was this contact here on a prior session/day? (P4-B)
             xsession = self._note_cross_session_return(contact_key, contact_confidence, now_dt)
+            # Environment (P4-C): resident vs visitor, and person clustering of the
+            # mobile radios. Only mobile contacts (Wi-Fi client / BLE) are linked;
+            # APs are the fixed environment behind the resident/visitor call.
+            belongs = self._resident_status(enriched, event.score_breakdown)
+            is_mobile = self._is_mobile_contact(event.device_type)
+            if is_mobile and contact_key and not contact_key.startswith("mac:"):
+                present_mobile_keys.add(contact_key)
+            person_id = self._person_of.get(contact_key)
+            person_size = self._person_size.get(person_id, 0) if person_id else 0
+            self._maybe_alert_visitor(contact_key, belongs, event.observation_count, contact)
             existing = self._wifi_event_index.get(event.mac)
             if existing is not None:
                 # Same device flagged again — update the ongoing detection in place
@@ -1163,6 +1292,7 @@ class SensorOrchestrator:
                     "entity_visits": xsession["entity_visits"],
                     "entity_days_known": xsession["entity_days_known"],
                     "entity_last_seen": xsession["entity_last_seen"],
+                    "belongs": belongs, "person_id": person_id, "person_size": person_size,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 if event.alert_level != prev_level or returning:
@@ -1185,6 +1315,7 @@ class SensorOrchestrator:
                     "entity_visits": xsession["entity_visits"],
                     "entity_days_known": xsession["entity_days_known"],
                     "entity_last_seen": xsession["entity_last_seen"],
+                    "belongs": belongs, "person_id": person_id, "person_size": person_size,
                     # Which signal(s) fired — so a soak can decompose the flag mix.
                     "score_breakdown": event.score_breakdown,
                     "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
@@ -1221,6 +1352,10 @@ class SensorOrchestrator:
                 )
             else:
                 self._stats["alerts_rate_limited"] += 1
+        # After the per-device loop: fold this poll's present mobile radios into the
+        # co-presence linker and refresh the person clusters (bounded, off the hot
+        # path). Person ids attach to events on the next poll.
+        self._update_copresence(present_mobile_keys, datetime.now(timezone.utc))
         self._write_session_summary()
 
     async def _poll_drone_rf(self) -> None:

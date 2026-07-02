@@ -317,6 +317,7 @@ const tables = {
           returning: g.returning, return_count: g.returnCount,
           returning_entity: !!g.returningEntity, entity_visits: g.entityVisits || 0,
           entity_days: g.entityDays || 0, entity_last_seen: g.entityLastSeen || '',
+          belongs: e.belongs || '', person_id: e.person_id || '', person_size: e.person_size || 0,
           mac: e.mac || '', ssid: e.ssid || '', mac_type: e.mac_type || '',
           score: e.score != null ? e.score : 0, alert_level: e.alert_level || '',
           seen: e.observation_count || 0, manufacturer: e.manufacturer || '',
@@ -353,9 +354,19 @@ const tables = {
       const known = r.returning_entity
         ? ` <span class="known-entity" title="Seen on a prior session/day — last ${r.entity_last_seen || '?'}, known across ${r.entity_days || 1} day(s)">⌂ KNOWN${r.entity_visits > 1 ? ' ×' + r.entity_visits : ''}</span>`
         : '';
+      // Environment: resident (probes a network beaconed here) vs a novel visitor
+      // with no local affinity; and a person cluster of a mobile's linked radios.
+      const belongs = r.belongs === 'resident'
+        ? ' <span class="belongs-resident" title="Probes a network that beacons here — belongs to this place">⌂ resident</span>'
+        : (r.belongs === 'visitor'
+          ? ' <span class="belongs-visitor" title="Novel, with no affinity to any local network — a visitor">✦ VISITOR</span>'
+          : '');
+      const person = (r.person_id && r.person_size > 1)
+        ? ` <span class="person-badge" title="Travels with ${r.person_size - 1} other radio(s) — likely one person">👥 ${r.person_size}</span>`
+        : '';
       return `
-    <tr class="${r.returning || r.returning_entity ? 'returning-row' : ''}">
-      <td>${r.contact ? esc(r.contact) : '—'}${conf}${ret}${known}</td>
+    <tr class="${r.returning || r.returning_entity ? 'returning-row' : ''}${r.belongs === 'visitor' ? ' visitor-row' : ''}">
+      <td>${r.contact ? esc(r.contact) : '—'}${conf}${ret}${known}${belongs}${person}</td>
       <td>${macCell}</td>
       <td>${r.ssid ? esc(r.ssid) : '—'}</td>
       <td>${r.mac_type || '—'}</td>

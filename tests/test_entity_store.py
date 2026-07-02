@@ -575,3 +575,29 @@ def test_contact_registry_survives_reopen(tmp_path):
     assert prior["known"] is True and prior["last_session"] == "sess-1"
     assert s2.contact_registry_row("wifi-fp:xyz")["visits"] == 2
     s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-PHY contact links (P4 phase C) — durable person-link memory
+# ---------------------------------------------------------------------------
+
+
+def test_contact_link_records_order_independent():
+    s = _store()
+    s.record_contact_link("wifi-fp:a", "ble-fp:b", T0)
+    s.record_contact_link("ble-fp:b", "wifi-fp:a", T0 + timedelta(minutes=1))  # reversed
+    assert s.count("contact_links") == 1                 # one row, not two
+    assert sorted(s.known_links()[0]) == ["ble-fp:b", "wifi-fp:a"]
+    s.close()
+
+
+def test_known_links_round_trips_across_reopen(tmp_path):
+    db = str(tmp_path / "e.db")
+    s1 = EntityStore(db)
+    s1.record_contact_link("wifi-fp:a", "ble-fp:b", T0)
+    s1.record_contact_link("wifi-fp:c", "ble-fp:d", T0)
+    s1.close()
+    s2 = EntityStore(db)
+    links = {tuple(sorted(p)) for p in s2.known_links()}
+    assert links == {("ble-fp:b", "wifi-fp:a"), ("ble-fp:d", "wifi-fp:c")}
+    s2.close()

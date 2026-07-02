@@ -2557,3 +2557,89 @@ def test_resolve_contact_real_fingerprint_still_strong(orch):
     _, confidence, identity_key = so._resolve_contact(ev, device=None)
     assert confidence == "strong"
     assert identity_key == "wifi-fp:deadbeef"
+
+
+# ---------------------------------------------------------------------------
+# Cross-PHY co-presence + resident/visitor (Phase C)
+# ---------------------------------------------------------------------------
+
+
+def test_is_mobile_contact_excludes_aps_and_bridges(orch):
+    so = orch.sensor_orchestrator
+    assert so._is_mobile_contact("Wi-Fi Client") is True
+    assert so._is_mobile_contact("BTLE") is True
+    assert so._is_mobile_contact("Wi-Fi AP") is False
+    assert so._is_mobile_contact("Wi-Fi Bridged") is False
+    assert so._is_mobile_contact("Wi-Fi WDS AP") is False
+
+
+def test_resident_status_classification(orch):
+    so = orch.sensor_orchestrator
+    # Probes a locally-beaconed network -> resident.
+    assert so._resident_status({"network_affinity": ["HomeWiFi"]}, {}) == "resident"
+    # Novel with no local affinity -> visitor.
+    assert so._resident_status({"network_affinity": []}, {"novelty": 1.0}) == "visitor"
+    # Neither signal -> unknown (conservative).
+    assert so._resident_status({"network_affinity": []}, {}) == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_person_links_mobile_wifi_and_ble(orch):
+    """A Wi-Fi client and a BLE device that are present together every poll link
+    into one person; the AP present alongside them does NOT join."""
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    # Fresh conservative linker with a low bar for the test.
+    from modules.copresence import CoPresenceLinker
+    so._copresence_linker = CoPresenceLinker(min_polls=3, min_jaccard=0.6,
+                                             min_obs_polls=2, min_fixture_polls=100)
+    orch._kismet_active = True
+
+    phone_wifi = {"macaddr": "a2:00:00:00:00:11", "type": "Wi-Fi Client",
+                  "probe_fingerprint": 111, "fp_anchor": "MyHouse", "last_signal": -40}
+    phone_ble = {"macaddr": "c2:00:00:00:00:22", "type": "BTLE",
+                 "service_uuids": [0x180D], "name": "MyPhone", "last_signal": -45}
+    ap = {"macaddr": "d2:00:00:00:00:33", "type": "Wi-Fi AP",
+          "probe_fingerprint": 999, "fp_anchor": "NeighborAP", "last_signal": -60}
+    devices = [phone_wifi, phone_ble, ap]
+
+    def ev(mac, fp):
+        return DetectionEvent(
+            mac=mac, score=0.85, score_breakdown={"novelty": 1.0},
+            first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            last_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            locations=[], observation_count=5, manufacturer="Acme",
+            device_type=("BTLE" if mac.startswith("c2") else "Wi-Fi Client" if mac.startswith("a2") else "Wi-Fi AP"),
+            alert_level="likely", mac_type="randomized", ssid="", fingerprint=fp,
+            fingerprint_label="x")
+
+    from modules import device_identity
+    # resolve the stable contact keys the linker will see
+    wifi_key = device_identity.contact_identity(phone_wifi)[0]
+    ble_key = device_identity.contact_identity(phone_ble)[0]
+    orch.kismet.poll_devices = AsyncMock(return_value=devices)
+    orch.persistence.update.return_value = [
+        ev("a2:00:00:00:00:11", "wifi-fp:x"), ev("c2:00:00:00:00:22", ""),
+        ev("d2:00:00:00:00:33", "wifi-fp:y")]
+    for _ in range(5):
+        await so._poll_kismet()
+
+    clusters = so._person_of
+    assert wifi_key in clusters and ble_key in clusters
+    assert clusters[wifi_key] == clusters[ble_key]        # one person
+    assert ap_key_not_linked(so, ap)
+    so.entity_store.close()
+
+
+def ap_key_not_linked(so, ap):
+    from modules import device_identity
+    ak = device_identity.contact_identity(ap)[0]
+    return ak not in so._person_of
+
+
+def test_copresence_noop_when_linker_disabled(orch):
+    so = orch.sensor_orchestrator
+    so._copresence_linker = None          # disabled (CROSS_PHY_LINKING_ENABLED=false)
+    so._update_copresence({"wifi-fp:a", "ble-fp:b"}, datetime.now(timezone.utc))
+    assert so._person_of == {}            # no clustering when disabled

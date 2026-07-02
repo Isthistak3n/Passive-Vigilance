@@ -263,6 +263,20 @@ class EntityStore:
             )
             """
         )
+        # Cross-PHY co-presence links (P4 phase C): a pair of rotation-stable contact
+        # identities observed travelling together (present in nearly the same polls) —
+        # the two radios of one "person". Durable so a returning pair re-links fast.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contact_links (
+                key_a        TEXT NOT NULL,
+                key_b        TEXT NOT NULL,
+                first_linked TEXT NOT NULL,
+                last_seen    TEXT NOT NULL,
+                PRIMARY KEY (key_a, key_b)
+            )
+            """
+        )
         self._conn.commit()
 
     # ------------------------------------------------------------------
@@ -507,9 +521,29 @@ class EntityStore:
     def count(self, table: str) -> int:
         if table not in ("probe_evidence", "device_fingerprint", "entities",
                          "observations", "contact_designator", "pnl_evidence",
-                         "beacon_evidence", "network_affinity", "contact_registry"):
+                         "beacon_evidence", "network_affinity", "contact_registry",
+                         "contact_links"):
             raise ValueError(f"unknown table {table!r}")
         return self._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+
+    def record_contact_link(self, key_a: str, key_b: str, now: datetime) -> None:
+        """Persist (or refresh) a co-presence link between two contact identities
+        (P4-C). Keys are stored order-independently so a pair has one durable row,
+        letting a returning person re-link immediately across sessions."""
+        a, b = (key_a, key_b) if key_a <= key_b else (key_b, key_a)
+        self._conn.execute(
+            "INSERT INTO contact_links (key_a, key_b, first_linked, last_seen) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(key_a, key_b) DO UPDATE SET last_seen = excluded.last_seen",
+            (a, b, _iso(now), _iso(now)),
+        )
+        self._conn.commit()
+
+    def known_links(self) -> list:
+        """All durable contact links as ``[(key_a, key_b), ...]`` — loaded at startup
+        so a person seen on a prior session/day re-links fast."""
+        return [(r["key_a"], r["key_b"]) for r in self._conn.execute(
+            "SELECT key_a, key_b FROM contact_links")]
 
     def record_contact_sighting(self, identity_key: str, now: datetime,
                                 session_id: str) -> dict:
