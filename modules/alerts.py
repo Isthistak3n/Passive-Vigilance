@@ -130,8 +130,12 @@ class RateLimiter:
             if self._persist_path:
                 self._save_state()
             return True
-        if self._persist_path:
-            self._save_state()
+        # Rejected: the cooldown is still active, so ``_last_alert`` is unchanged
+        # and there is nothing new to persist. The reject path used to rewrite the
+        # whole file anyway — an atomic tmp+rename on EVERY suppressed alert, i.e.
+        # once per rejected send during exactly the alert floods this limiter exists
+        # to damp. The on-disk state after an allow already yields the correct
+        # remaining cooldown across a restart, so the extra write bought nothing.
         return False
 
     async def is_allowed(self, key: str) -> bool:

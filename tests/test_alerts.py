@@ -150,6 +150,29 @@ async def test_rate_limiter_persists_state_to_json(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rate_limiter_does_not_rewrite_file_on_rejected_check(tmp_path):
+    """A rate-limited (rejected) check leaves _last_alert unchanged, so it must
+    NOT rewrite the persist file — the reject path used to do a full atomic
+    tmp+rename on every suppressed alert, i.e. once per rejected send during the
+    very floods the limiter exists to damp."""
+    from unittest.mock import patch
+
+    persist_file = str(tmp_path / "rate_limits.json")
+    rl = RateLimiter(cooldown_seconds=300, persist_path=persist_file)
+    assert await rl.is_allowed("k") is True          # first: allowed, writes once
+
+    with patch.object(rl, "_save_state") as save:
+        assert await rl.is_allowed("k") is False     # within cooldown: rejected
+        assert await rl.is_allowed("k") is False
+        save.assert_not_called()                     # no rewrite on reject
+
+    # A genuinely new key still persists (state changed).
+    with patch.object(rl, "_save_state") as save:
+        assert await rl.is_allowed("other") is True
+        save.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_rate_limiter_loads_state_from_json(tmp_path):
     """A newly created RateLimiter with persist_path must honour state written by a previous instance."""
     import json as _json
