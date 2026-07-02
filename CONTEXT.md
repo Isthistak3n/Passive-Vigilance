@@ -1,9 +1,9 @@
 # CONTEXT.md — Passive Vigilance Live State
 
-> **Maintained by:** Claude Code + Cody (updated at session close and on merges to `main`)
+> **Maintained by:** Claude Code (updated at session close and on merges to `main`)
 > **Read by:** Claude Code at the start of every session
-> **Last updated:** 2026-06-14
-> **Updated by:** [claude-code] (survkis) — mobile GUI Nearby tab live, Web GUI capability row refreshed
+> **Last updated:** 2026-07-01
+> **Updated by:** [claude-code] (chase) — ADS-B+AIS+ACARS decode cycle live on the single dongle; AIS reception field-confirmed
 >
 > **Scope note:** this file holds *live state* only (hardware, ports, branches,
 > handoffs). How-the-code-works lives in `CLAUDE.md`; how-we-work (roles, branch
@@ -19,8 +19,9 @@ freeze. See `docs/design-and-roadmap.md` (design plan + roadmap + soak validatio
 
 **Recently landed (weekend of 2026-06-21/22):**
 - **SDR pivot** (#158/#160/#159) — DroneRF retired; single dongle runs an N-band
-  time-share of ADS-B + optional AIS + ACARS (on-Pi stress-testing). AIS/ACARS are
-  VHF and antenna-gated.
+  time-share of ADS-B + AIS + ACARS. Now **live and field-validated** on `chase` with a
+  VHF splitter (2026-07-01): AIS decoded a real vessel (MarineTraffic-verified), ACARS
+  (dumpvdl2, #176) decoded real traffic, handoffs clean.
 - **Dashboard map reverted to plain online OSM** (#161/#162) — the offline-basemap
   feature was unreliable in the field and was removed in full.
 - **Aircraft live-map push fix** (#163) — positioned contacts reach the map even when
@@ -29,9 +30,13 @@ freeze. See `docs/design-and-roadmap.md` (design plan + roadmap + soak validatio
   the stamped position no longer drifts behind real time (was minutes-to-hours on long
   runs; cosmetic on a fixed node, a real fix for mobile).
 
-**`chase` config note:** **AIS disabled** (`AIS_ENABLED=false`, `SDR_CYCLE_SLICES=adsb:120`)
-— the 1090 antenna can't receive VHF AIS and the time-share was blanking ADS-B; revisit
-with a 2nd dongle + VHF antenna. Dashboard map = direct online OSM.
+**`chase` config note:** **ADS-B + AIS + ACARS all live** on the single dongle. A VHF
+antenna was added via an SMA splitter, so the coordinator time-shares
+`SDR_CYCLE_SLICES=adsb:600,ais:30` (ADS-B base, short AIS slice), with ACARS
+preemption-driven on a >30s-held aircraft (`ACARS_ENABLED=true`, `ACARS_SERVICE=dumpvdl2`).
+AIS reception is field-confirmed (real vessel decoded + MarineTraffic-verified); ACARS
+decode validated with real traffic. Handoffs stay clean on the settle barrier
+(`SDR_HANDOFF_USB_RESET=false`; 0 wedges). Dashboard map = direct online OSM.
 
 **Next:** P3 rolling baseline (alert-fatigue), P4 cross-session entity resolution, P5
 fixed-mode GUI framing, and the SDR-pivot multi-day validation — see the roadmap. One
@@ -131,8 +136,8 @@ authority for what is actually present and working on each node.
 | GPS stamping | ✅ Complete | ✅ u-blox 8 on ttyACM0 | ✅ L76K on ttyAMA0 (3D fix) |
 | ADS-B (readsb) | ✅ Complete | ❌ No SDR dongle | ✅ RTL-SDR present, ADS-B flowing |
 | Drone RF | 🗄️ Retired | — | Replaced by the SDR decode cycle; `DRONE_RF_ENABLED=false`, code kept for reversibility |
-| AIS (marine) | 🧩 Phase 1 (software) | — | Optional/off; needs a VHF antenna + AIS-catcher (`INSTALL_AIS=true`) — won't receive on the 1090 antenna |
-| ACARS (aviation datalink) | 🔜 Phase 2 | — | >30s-held ADS-B trigger → decode + tail/flight-id correlation; VHF antenna best-effort |
+| AIS (marine) | ✅ Live | — | ✅ VHF antenna via splitter; AIS-catcher on `adsb:600,ais:30`; real vessel decoded + MarineTraffic-verified |
+| ACARS (aviation datalink) | ✅ Live | — | ✅ dumpvdl2 (VDL2, #176), >30s-held trigger; offline registry (516k) for tail↔reg correlation |
 | FAA Remote ID | ✅ Complete | ⚠️ Requires Kismet (API key not set) | ✅ Active |
 | Fixed/mobile detection modes | ✅ Phase 2 (main) | — | ✅ `NODE_MODE=fixed` |
 | Entity/observation store | ✅ Complete | — | ✅ Recorded at poll site |
@@ -154,9 +159,9 @@ per module are in **`CLAUDE.md` → Deploy Directory**.
 
 Single-tier model: all work branches cut from `main` and merge back via PR — no
 integration branch. In-flight branches and their status are the **open PRs on
-GitHub**; this file no longer mirrors that list (it drifts). The one long-lived
-work branch worth noting here is `feat/egregious-during-baseline` — the P0+P1+P2
-stack currently deployed on `chase` for the soak; it PRs after the walk-test.
+GitHub**; this file no longer mirrors that list (it drifts). `chase` currently runs
+`main` — the P2/P3 detection-quality work and the full SDR decode cycle (ADS-B/AIS/
+ACARS) are all merged and live.
 
 ---
 
@@ -186,7 +191,7 @@ stack currently deployed on `chase` for the soak; it PRs after the walk-test.
 | Unsigned Pi commits hard-rejected if signature rule tightened | survkis, chase | Both | Medium | Fix: `git config gpg.format ssh` + `git config user.signingkey ~/.ssh/id_ed25519` — reuses existing deploy key, no new GPG setup needed |
 | Telegram/Discord require manual credentials | Alert backends | Both | Low | Config gap only |
 | No comprehensive frontend tests for Web GUI | gui/server.py | Both | Low | Partial unit tests exist |
-| DroneRF disabled — RTL-SDR/libusb SIGSEGV during scan (#63) | Drone detection | chase | Medium | `DRONE_RF_ENABLED=false`; readsb-only. Re-enable blocked on #63 |
+| DroneRF retired — replaced by the AIS/ADS-B/ACARS decode cycle (#158) | Drone detection | — | — | `DRONE_RF_ENABLED=false`; code kept for reversibility. Not a blocker |
 | DSI touchscreen non-functional | Local display | chase | Medium | Blocks field readiness |
 
 ---
@@ -262,11 +267,15 @@ scan). Commit signing is not yet configured on the Pis — see Known Issues.
 
 [2026-06-14] survkis mobile-GUI session. `NODE_MODE=mobile` + `GUI_ENABLED=true`/`GUI_PORT=8088` now active on survkis (previously disabled). Landed a standalone mobile GUI (#113): `gui/templates/mobile.html` + `gui/static/mobile.js`, served instead of the Leaflet `index.html` when `NODE_MODE=mobile`; new `/api/nearby` live proximity feed (independent of the persistence/GPS-cluster gate), with a "Nearby" tab showing RSSI-sorted device cards, proximity dots, and alert-tier accents cross-referenced from the persistence feed. Followed up (#116) with a CSS selector bug fix (`.nearby-feed` never matched `#nearby-feed`, so the feed couldn't scroll past the first screenful) and added floating up/down paging buttons as a touchscreen fallback. Verified end-to-end: service restarted clean, `/api/nearby` serving live data, kiosk on the 800x480 DSI screen rendering and scrolling correctly (`grim` screenshots). Test suite at 537. Planned: a drive test to validate Nearby-feed behavior at speed and mobile persistence scoring (location-diversity) against real traffic.
 
+[2026-07-01] chase SDR-decode-cycle bring-up + doc/OPSEC pass. Brought the single-dongle ADS-B+AIS+ACARS cycle fully live: added a VHF antenna via SMA splitter, enabled AIS (`adsb:600,ais:30`) — reception field-confirmed (real vessel decoded, MarineTraffic-verified) — and ACARS via dumpvdl2 (built libacars 2.2.1 + dumpvdl2 2.6.0 from source; deploy unit #176), decode validated on real traffic; built the offline aircraft registry (516k rows, OpenSky) for tail↔reg correlation. Handoffs clean on the settle barrier (0 wedges); fixed the usbreset arg (#171, now off). Also shipped: Kismet boot-readiness retry (#169), GUI sensor-health honesty + "Sightings" relabel (#170), docs refresh + retrospective (#172/#173), and a location-fixture OPSEC scrub (#174). Hourly health+tracking cron extended to cover AIS/ACARS. Test suite ~770.
+
 ---
 
 ## Grok Merge / Update Notes
 
-> Grok appends a note on every merge to main and at the start of any sequential standardization phase.
+> **Historical (through 2026-05).** Retained for the record. CONTEXT.md is now
+> maintained by Claude Code at session close (see the header) — there is no longer a
+> separate per-merge Grok update pass.
 
 [2026-05-06]
 - Step 2 fully verified on Pi 3B+ (280/280).

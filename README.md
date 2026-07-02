@@ -242,7 +242,7 @@ it is restarted.
 The fastest path to a running sensor is the one-command installer:
 
 ```bash
-git clone git@github.com:Isthistak3n/Passive-Vigilance.git
+git clone https://github.com/Isthistak3n/Passive-Vigilance.git
 cd Passive-Vigilance
 sudo bash deploy/install.sh
 ```
@@ -495,13 +495,13 @@ full branch strategy and guidelines.
 
 - All work branches use one of five prefixes: `feat/`, `fix/`, `docs/`, `hotfix/`, `refactor/`
 - Cut all branches from `main`; PRs merge directly to `main`
-- Gate: CI green + Pi validation recorded in the PR + Cody approval
+- Gate: CI green + Pi validation recorded in the PR + human maintainer approval
 - No direct commits to `main` (ruleset-enforced)
 
 To get started:
 
 ```bash
-git clone git@github.com:Isthistak3n/Passive-Vigilance.git
+git clone https://github.com/Isthistak3n/Passive-Vigilance.git
 cd Passive-Vigilance
 git checkout main
 git checkout -b feat/your-feature-name
