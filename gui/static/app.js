@@ -113,6 +113,19 @@ function esc(s) {
   ));
 }
 
+// Hover summary for the latest correlated ACARS message: label + text, plus any
+// parsed flight / route / position the server folded onto the aircraft event.
+function acarsSummary(latest, e) {
+  const parts = [];
+  const head = `${latest.label ? latest.label + ': ' : ''}${latest.text || ''}`.trim();
+  if (head) parts.push(head);
+  if (e && e.acars_flight) parts.push('Flight ' + e.acars_flight);
+  if (e && e.route) parts.push(e.route);
+  const plat = latest.lat, plon = latest.lon;
+  if (plat != null && plon != null) parts.push(`pos ${(+plat).toFixed(3)}, ${(+plon).toFixed(3)}`);
+  return parts.join('  |  ');
+}
+
 // A device's rotation-stable identity: its strong fingerprint if it has one,
 // else its MAC. Rows sharing an identity are one logical device.
 function wifiIdentity(e) {
@@ -352,7 +365,11 @@ const tables = {
           emergency: e.emergency ? 'Yes' : 'No', time: e.timestamp || '',
           returning: !!e.returning, return_count: e.return_count || 0,
           acars: ac.length,
-          acars_text: latest ? `${latest.label ? latest.label + ': ' : ''}${latest.text || ''}`.trim() : '',
+          // Route/flight enrichment surfaced from correlated ACARS (server folds
+          // it onto the aircraft event); shown next to the badge, not just on hover.
+          route: e.route || '',
+          acars_flight: e.acars_flight || '',
+          acars_text: latest ? acarsSummary(latest, e) : '',
         };
       });
     },
@@ -363,8 +380,11 @@ const tables = {
       const ret = r.returning
         ? ` <span class="returning" title="Re-seen after an absence — same airframe (${r.return_count || 1}×)">↩ RETURN${(r.return_count || 1) > 1 ? ' ×' + r.return_count : ''}</span>`
         : '';
+      const acarsExtra = r.route
+        ? ` <span class="acars-route">${esc(r.route)}</span>`
+        : (r.acars_flight ? ` <span class="acars-route">${esc(r.acars_flight)}</span>` : '');
       const acars = r.acars > 0
-        ? `<span class="acars-badge" title="${esc(r.acars_text)}">✉ ${r.acars}</span>`
+        ? `<span class="acars-badge" title="${esc(r.acars_text)}">✉ ${r.acars}</span>${acarsExtra}`
         : '—';
       return `
     <tr class="${r.returning ? 'returning-row' : ''}">

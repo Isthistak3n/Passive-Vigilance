@@ -2252,3 +2252,108 @@ async def test_nearby_feed_pushed_on_mobile_node(orch):
     await so._poll_kismet()
     pushed_types = [c.args[0] for c in so.gui_server.push_event.call_args_list]
     assert "nearby" in pushed_types
+
+
+# ---------------------------------------------------------------------------
+# ACARS enrichment — position correlation, contact enrichment, persistence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_acars_correlates_by_position_when_no_identity_match(orch, tmp_path):
+    """A positioned message whose tail/callsign match nothing binds to the nearest
+    ADS-B contact within the match radius (the case a blank-callsign airframe needs)."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    # Two contacts; the message sits ~5 km from FAR? no — near NEAR only.
+    so._aircraft_index["near01"] = {"icao": "near01", "callsign": "", "lat": 51.50, "lon": -0.12}
+    so._aircraft_index["far999"] = {"icao": "far999", "callsign": "", "lat": 40.00, "lon": -3.00}
+    so.acars = MagicMock()
+    so._modules_active["acars"] = True
+    so.acars.drain_detections = MagicMock(return_value=[
+        {"tail": None, "flight_id": None, "label": "10", "text": "POS",
+         "lat": 51.52, "lon": -0.13, "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_acars()
+    assert so._stats["acars_correlated"] == 1
+    assert so._aircraft_index["near01"].get("acars")           # bound to the near one
+    assert "acars" not in so._aircraft_index["far999"]
+
+
+@pytest.mark.asyncio
+async def test_poll_acars_position_no_match_outside_radius(orch, tmp_path):
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so._acars_position_match_km = 50.0
+    so._aircraft_index["far999"] = {"icao": "far999", "callsign": "", "lat": 40.0, "lon": -3.0}
+    so.acars = MagicMock()
+    so._modules_active["acars"] = True
+    so.acars.drain_detections = MagicMock(return_value=[
+        {"tail": None, "flight_id": None, "text": "POS", "lat": 51.5, "lon": -0.1,
+         "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_acars()
+    assert so._stats["acars_correlated"] == 0
+    assert "acars" not in so._aircraft_index["far999"]
+
+
+@pytest.mark.asyncio
+async def test_poll_acars_enriches_contact_with_route_and_flight(orch, tmp_path):
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so._aircraft_index["abc123"] = {"icao": "abc123", "callsign": "UAL123"}
+    so.acars = MagicMock()
+    so._modules_active["acars"] = True
+    so.acars.drain_detections = MagicMock(return_value=[
+        {"tail": None, "flight_id": "UAL123", "label": "H1", "text": "x",
+         "origin": "KJFK", "destination": "KLAX", "lat": None, "lon": None,
+         "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_acars()
+    ev = so._aircraft_index["abc123"]
+    assert ev["route"] == "KJFK→KLAX"
+    assert ev["acars_flight"] == "UAL123"
+
+
+@pytest.mark.asyncio
+async def test_poll_acars_persists_enriched_contact_to_aircraft_jsonl(orch, tmp_path):
+    """The enrichment must reach aircraft.jsonl so /api/aircraft rebuilds it after
+    a refresh — otherwise the ACARS column is lost for any plane no longer overhead."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so._aircraft_index["abc123"] = {"icao": "abc123", "callsign": "UAL123"}
+    so.acars = MagicMock()
+    so._modules_active["acars"] = True
+    so.acars.drain_detections = MagicMock(return_value=[
+        {"tail": None, "flight_id": "UAL123", "label": "H1", "text": "OPS",
+         "origin": "KJFK", "destination": "KLAX", "lat": None, "lon": None,
+         "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_acars()
+    lines = (so._session_dir / "aircraft.jsonl").read_text().strip().splitlines()
+    recs = [json.loads(l) for l in lines]
+    enriched = [r for r in recs if r.get("icao") == "abc123" and r.get("route") == "KJFK→KLAX"]
+    assert enriched and enriched[-1]["acars"][-1]["text"] == "OPS"
+
+
+@pytest.mark.asyncio
+async def test_poll_acars_tail_still_wins_over_position(orch, tmp_path):
+    """Identity match must take precedence over the position fallback."""
+    so = orch.sensor_orchestrator
+    so._session_dir = Path(tmp_path) / "20260101_120000"
+    so._session_dir.mkdir(parents=True, exist_ok=True)
+    so._aircraft_index["byreg"] = {"icao": "byreg", "registration": "N12345", "lat": 40.0, "lon": -3.0}
+    so._aircraft_index["bypos"] = {"icao": "bypos", "callsign": "", "lat": 51.5, "lon": -0.1}
+    so.acars = MagicMock()
+    so._modules_active["acars"] = True
+    so.acars.drain_detections = MagicMock(return_value=[
+        {"tail": "N12345", "flight_id": None, "text": "POS", "lat": 51.5, "lon": -0.1,
+         "timestamp": "2026-01-01T12:00:00+00:00"},
+    ])
+    await so._poll_acars()
+    assert so._aircraft_index["byreg"].get("acars")       # tail match won
+    assert "acars" not in so._aircraft_index["bypos"]

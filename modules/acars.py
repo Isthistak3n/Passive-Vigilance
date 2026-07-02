@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -31,6 +32,75 @@ logger = logging.getLogger(__name__)
 
 ACARS_UDP_HOST = os.getenv("ACARS_UDP_HOST", "127.0.0.1")
 ACARS_UDP_PORT = int(os.getenv("ACARS_UDP_PORT", "5555"))
+
+# Origin/destination structured-field aliases across acarsdec / dumpvdl2 / VDL2.
+_ORIGIN_KEYS = ("depa", "dep", "origin", "orig")
+_DEST_KEYS = ("dsta", "dst", "destination", "dest", "arr")
+
+# Two position encodings that show up in ACARS position-report free text. Both are
+# deliberately strict (a decimal point is required, hemispheres explicit) so noise
+# text never yields a bogus fix. Anything ambiguous returns no position.
+#   decimal:      "N47.1234 W122.4567"
+#   degree-minute:"N4712.3W12227.4"  (DDMM.m / DDDMM.m)
+_POS_DECIMAL_RE = re.compile(
+    r"(?P<lath>[NS])\s*(?P<lat>\d{1,2}\.\d+)\s*[, ]?\s*(?P<lonh>[EW])\s*(?P<lon>\d{1,3}\.\d+)"
+)
+_POS_DEGMIN_RE = re.compile(
+    r"(?P<lath>[NS])(?P<latd>\d{2})(?P<latm>\d{2}\.\d+)(?P<lonh>[EW])(?P<lond>\d{3})(?P<lonm>\d{2}\.\d+)"
+)
+
+
+def _first_str(*sources) -> Optional[str]:
+    """First non-empty stripped string among ``(mapping, keys)`` source pairs."""
+    for mapping, keys in sources:
+        if not isinstance(mapping, dict):
+            continue
+        for k in keys:
+            v = mapping.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def _num(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f
+
+
+def _extract_position(acars: dict, outer: dict, text: Optional[str]):
+    """Return ``(lat, lon)`` for a message that carries a position, else ``(None, None)``.
+
+    Structured numeric lat/lon fields (on the ACARS block or the outer decoder
+    object) win; otherwise a strict pattern match against the message text. A
+    result is only returned when both are in range, so a partial/garbled match is
+    dropped rather than mis-placing a contact.
+    """
+    for src in (acars, outer):
+        if not isinstance(src, dict):
+            continue
+        lat = _num(src.get("lat", src.get("latitude")))
+        lon = _num(src.get("lon", src.get("longitude")))
+        if lat is not None and lon is not None and abs(lat) <= 90 and abs(lon) <= 180:
+            return lat, lon
+    if text:
+        m = _POS_DECIMAL_RE.search(text)
+        if m:
+            lat = float(m.group("lat")) * (1 if m.group("lath") == "N" else -1)
+            lon = float(m.group("lon")) * (1 if m.group("lonh") == "E" else -1)
+            if abs(lat) <= 90 and abs(lon) <= 180:
+                return lat, lon
+        m = _POS_DEGMIN_RE.search(text)
+        if m:
+            lat = (int(m.group("latd")) + float(m.group("latm")) / 60.0) * (
+                1 if m.group("lath") == "N" else -1)
+            lon = (int(m.group("lond")) + float(m.group("lonm")) / 60.0) * (
+                1 if m.group("lonh") == "E" else -1)
+            if abs(lat) <= 90 and abs(lon) <= 180:
+                return lat, lon
+    return None, None
 
 
 class _ACARSDatagramProtocol(asyncio.DatagramProtocol):
@@ -116,11 +186,22 @@ class ACARSModule:
         # A message with no identity AND no content is noise — drop it.
         if tail is None and flight is None and text is None:
             return None
+        # Enrichment fields (all optional): the origin/destination airports the
+        # airframe declares, and a position report when the message carries one.
+        # These are what tie a message to a contact beyond the tail/callsign and
+        # what fill out the aircraft row.
+        origin = _first_str((acars, _ORIGIN_KEYS), (msg, _ORIGIN_KEYS))
+        destination = _first_str((acars, _DEST_KEYS), (msg, _DEST_KEYS))
+        lat, lon = _extract_position(acars, msg, text)
         return {
             "tail": tail,
             "flight_id": flight,
             "label": label,
             "text": text,
+            "origin": origin,
+            "destination": destination,
+            "lat": lat,
+            "lon": lon,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
