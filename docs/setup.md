@@ -188,11 +188,14 @@ Log out and back in for the group change to take effect.
 ### Test the REST API
 
 ```bash
-curl -s -H "KISMET-API-Key: <your-api-key>" \
+# Kismet 2025.09 dropped header auth — the key is passed as a COOKIE, not a header.
+curl -s --cookie "KISMET=<your-api-key>" \
   http://localhost:2501/system/status.json | python3 -m json.tool | head -20
 ```
 
-A `200` response with JSON confirms the API is working.
+A `200` response with JSON confirms the API is working. (A `401` with the cookie set
+means the key is wrong; a `401` using the old `-H "KISMET-API-Key: …"` header just
+means you're on 2025.09+ where header auth was removed — use the cookie form above.)
 
 ### Check service status
 
@@ -521,6 +524,11 @@ import time.
 
 ## Drone RF Detection
 
+> **⚠️ RETIRED — default off.** DroneRF was replaced by the AIS/ADS-B/ACARS SDR decode
+> cycle (#158): it's antenna-limited, low-value, and caused the #63 libusb SIGSEGV. It
+> defaults to `DRONE_RF_ENABLED=false` and is not in the SDR cycle; this section and the
+> module are kept only for reversibility. See README / `docs/design-and-roadmap.md` §11.
+
 The `DroneRFModule` passively scans these frequencies for drone command-link and video
 link signals:
 
@@ -820,8 +828,8 @@ journalctl -fu passive-vigilance
 Startup banner confirms which modules connected and where session output will be written:
 
 ```
-Passive Vigilance v0.1.0 — Session 20260101_120000
-Active modules : GPS, Kismet, ADS-B, DroneRF (active)
+Passive Vigilance v0.7.0-alpha — Session 20260101_120000
+Active modules : GPS, Kismet, ADS-B, SDR-Coordinator (hardened), RemoteID
 Alert backend  : Ntfy
 Output         : data/sessions/20260101_120000/
 ```
@@ -929,10 +937,10 @@ Example banner:
 Session: 20260101_120000 | Uptime: 0h 05m 00s
 GPS:     ✓ Fixed | Lat: 51.5074 Lon: -0.1278
 Kismet:  ✓ Active | Devices seen: 142
-ADS-B:   ✓ Active | Aircraft: 7
-DroneRF: ✓ Active | Detections: 0
+ADS-B:   ✓ Active | Sightings: 7
+SDR:     ✓ Healthy | Mode: shared | Owner: adsb
 Alerts:  Ntfy | Sent: 3 | Rate-limited: 1
-Events:  2 persistent | 7 aircraft | 0 drone
+Events:  2 persistent | 7 aircraft-sightings | 0 drone
 ──────────────────────────────────────────────────────
 ```
 
@@ -1120,7 +1128,8 @@ by the installer — no separate `pip install` needed.
    ```ini
    GUI_ENABLED=true
    GUI_HOST=0.0.0.0   # bind to all interfaces (accessible from other devices on LAN)
-   GUI_PORT=8080
+   GUI_PORT=8088      # NOT 8080 — readsb/tar1090 already serves on :8080, so the GUI
+                      # collides there. Both real nodes use 8088.
    ```
 
 2. Start the orchestrator normally:
@@ -1129,7 +1138,7 @@ by the installer — no separate `pip install` needed.
    # or manually: /opt/passive-vigilance/venv/bin/python3 main.py
    ```
 
-4. Open `http://<pi-ip>:8080` in a browser.
+4. Open `http://<pi-ip>:8088` in a browser.
 
 ### Features
 
@@ -1137,17 +1146,17 @@ by the installer — no separate `pip install` needed.
 |-----|----------|
 | Map | Live Leaflet map; WiFi, aircraft, and drone RF markers color-coded by alert level; aircraft markers **decay by recency** (~120 s) so the map shows the present sky |
 | WiFi/BT | Table of detections with score, MAC type, manufacturer, and a **Contact** designator (`CLASS-IDENT-#` track label, persisted across MAC rotation) — replaces the old Device column |
-| Aircraft | ADS-B aircraft table keyed by ICAO (one row per airframe), retained as a detection log; callsign, altitude, speed; emergency rows highlighted |
-| Drone RF | Drone RF detection table with frequency and power |
+| Aircraft | ADS-B aircraft table keyed by ICAO (one row per airframe), retained as a detection log; callsign, altitude, speed; emergency rows highlighted; ACARS surfaced per-contact |
+| AIS | Marine vessel table — MMSI, name, ship type, position (optional; VHF antenna) |
 | Alerts | Live alert feed — WiFi, aircraft, drone, and system health events |
 
 Contacts and aircraft now **persist across a page refresh** — `/api/aircraft`
 re-seeds from the live per-ICAO index, not a bounded push-log. The aircraft
-detection log is retained for `AIRCRAFT_RETENTION_SECONDS` (default `3600`); set
-it in `.env` to widen or narrow the table's memory.
+detection log is retained for `AIRCRAFT_RETENTION_SECONDS` (default `86400`, i.e. 24 h);
+set it in `.env` to widen or narrow the table's memory.
 
-Sensor health indicators (GPS / WiFi / ADS-B / Drone) turn green or red in the
-header bar based on `/api/status` polled every 5 seconds.
+Sensor health indicators (GPS / WiFi / BLE / ADS-B / AIS / ACARS) turn green, grey
+(disabled), or red in the header bar based on `/api/status` polled every 5 seconds.
 
 New events appear instantly via Server-Sent Events (SSE) — no page refresh needed.
 
@@ -1311,7 +1320,9 @@ ls data/sessions/*/
 
 ---
 
-## Additional sections
+## See also
 
-> TODO: HackRF tools, Wi-Fi monitor mode (Alfa AWUS036ACH),
-> Bluetooth setup, Python virtual environment.
+- **Wi-Fi monitor mode** — covered above under the WiFi/Kismet setup; udev + NetworkManager rules are in `deploy/`.
+- **Bluetooth (BLE) capture** — see the BLE scanner notes above and `CLAUDE.md` (raw-HCI, `hci0`, rfkill unblock).
+- **Python virtual environment** — created by `deploy/install.sh` at `/opt/passive-vigilance/venv`.
+- **HackRF** — not currently used; the platform targets RTL-SDR. See `CLAUDE.md` → SDR notes.

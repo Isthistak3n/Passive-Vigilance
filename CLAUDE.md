@@ -312,7 +312,7 @@ Re-run the monitor mode commands after any NM restart.
 - `GUIServer.push_event(event_type, data)` — thread-safe broadcast; updates `_recent_*` caches; drops dead clients
 - SSE pattern: one `threading.Queue(maxsize=500)` per client; `threading.Lock` protects client list
 - `/stream` sends a `{"type":"heartbeat"}` every 20 s of silence to keep connections alive
-- REST endpoints: `/api/status`, `/api/wifi`, `/api/aircraft`, `/api/drone`, `/api/alerts`
+- REST endpoints: `/api/status`, `/api/wifi`, `/api/aircraft`, `/api/ais`, `/api/alerts`, `/api/nearby`, `/api/remote_id`, and `/api/mode` (GET/POST, `GUI_TOKEN`-gated). Panels rebuild from on-disk session logs (durable history, P5), so a refresh/restart shows real history, not just the in-memory cache
 - `_MAX_RECENT = 200` — max events per category kept in memory
 - `GUIServer.stop()` — sends `None` sentinel to all queues; clients disconnect cleanly on session end
 - `main.py` instantiates `GUIServer` in `__init__`, calls `start()` in `startup()`, `stop()` in `shutdown()`
@@ -322,7 +322,7 @@ Re-run the monitor mode commands after any NM restart.
 - `gui/templates/index.html` — single SPA; Leaflet vendored in-repo (`gui/static/leaflet/`); 5 tabs; dark theme
 - `gui/static/app.js` — WiFi deduplication by MAC; Leaflet dark tile layer with CSS invert filter
 - `gui/static/style.css` — KML-matched alert colors (red=high, orange=likely, yellow=suspicious)
-- `tests/test_gui.py` — 15 unit tests; no Flask server started during tests
+- `tests/test_gui.py` — 69 unit tests (durable history, mode toggle, sensor-health honesty, SSE); no Flask server started during tests
 
 ## Alert Engine
 
@@ -339,7 +339,7 @@ Re-run the monitor mode commands after any NM restart.
 
 - `main.py` — `PassiveVigilance` class; `asyncio.run(orchestrator.run())` entry point
 - Startup: all modules connect with graceful degradation — any module that fails logs a warning and is skipped
-- Poll intervals: GPS 1 s (blocking, via `run_in_executor`), readsb 5 s, Kismet 30 s, DroneRF continuous (background task)
+- Poll intervals: GPS 1 s (blocking, via `run_in_executor`), readsb 5 s, Kismet 30 s. The single-dongle SDR is time-shared by `SDRCoordinator` (ADS-B base + AIS slice; ACARS preemption on a >30s-held contact). DroneRF is retired (default off); its background-task machinery remains for reversibility but is not in the cycle. `main.py` (`PassiveVigilance`) handles startup/shutdown and delegates polling to `SensorOrchestrator` (`modules/orchestrator.py`)
 - Session output: `data/sessions/{session_id}/` — `summary.json`, `detections_wifi.shp`, `detections_aircraft.shp`, `detections_drone.shp`, `detections.geojson`
 - Shutdown sequence on SIGINT/SIGTERM: stop DroneRF → close Kismet/ADSB/GPS → write `summary.json` → write shapefiles → write GeoJSON/KML → WiGLE upload; each step is wrapped in its own try/except so one failure does not prevent the rest
 - `_emergency_flush()` — stdlib-only JSONL dump of all in-memory events to `{session_dir}/emergency_dump.jsonl`; called from the `except` block in `run()` before `finally`; uses no geopandas/requests to survive mid-crash
