@@ -180,6 +180,12 @@ main {
   cursor: help;
 }
 
+/* ACARS-derived route / flight shown inline next to the message badge. */
+.acars-route {
+  color: #8b949e;
+  font-size: 0.85em;
+}
+
 /* ── Toolbar ─────────────────────────────────────────────── */
 .toolbar {
   display: flex;

@@ -151,6 +151,11 @@ class SensorOrchestrator:
         # dongle). On a dedicated VHF dongle ACARS runs continuously (no trigger).
         self._acars_trigger_s = float(os.getenv("ACARS_TRIGGER_SECONDS", "30"))
         self._acars_window_s = float(os.getenv("ACARS_WINDOW_SECONDS", "25"))
+        # Radius for binding a position-carrying ACARS message to the nearest ADS-B
+        # contact when tail/callsign don't match. Generous (a position report and
+        # the ADS-B fix can be minutes apart → tens of km at cruise) but bounded so
+        # it never binds an unrelated distant contact.
+        self._acars_position_match_km = float(os.getenv("ACARS_POSITION_MATCH_KM", "50"))
         self._remote_id_poll_interval = remote_id_poll_interval
         self._health_banner_interval = health_banner_interval
         self._max_reconnect_attempts = max_reconnect_attempts
@@ -1273,12 +1278,16 @@ class SensorOrchestrator:
         return "".join(c for c in (s or "") if c.isalnum()).lower()
 
     def _correlate_acars(self, msg: dict) -> Optional[dict]:
-        '''Find the live ADS-B contact a decoded ACARS message belongs to — by tail ↔
-        registration first, then flight-id ↔ callsign. Returns the event or None.'''
+        '''Find the live ADS-B contact a decoded ACARS message belongs to.
+
+        Three passes, strongest first: tail ↔ registration, then flight-id ↔
+        callsign, then — for a message carrying a position report but no matching
+        identity — the ADS-B contact nearest the reported position within
+        ``ACARS_POSITION_MATCH_KM``. The position pass is what binds messages on
+        an airframe whose ADS-B callsign is blank (common on GA / military), which
+        the identity passes alone would strand. Returns the event or None.'''
         tail = self._ident_norm(msg.get("tail"))
         flight = self._ident_norm(msg.get("flight_id"))
-        if not tail and not flight:
-            return None
         for ev in self._aircraft_index.values():
             if tail:
                 reg = self._ident_norm(ev.get("registration"))
@@ -1288,7 +1297,46 @@ class SensorOrchestrator:
                 cs = self._ident_norm(ev.get("callsign"))
                 if cs and cs == flight:
                     return ev
-        return None
+        return self._correlate_acars_by_position(msg)
+
+    def _correlate_acars_by_position(self, msg: dict) -> Optional[dict]:
+        '''Nearest positioned ADS-B contact to a message's own lat/lon, within the
+        match radius. None if the message has no position or nothing is close.'''
+        mlat, mlon = msg.get("lat"), msg.get("lon")
+        if mlat is None or mlon is None:
+            return None
+        best = None
+        best_km = self._acars_position_match_km
+        for ev in self._aircraft_index.values():
+            elat, elon = ev.get("lat"), ev.get("lon")
+            if elat is None or elon is None:
+                continue
+            dist_km = _haversine_m(mlat, mlon, elat, elon) / 1000.0
+            if dist_km <= best_km:
+                best_km = dist_km
+                best = ev
+        return best
+
+    @staticmethod
+    def _acars_enrich_contact(matched: dict, msg: dict) -> None:
+        '''Fold a correlated message's structured fields onto the aircraft event so
+        the GUI row carries them: origin/destination (a route), the ACARS flight id
+        (when ADS-B broadcast none), and the latest ACARS-reported position. Written
+        under distinct keys so ADS-B's own fields are never overwritten.'''
+        origin = msg.get("origin")
+        destination = msg.get("destination")
+        if origin:
+            matched["acars_origin"] = origin
+        if destination:
+            matched["acars_destination"] = destination
+        if origin and destination:
+            matched["route"] = f"{origin}→{destination}"
+        flight = (msg.get("flight_id") or "").strip()
+        if flight:
+            matched["acars_flight"] = flight
+        if msg.get("lat") is not None and msg.get("lon") is not None:
+            matched["acars_lat"] = msg["lat"]
+            matched["acars_lon"] = msg["lon"]
 
     async def _poll_acars(self) -> None:
         '''Drain decoded ACARS messages; surface them and correlate to ADS-B contacts.'''
@@ -1316,13 +1364,21 @@ class SensorOrchestrator:
         for msg in pending:
             ts = msg.get("timestamp", now_iso)
             self._stats["acars_messages_seen"] += 1
+            if self._stats["acars_messages_seen"] == 1:
+                # First decoded message ever this session — a clear liveness signal
+                # that the decoder service is actually producing (the listener binds
+                # regardless, so "acars active" alone doesn't prove the feed works).
+                logger.info("ACARS: first decoded message received — decoder feed is live")
             record = {
                 "event_type": "acars", "tail": msg.get("tail"),
                 "flight_id": msg.get("flight_id"), "label": msg.get("label"),
-                "text": msg.get("text"), "timestamp": ts,
+                "text": msg.get("text"),
+                "origin": msg.get("origin"), "destination": msg.get("destination"),
+                "lat": msg.get("lat"), "lon": msg.get("lon"),
+                "timestamp": ts,
             }
             self._append_jsonl(self._session_dir / "acars.jsonl", record)
-            # Correlate to a live contact (tail↔reg / flight↔callsign).
+            # Correlate to a live contact (tail↔reg / flight↔callsign / position).
             matched = self._correlate_acars(msg)
             if matched is not None:
                 self._stats["acars_correlated"] += 1
@@ -1332,6 +1388,11 @@ class SensorOrchestrator:
                 # Bound the per-contact message list so a chatty airframe can't grow it.
                 if len(acars_list) > 20:
                     del acars_list[:-20]
+                self._acars_enrich_contact(matched, msg)
+                # Persist the enriched contact so /api/aircraft rebuilds the ACARS
+                # column after a refresh/restart — the disk aircraft log is otherwise
+                # only written by the ADS-B poll and would drop the enrichment.
+                self._append_jsonl(self._session_dir / "aircraft.jsonl", matched)
                 if self.gui_server is not None:
                     self.gui_server.push_event("aircraft", matched)
             # Always surface the raw decoded message on the ACARS feed. Bounded so a
