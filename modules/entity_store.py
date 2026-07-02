@@ -18,6 +18,7 @@ design (history); it is bounded by a time-based retention window — see
 import logging
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -49,7 +50,9 @@ class EntityStore:
 
     def __init__(self, db_path: Optional[str] = None,
                  retention_days: Optional[int] = None,
-                 prune_interval_s: Optional[int] = None) -> None:
+                 prune_interval_s: Optional[int] = None,
+                 prune_batch_rows: Optional[int] = None,
+                 prune_time_budget_s: Optional[float] = None) -> None:
         self._db_path = db_path or _DEFAULT_ENTITY_DB_PATH
         self._retention_days = (
             _DEFAULT_RETENTION_DAYS if retention_days is None else retention_days
@@ -57,12 +60,45 @@ class EntityStore:
         self._prune_interval_s = (
             _DEFAULT_PRUNE_INTERVAL_S if prune_interval_s is None else prune_interval_s
         )
+        # Retention-sweep bounds: rows per DELETE statement and wall-clock budget
+        # per sweep. The sweep runs on the asyncio poll thread, so one sweep must
+        # never be allowed to hold the loop for minutes (see prune_observations).
+        self._prune_batch_rows = max(1, int(
+            os.getenv("ENTITY_PRUNE_BATCH_ROWS", "5000")
+            if prune_batch_rows is None else prune_batch_rows))
+        self._prune_budget_s = float(
+            os.getenv("ENTITY_PRUNE_TIME_BUDGET_S", "1.0")
+            if prune_time_budget_s is None else prune_time_budget_s)
         self._last_prune: Optional[datetime] = None
         if self._db_path != ":memory:":
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path)
         self._conn.row_factory = sqlite3.Row
+        self._apply_pragmas()
         self._create_schema()
+
+    def _apply_pragmas(self) -> None:
+        """Tune the connection for an always-on writer on slow storage.
+
+        WAL + synchronous=NORMAL cut the per-commit fsync stall on the Pi's SD
+        card (every poll commits thousands of upserts on the asyncio thread);
+        busy_timeout rides out a transient lock instead of raising immediately.
+        auto_vacuum=INCREMENTAL lets the retention sweep hand freed pages back
+        to the filesystem — it only takes effect on a freshly created database
+        (an existing file needs a one-time offline VACUUM to adopt it), so it
+        is best-effort. Every pragma is guarded: a tuning failure must never
+        block the store.
+        """
+        for pragma in (
+            "PRAGMA auto_vacuum=INCREMENTAL",
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+            "PRAGMA busy_timeout=5000",
+        ):
+            try:
+                self._conn.execute(pragma)
+            except sqlite3.Error as exc:  # pragma: no cover - defensive
+                logger.debug("EntityStore pragma failed (%s): %s", pragma, exc)
 
     # ------------------------------------------------------------------
     # Schema
@@ -350,31 +386,82 @@ class EntityStore:
     # ------------------------------------------------------------------
 
     def prune_observations(self, now: Optional[datetime] = None) -> int:
-        """Delete observation rows older than the retention window and return the
-        number removed. A retention of 0 or fewer days disables pruning (keeps
-        history forever). Timestamps are uniform UTC ISO strings, so a string
-        comparison against the cutoff is correct."""
+        """Delete observation rows older than the retention window, in bounded
+        batches, and return the number removed this sweep.
+
+        A retention of 0 or fewer days disables pruning (keeps history
+        forever). Timestamps are uniform UTC ISO strings, so a string
+        comparison against the cutoff is correct.
+
+        The delete is batched (``ENTITY_PRUNE_BATCH_ROWS`` per statement)
+        under a wall-clock budget (``ENTITY_PRUNE_TIME_BUDGET_S``), committed
+        per batch, because this runs on the asyncio poll thread: one unbounded
+        DELETE over a large backlog held the loop past systemd's watchdog and
+        crash-looped the node (2026-06, ~28M-row table) — and, as a single
+        transaction, it rolled back on every kill, so no restart ever made
+        progress. Batching caps the stall, and per-batch commits make each
+        sweep's progress durable; a backlog larger than one budget drains
+        across successive sweeps.
+        """
         if self._retention_days <= 0:
             return 0
         now = now or datetime.now(timezone.utc)
         cutoff = _iso(now - timedelta(days=self._retention_days))
-        cur = self._conn.execute(
-            "DELETE FROM observations WHERE timestamp < ?", (cutoff,)
-        )
-        self._conn.commit()
-        deleted = cur.rowcount or 0
-        if deleted:
+        deadline = time.monotonic() + self._prune_budget_s
+        total = 0
+        while True:
+            cur = self._conn.execute(
+                "DELETE FROM observations WHERE rowid IN ("
+                "SELECT rowid FROM observations WHERE timestamp < ? LIMIT ?)",
+                (cutoff, self._prune_batch_rows),
+            )
+            self._conn.commit()
+            n = cur.rowcount or 0
+            total += n
+            if n < self._prune_batch_rows:
+                break  # backlog cleared
+            if time.monotonic() >= deadline:
+                logger.info(
+                    "EntityStore prune: time budget (%.1fs) hit after %d row(s) "
+                    "— remaining backlog resumes next sweep",
+                    self._prune_budget_s, total,
+                )
+                break
+        if total:
+            self._reclaim_pages()
             logger.info("EntityStore pruned %d observation(s) older than %d day(s)",
-                        deleted, self._retention_days)
-        return deleted
+                        total, self._retention_days)
+        return total
+
+    def _reclaim_pages(self) -> None:
+        """Hand a bounded number of freed pages back to the filesystem. A no-op
+        unless the database file was created with auto_vacuum enabled (see
+        _apply_pragmas); bounded so it can never become its own stall."""
+        try:
+            # fetchall() matters: the pragma frees pages as the statement is
+            # stepped, so an un-drained cursor reclaims nothing.
+            self._conn.execute("PRAGMA incremental_vacuum(2000)").fetchall()
+            self._conn.commit()
+        except sqlite3.Error as exc:  # pragma: no cover - defensive
+            logger.debug("EntityStore incremental_vacuum failed: %s", exc)
 
     def _maybe_prune(self, now: datetime) -> None:
         """Run the retention sweep at most once per prune interval. Guarded so a
-        prune failure never disturbs the write path that just committed."""
+        prune failure never disturbs the write path that just committed.
+
+        The first eligible sweep after construction is deferred by one
+        interval: sweeping on the first poll after a restart is what turned a
+        big backlog into a startup crash-loop (delete → watchdog kill →
+        restart → delete …), and startup is when the loop is busiest anyway.
+        The batching above bounds the sweep regardless; this keeps it out of
+        the startup window entirely.
+        """
         if self._retention_days <= 0:
             return
-        if (self._last_prune is not None
-                and (now - self._last_prune).total_seconds() < self._prune_interval_s):
+        if self._last_prune is None:
+            self._last_prune = now
+            return
+        if (now - self._last_prune).total_seconds() < self._prune_interval_s:
             return
         self._last_prune = now
         try:
