@@ -240,15 +240,16 @@ document.getElementById('alerts-clear').addEventListener('click', () => {
 
 // ── Status polling ───────────────────────────────────────────────────────────
 function applyHealth(health, active, gpsFix) {
-  const map_ = { gps: 's-gps', kismet: 's-kismet', adsb: 's-adsb', ais: 's-ais' };
+  const map_ = { gps: 's-gps', kismet: 's-kismet', ble: 's-ble', adsb: 's-adsb', ais: 's-ais', acars: 's-acars' };
   active = active || {};
   Object.entries(map_).forEach(([key, id]) => {
     const el = document.getElementById(id);
     if (!el) return;
-    // A sensor that isn't running (e.g. AIS off) shows as "off", not
-    // healthy. A missing modules_active key is treated as active (back-compat).
+    // A sensor that isn't running (e.g. AIS/ACARS off, or BLE controller down)
+    // shows as "off", not healthy. A missing modules_active key is treated as
+    // active (back-compat). BLE has no separate sensor_health flip, so absence => ok.
     const isActive = active[key] !== false;
-    const ok = health[key];
+    const ok = (key in health) ? health[key] : true;
     el.classList.remove('ok', 'warn', 'err', 'disabled');
     if (!isActive) {
       el.classList.add('disabled');
