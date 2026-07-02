@@ -139,8 +139,34 @@ class BaselineStore:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._apply_pragmas()
         self._create_schema()
         self._init_meta(now or datetime.now(timezone.utc))
+
+    def _apply_pragmas(self) -> None:
+        """Tune the connection for an always-on writer on SD-card storage.
+
+        During the learning window FixedScoring.upsert()s every device every poll
+        (thousands of rows), and each upsert commits — on the asyncio poll thread.
+        In the default rollback-journal + synchronous=FULL mode that is one fsync
+        per commit, so a busy poll turns into thousands of SD-card fsyncs on the
+        event loop: the exact stall the project keeps fighting. WAL +
+        synchronous=NORMAL make a commit a WAL append with no per-commit fsync
+        (durability still holds — WAL checkpoints, and a crash loses at most the
+        last commit, which the next poll re-observes). busy_timeout is belt-and-
+        braces (a single lock-serialised connection rarely sees SQLITE_BUSY).
+        Every pragma is guarded: a tuning failure must never block the store, and
+        WAL is a no-op on an in-memory DB. Matches the entity_store hardening.
+        """
+        for pragma in (
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+            "PRAGMA busy_timeout=5000",
+        ):
+            try:
+                self._conn.execute(pragma)
+            except sqlite3.Error as exc:  # pragma: no cover - defensive
+                logger.debug("BaselineStore pragma failed (%s): %s", pragma, exc)
 
     # ------------------------------------------------------------------
     # Schema / meta
