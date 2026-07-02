@@ -166,6 +166,7 @@ class GUIServer:
         _logging.getLogger("werkzeug").setLevel(_logging.WARNING)
 
         gui_token = self._gui_token
+        _TOKEN_COOKIE = "pv_gui_token"
 
         @app.before_request
         def check_auth():
@@ -174,9 +175,36 @@ class GUIServer:
             from flask import request as _req
             auth = _req.headers.get("Authorization", "")
             token_param = _req.args.get("token", "")
-            if auth == f"Bearer {gui_token}" or token_param == gui_token:
+            # Accept a cookie too. The dashboard's own sub-resources — the CSS/JS
+            # under /static, the /api/* fetches, and the /stream EventSource — can
+            # carry neither an Authorization header nor a ?token= query (a browser
+            # attaches nothing to <script src>/<link href>, and EventSource has no
+            # header API), so a token-gated node used to 401 its own assets and
+            # render blank. The page load authenticates once with ?token=, which
+            # sets the cookie below; every same-origin sub-request then carries it.
+            cookie_token = _req.cookies.get(_TOKEN_COOKIE, "")
+            if (auth == f"Bearer {gui_token}"
+                    or token_param == gui_token
+                    or cookie_token == gui_token):
                 return  # authorized
             return jsonify({"error": "Unauthorized"}), 401
+
+        @app.after_request
+        def persist_token_cookie(resp):
+            # When a request authenticates via ?token=, drop a session cookie so
+            # the browser carries it on the sub-resource requests it can't put a
+            # token on. Session cookie (no max-age) so it clears on browser close;
+            # SameSite=Strict so it is never sent cross-site; not Secure because
+            # the LAN dashboard is served over plain HTTP. No-op once already set.
+            if gui_token:
+                from flask import request as _req
+                if (_req.args.get("token", "") == gui_token
+                        and _req.cookies.get(_TOKEN_COOKIE) != gui_token):
+                    resp.set_cookie(
+                        _TOKEN_COOKIE, gui_token,
+                        httponly=True, samesite="Strict",
+                    )
+            return resp
 
         @app.route("/")
         def index():
