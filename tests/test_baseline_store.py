@@ -265,3 +265,35 @@ def test_recent_ema_survives_reopen(tmp_path):
     s2.upsert("mac:a", T0 + timedelta(hours=22), last_signal=-55, accumulate_baseline=False)
     assert s2.get_profile("mac:a").recent_signal_count == 2
     s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Durability pragmas — WAL cuts the per-commit fsync stall of the per-device,
+# per-poll upsert on the asyncio thread (matches the entity_store hardening).
+# The correctness invariant (never reset learning_start) is unaffected.
+# ---------------------------------------------------------------------------
+
+
+def test_file_backed_store_runs_in_wal_mode(tmp_path):
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=72, now=T0)
+    mode = store._conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode == "wal"
+    store.close()
+
+
+def test_bulk_upserts_durable_across_reopen_under_wal(tmp_path):
+    # A learning-phase burst (many devices, each its own commit) must all survive
+    # a clean close + reopen — WAL checkpoints on the final connection closing.
+    db = str(tmp_path / "b.db")
+    s1 = BaselineStore(db, baseline_hours=72, now=T0)
+    for i in range(200):
+        s1.upsert(f"mac:00:00:00:00:00:{i:02x}", T0, last_signal=-50 - (i % 10))
+    assert s1.profile_count() == 200
+    s1.close()
+
+    s2 = BaselineStore(db, baseline_hours=72, now=T0 + timedelta(hours=1))
+    assert s2.profile_count() == 200
+    assert s2.learning_start == T0            # invariant intact under WAL
+    p = s2.get_profile("mac:00:00:00:00:00:05")
+    assert p is not None and p.observation_count == 1
+    s2.close()
