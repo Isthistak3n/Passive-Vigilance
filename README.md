@@ -3,7 +3,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-848%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-849%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.7.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -235,7 +235,7 @@ it is restarted.
 | Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle, contact designators, current-sky aircraft + Remote ID tabs, durable detection/alert history across refresh & restart — 63 tests |
 | Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown, watchdog, current-sky indexes + bounded tracks — 87 tests |
 
-**848 tests passing** across all modules.
+**849 tests passing** across all modules.
 
 ---
 
