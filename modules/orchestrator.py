@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from modules import air_geometry, air_scoring, contact_designator, device_identity
+from modules.copresence import CoPresenceLinker
 from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
 from modules.sdr_manager import SDRMode
 from modules.wifi_fingerprint import compute_pnl_fingerprint
@@ -244,6 +245,50 @@ class SensorOrchestrator:
         # devices (the post-freeze growth fix); the dict values ARE the list
         # elements, so all_events stays a plain list for the shutdown writers.
         self._wifi_event_index: dict[str, dict] = {}
+        # Per-contact return tracking (keyed by the rotation-stable contact identity,
+        # NOT the MAC): last-seen datetime + a return counter, so a device that leaves
+        # the area and comes back is flagged a RETURN instead of a new contact — the
+        # WiFi/BT analogue of returning-aircraft detection.
+        self._contact_last_seen: dict[str, datetime] = {}
+        self._contact_return_counts: dict[str, int] = {}
+        self._wifi_return_gap_s = float(os.getenv("WIFI_RETURN_GAP_SECONDS", "900"))
+        self._contact_track_max = int(os.getenv("CONTACT_TRACK_MAX", "20000"))
+        # Cross-session returning-entity (P4 phase B): the durable contact registry in
+        # the EntityStore remembers a contact identity across restarts/days, so a device
+        # seen on a prior session/day is recognised as a RETURNING ENTITY. Consulted once
+        # per contact per session; the result is cached here and re-applied to every
+        # sighting of that contact this run. A quick restart is not a "prior session":
+        # the prior sighting must be older than this gap (or fall on a different UTC day).
+        self._contact_seen_this_session: set = set()
+        self._returning_entities: dict[str, dict] = {}
+        self._entity_return_min_gap_s = float(os.getenv("ENTITY_RETURN_MIN_GAP_SECONDS", "3600"))
+        # Cross-PHY co-presence linking (P4 phase C): group a PERSON's mobile radios
+        # (Wi-Fi client + BLE) that travel together into one person. APs are excluded
+        # — they don't move; they're the fixed environment used for resident-vs-visitor.
+        # Conservative by design (bias to a missed link over a false merge); off via
+        # CROSS_PHY_LINKING_ENABLED=false. Needs the durable store for prior links.
+        self._copresence_linker = None
+        self._person_of: dict = {}        # contact_key -> person_id (cluster)
+        self._person_size: dict = {}      # person_id -> member count
+        self._persisted_links: set = set()
+        self._person_alerted: set = set()
+        self._visitor_alerted: set = set()
+        if (os.getenv("CROSS_PHY_LINKING_ENABLED", "true").strip().lower() != "false"
+                and entity_store is not None):
+            self._copresence_linker = CoPresenceLinker(
+                min_polls=int(os.getenv("COPRESENCE_MIN_POLLS", "12")),
+                min_jaccard=float(os.getenv("COPRESENCE_MIN_JACCARD", "0.7")),
+                fixture_fraction=float(os.getenv("COPRESENCE_FIXTURE_FRACTION", "0.5")),
+                min_obs_polls=int(os.getenv("COPRESENCE_MIN_OBS_POLLS", "6")),
+                min_fixture_polls=int(os.getenv("COPRESENCE_MIN_FIXTURE_POLLS", "30")),
+            )
+            try:
+                self._copresence_linker.load_prior_links(entity_store.known_links())
+            except Exception:
+                logger.debug("loading prior contact links failed", exc_info=True)
+        # Resident-vs-visitor: a persistent visitor (novel, no local-network affinity)
+        # fires one display alert once it has lingered this many observations.
+        self._visitor_alert_min_obs = int(os.getenv("VISITOR_ALERT_MIN_OBS", "20"))
         self.aircraft_detections: list[dict] = []
         # Index icao -> the aircraft event already in aircraft_detections, so a
         # plane re-seen every poll becomes ONE event accumulating a positions[]
@@ -832,6 +877,11 @@ class SensorOrchestrator:
             try:
                 self._anchor_map = self.entity_store.distinctive_anchors(
                     max_df=int(os.getenv("FP_DISTINCTIVE_MAX_DF", "3")))
+                # Medium tier: a looser rarity bar (df <= FP_MEDIUM_MAX_DF) so a device
+                # whose rarest SSID is only moderately common still gets a stable
+                # display anchor — the contact identity, NOT the scoring key.
+                self._anchor_map_medium = self.entity_store.distinctive_anchors(
+                    max_df=int(os.getenv("FP_MEDIUM_MAX_DF", "12")))
                 self._anchor_map_ts = time.monotonic()
             except Exception:
                 logger.debug("distinctive_anchors refresh failed", exc_info=True)
@@ -870,12 +920,21 @@ class SensorOrchestrator:
             "network_affinity": list(affinity.keys()),
         }
 
-    def _contact_designator(self, event) -> str:
-        '''Build the stable CLASS-IDENT-# contact designator for a WiFi/BT event.
+    def _contact_designator(self, event, device=None) -> str:
+        '''Build the stable CLASS-IDENT-# contact designator for a WiFi/BT event.'''
+        return self._resolve_contact(event, device)[0]
 
-        Class + IDENT come from fields already on the DetectionEvent; the instance
-        number is the persisted, rotation-stable assignment keyed by the device's
-        fingerprint (design-contact-designators.md).
+    def _resolve_contact(self, event, device=None) -> tuple:
+        '''Resolve ``(designator, confidence, identity_key)`` for a WiFi/BT event.
+
+        Class + IDENT come from fields on the DetectionEvent; the instance number is
+        the persisted, rotation-stable assignment keyed by the device's identity. The
+        identity prefers the more-inclusive DISPLAY contact key (design 6 tiers) when
+        the raw device record is available — so a randomized device re-links to one
+        contact across rotation/return even when its content is too weak to score on —
+        falling back to the scoring fingerprint, then the MAC. The confidence tier
+        (strong/medium/weak) rides along for the GUI so a medium (over-merge-possible)
+        link is shown as "likely same", not certain.
         '''
         cls = contact_designator.class_token(event.device_type)
         ident = contact_designator.ident_token(
@@ -884,9 +943,206 @@ class SensorOrchestrator:
             mac=event.mac,
         )
         group = contact_designator.group_key(cls, ident)
-        identity_key = event.fingerprint or ("mac:" + event.mac)
+        contact_key, confidence = (None, "weak")
+        if device is not None:
+            contact_key, confidence = device_identity.contact_identity(device)
+        if contact_key:
+            identity_key = contact_key
+        elif event.fingerprint and not str(event.fingerprint).startswith("mac:"):
+            # A real content fingerprint from the scorer (wifi-fp:/ble-fp:). Note
+            # FixedScoring sets event.fingerprint to "mac:<mac>" for un-fingerprinted
+            # devices (PersistenceEngine leaves it ""), so guard against a mac: key
+            # here — it is NOT a strong identity and must stay weak/mac-keyed.
+            identity_key, confidence = event.fingerprint, "strong"
+        else:
+            identity_key, confidence = "mac:" + event.mac, "weak"
         number = self._assign_contact_number(identity_key, group)
-        return contact_designator.designator(cls, ident, number)
+        return contact_designator.designator(cls, ident, number), confidence, identity_key
+
+    def _note_wifi_return(self, identity_key: str, now: datetime) -> tuple:
+        '''Track per-contact last-seen so a device that left the area and came back is
+        marked a RETURN (like a returning aircraft) instead of a fresh contact.
+
+        Returns ``(returning, return_count)``. A gap longer than WIFI_RETURN_GAP_SECONDS
+        since this identity was last seen counts as a return; continuous sightings do
+        not. A weak (``mac:``) identity rotates, so returns are never claimed on it.
+        '''
+        store = self._contact_last_seen
+        prev = store.get(identity_key)
+        returning = False
+        if prev is not None and not identity_key.startswith("mac:"):
+            gap = (now - prev).total_seconds()
+            if gap > self._wifi_return_gap_s:
+                returning = True
+                self._contact_return_counts[identity_key] = (
+                    self._contact_return_counts.get(identity_key, 0) + 1)
+        store[identity_key] = now
+        # Bound the tracking dicts across a long session (distinct identities only).
+        if len(store) > self._contact_track_max:
+            oldest = sorted(store.items(), key=lambda kv: kv[1])[: len(store) // 5]
+            for k, _ in oldest:
+                store.pop(k, None)
+                self._contact_return_counts.pop(k, None)
+        return returning, self._contact_return_counts.get(identity_key, 0)
+
+    def _note_cross_session_return(self, contact_key: str, confidence: str,
+                                   now: datetime) -> dict:
+        '''Recognise a contact seen on a PRIOR session/day as a returning entity (P4-B).
+
+        Consults the EntityStore's durable contact registry once per contact per
+        session (cached in ``_returning_entities`` and re-applied to every later
+        sighting this run), and records this session's sighting. Returns a dict of
+        display fields — ``returning_entity`` plus prior-visit context — or an
+        all-False default. Never claims a return on a ``mac:`` identity (rotates,
+        can't be tracked across sessions) or without a durable store.
+        '''
+        default = {"returning_entity": False, "entity_visits": 0,
+                   "entity_days_known": 0, "entity_last_seen": None}
+        if (not contact_key or contact_key.startswith("mac:")
+                or self.entity_store is None):
+            return default
+        cached = self._returning_entities.get(contact_key)
+        if cached is not None:
+            return cached
+        if contact_key in self._contact_seen_this_session:
+            # Seen this session but not flagged returning — cache the negative too.
+            self._returning_entities[contact_key] = default
+            return default
+        self._contact_seen_this_session.add(contact_key)
+        try:
+            prior = self.entity_store.record_contact_sighting(
+                contact_key, now, self.session_id)
+        except Exception as exc:
+            logger.debug("contact registry sighting failed: %s", exc)
+            return default
+        result = default
+        if prior.get("known") and prior.get("last_session") != self.session_id:
+            prior_seen = prior.get("prior_last_seen")
+            gap_ok = True
+            if prior_seen is not None:
+                gap_ok = (now - prior_seen).total_seconds() >= self._entity_return_min_gap_s
+                # A different UTC day always counts, even inside the min gap.
+                if not gap_ok and prior_seen.astimezone(timezone.utc).date() != now.astimezone(timezone.utc).date():
+                    gap_ok = True
+            if gap_ok:
+                result = {
+                    "returning_entity": True,
+                    "entity_visits": prior.get("visits", 0) + 1,
+                    "entity_days_known": prior.get("distinct_days", 0),
+                    "entity_last_seen": prior_seen.isoformat() if prior_seen else None,
+                    "entity_confidence": confidence,
+                }
+                label = contact_key.split(":", 1)[-1][:12]
+                logger.info(
+                    "Returning entity: contact %s seen again — visit ~%d, last seen %s",
+                    label, result["entity_visits"], result["entity_last_seen"],
+                )
+                self._record_alert(
+                    "wifi", "Returning contact — seen before",
+                    f"A contact last seen {result['entity_last_seen']} is back "
+                    f"(visit ~{result['entity_visits']}, known across "
+                    f"{result['entity_days_known']} day(s)).",
+                    severity="default", contact_key=contact_key,
+                    returning_entity=True, entity_visits=result["entity_visits"],
+                )
+        self._returning_entities[contact_key] = result
+        return result
+
+    # ------------------------------------------------------------------
+    # Cross-PHY co-presence linking + resident/visitor (P4 phase C)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_mobile_contact(device_type: str) -> bool:
+        '''True for a MOBILE device a person carries (Wi-Fi client / BLE), False for
+        infrastructure (AP, bridge). Only mobile contacts are person-linked; APs are
+        the fixed environment used for resident-vs-visitor.'''
+        dt = (device_type or "").lower()
+        toks = dt.split()
+        if "ap" in toks or "bridged" in dt or "wds" in toks:
+            return False
+        return "client" in dt or "btle" in dt or "ble" in dt or "bluetooth" in dt
+
+    @staticmethod
+    def _resident_status(is_mobile: bool, enriched: dict, score_breakdown: dict) -> str:
+        '''Classify a MOBILE contact against the local environment (the APs):
+
+          * ``""``       — not a mobile device (AP / bridge). Infrastructure IS the
+            environment, so it is never called resident or visitor.
+          * ``resident`` — probes for a network beaconed HERE (network_affinity), or
+            is a known baseline device (novelty off) — it belongs to this place.
+          * ``visitor``  — novel (not in the learned baseline) AND no affinity to any
+            local network: a device that does not belong.
+          * ``unknown``  — a mobile device with no baseline signal (e.g. mobile-mode
+            scoring, which has no novelty). Conservative: only say "visitor" on real
+            baseline evidence.
+        '''
+        if not is_mobile:
+            return ""
+        if enriched and enriched.get("network_affinity"):
+            return "resident"
+        sb = score_breakdown or {}
+        if "novelty" in sb:  # fixed-mode: baseline membership is known
+            return "visitor" if sb.get("novelty") else "resident"
+        return "unknown"
+
+    def _update_copresence(self, present_keys: set, now: datetime) -> None:
+        '''Feed this poll's present MOBILE contact identities to the linker, refresh
+        the person clusters, and durably persist any newly-established link (once).
+        Runs once per Kismet poll, after the per-device loop — off the per-device
+        hot path, and bounded inside the linker.'''
+        linker = self._copresence_linker
+        if linker is None:
+            return
+        try:
+            linker.observe(present_keys)
+            self._person_of = linker.clusters()
+        except Exception as exc:
+            logger.debug("co-presence update failed: %s", exc)
+            return
+        # person sizes for the GUI
+        sizes: dict = {}
+        for pid in self._person_of.values():
+            sizes[pid] = sizes.get(pid, 0) + 1
+        self._person_size = sizes
+        # Persist newly-established links once, and announce a newly-formed person.
+        try:
+            for a, b, _co, _jac in linker.established_links():
+                pair = (a, b) if a <= b else (b, a)
+                if pair in self._persisted_links:
+                    continue
+                self._persisted_links.add(pair)
+                if self.entity_store is not None:
+                    self.entity_store.record_contact_link(a, b, now)
+                pid = self._person_of.get(a)
+                if pid and pid not in self._person_alerted:
+                    self._person_alerted.add(pid)
+                    members = self._person_size.get(pid, 2)
+                    self._record_alert(
+                        "wifi", "Linked contacts — likely one person",
+                        f"{members} mobile radios appear to travel together "
+                        f"(person {str(pid).split(':', 1)[-1][:10]}).",
+                        severity="default", person_id=pid, member_count=members,
+                    )
+        except Exception as exc:
+            logger.debug("co-presence link persist failed: %s", exc)
+
+    def _maybe_alert_visitor(self, contact_key: str, belongs: str,
+                             observation_count: int, contact: str) -> None:
+        '''One display alert (no phone page) when a persistent VISITOR — novel, no
+        local-network affinity — has lingered past the observation threshold.'''
+        if (belongs != "visitor" or not contact_key
+                or contact_key.startswith("mac:")
+                or observation_count < self._visitor_alert_min_obs
+                or contact_key in self._visitor_alerted):
+            return
+        self._visitor_alerted.add(contact_key)
+        self._record_alert(
+            "wifi", f"Visitor of interest — {contact}",
+            f"A device with no affinity to any local network has lingered "
+            f"({observation_count} obs) and is not part of the baseline.",
+            severity="default", contact_key=contact_key, belongs="visitor",
+        )
 
     def _assign_contact_number(self, identity_key: str, group_key: str) -> int:
         '''Persisted-stable instance number via the entity store; a stable hash
@@ -945,13 +1201,20 @@ class SensorOrchestrator:
         # signature. TTL-cached; a device with no distinctive anchor is left without
         # one and stays mac:-keyed (un-trackable, as before).
         anchor_map = self._distinctive_anchor_map()
-        if anchor_map:
+        anchor_map_medium = getattr(self, "_anchor_map_medium", {})
+        if anchor_map or anchor_map_medium:
             for d in devices:
                 fp = d.get("probe_fingerprint")
-                if fp:
-                    anchor = anchor_map.get(fp)
-                    if anchor:
-                        d["fp_anchor"] = anchor
+                if not fp:
+                    continue
+                anchor = anchor_map.get(fp)
+                if anchor:
+                    d["fp_anchor"] = anchor
+                # Medium anchor drives the display CONTACT identity only (not scoring),
+                # so a device with no strong anchor can still re-link on return.
+                medium = anchor_map_medium.get(fp)
+                if medium:
+                    d["fp_anchor_medium"] = medium
 
         # Live "nearby" feed for the mobile GUI — every currently-polled device
         # (WiFi + BLE), independent of the persistence engine's score/GPS-cluster
@@ -988,9 +1251,28 @@ class SensorOrchestrator:
             logger.warning("PersistenceEngine update error: %s", exc)
             return
         dev_by_mac = {d.get("macaddr"): d for d in devices}
+        present_mobile_keys: set = set()
         for event in detection_events:
             self._stats["persistent_detections"] += 1
-            enriched = self._enriched_identity_fields(dev_by_mac.get(event.mac))
+            device = dev_by_mac.get(event.mac)
+            enriched = self._enriched_identity_fields(device)
+            # Resolve the display contact ONCE (stable across MAC rotation) and check
+            # whether this identity is returning after an absence.
+            contact, contact_confidence, contact_key = self._resolve_contact(event, device)
+            now_dt = datetime.now(timezone.utc)
+            returning, return_count = self._note_wifi_return(contact_key, now_dt)
+            # Cross-session: was this contact here on a prior session/day? (P4-B)
+            xsession = self._note_cross_session_return(contact_key, contact_confidence, now_dt)
+            # Environment (P4-C): resident vs visitor, and person clustering of the
+            # mobile radios. Only mobile contacts (Wi-Fi client / BLE) are linked;
+            # APs are the fixed environment behind the resident/visitor call.
+            is_mobile = self._is_mobile_contact(event.device_type)
+            belongs = self._resident_status(is_mobile, enriched, event.score_breakdown)
+            if is_mobile and contact_key and not contact_key.startswith("mac:"):
+                present_mobile_keys.add(contact_key)
+            person_id = self._person_of.get(contact_key)
+            person_size = self._person_size.get(person_id, 0) if person_id else 0
+            self._maybe_alert_visitor(contact_key, belongs, event.observation_count, contact)
             existing = self._wifi_event_index.get(event.mac)
             if existing is not None:
                 # Same device flagged again — update the ongoing detection in place
@@ -1008,9 +1290,18 @@ class SensorOrchestrator:
                     "lat": event.locations[0]["lat"] if event.locations else None,
                     "lon": event.locations[0]["lon"] if event.locations else None,
                     "locations": event.locations,
+                    "contact": contact, "contact_key": contact_key,
+                    "contact_confidence": contact_confidence,
+                    "returning": returning or existing.get("returning", False),
+                    "return_count": return_count,
+                    "returning_entity": xsession["returning_entity"] or existing.get("returning_entity", False),
+                    "entity_visits": xsession["entity_visits"],
+                    "entity_days_known": xsession["entity_days_known"],
+                    "entity_last_seen": xsession["entity_last_seen"],
+                    "belongs": belongs, "person_id": person_id, "person_size": person_size,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
-                if event.alert_level != prev_level:
+                if event.alert_level != prev_level or returning:
                     self._append_jsonl(self._session_dir / "events.jsonl", existing)
                     if self.gui_server is not None:
                         self.gui_server.push_event("wifi", existing)
@@ -1022,7 +1313,15 @@ class SensorOrchestrator:
                     "ssid": event.ssid,
                     "fingerprint": event.fingerprint,
                     "fingerprint_label": event.fingerprint_label,
-                    "contact": self._contact_designator(event),
+                    "contact": contact,
+                    "contact_key": contact_key,
+                    "contact_confidence": contact_confidence,
+                    "returning": returning, "return_count": return_count,
+                    "returning_entity": xsession["returning_entity"],
+                    "entity_visits": xsession["entity_visits"],
+                    "entity_days_known": xsession["entity_days_known"],
+                    "entity_last_seen": xsession["entity_last_seen"],
+                    "belongs": belongs, "person_id": person_id, "person_size": person_size,
                     # Which signal(s) fired — so a soak can decompose the flag mix.
                     "score_breakdown": event.score_breakdown,
                     "first_seen": event.first_seen.isoformat(), "last_seen": event.last_seen.isoformat(),
@@ -1049,7 +1348,6 @@ class SensorOrchestrator:
             elif await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
                 self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
                 self._stats["alerts_sent"] += 1
-                contact = self._contact_designator(event)
                 self._record_alert(
                     "wifi", f"{contact} — {event.alert_level}",
                     f"{event.device_type or 'device'} {event.mac}: score "
@@ -1060,6 +1358,10 @@ class SensorOrchestrator:
                 )
             else:
                 self._stats["alerts_rate_limited"] += 1
+        # After the per-device loop: fold this poll's present mobile radios into the
+        # co-presence linker and refresh the person clusters (bounded, off the hot
+        # path). Person ids attach to events on the next poll.
+        self._update_copresence(present_mobile_keys, datetime.now(timezone.utc))
         self._write_session_summary()
 
     async def _poll_drone_rf(self) -> None:

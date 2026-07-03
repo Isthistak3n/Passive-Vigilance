@@ -358,6 +358,35 @@ tr:hover td { background: #161b22; }
 }
 tr.returning-row { background: rgba(210, 153, 34, 0.08); }
 
+/* Medium-confidence contact link ("likely same", looser identity anchor). */
+.conf-medium {
+  color: #8b949e;
+  font-weight: 700;
+  cursor: help;
+  margin-left: 3px;
+}
+
+/* Cross-session "seen before" marker — a contact known from a prior session/day. */
+.known-entity {
+  color: #bc8cff;
+  font-weight: 700;
+  font-size: 11px;
+  margin-left: 4px;
+  cursor: help;
+}
+
+/* Environment: resident vs visitor, and person (linked mobile radios) cluster. */
+.belongs-resident { color: #3fb950; font-size: 11px; margin-left: 4px; cursor: help; }
+.belongs-visitor  { color: #f85149; font-weight: 700; font-size: 11px; margin-left: 4px; cursor: help; }
+.person-badge {
+  color: #58a6ff;
+  font-weight: 700;
+  font-size: 11px;
+  margin-left: 4px;
+  cursor: help;
+}
+tr.visitor-row { background: rgba(248, 81, 73, 0.06); }
+
 /* ── Rotating-address count badge (WiFi/BT identity collapse) ───────────────── */
 .addr-count {
   display: inline-block;

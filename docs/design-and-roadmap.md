@@ -210,19 +210,25 @@ HT/VHT/HE capability, IE set + ordering, the probe-SSID set, Kismet's `probe_fin
 TX-power. Caveats: some stacks randomize IE ordering or send minimal broadcast-only probes;
 infrastructure APs don't randomize (no special handling needed).
 
-**Cross-modal fusion (future).** A person carries WiFi + BLE devices that beacon *together*;
-a co-occurring WiFi-fp + BLE wearable-cluster is a "person" entity more stable than any single
-radio, and its re-appearance is a **returning person** — the counter-surveillance payoff.
+**Cross-modal fusion (SHIPPED, phase C).** A person carries WiFi + BLE devices that beacon
+*together*; a co-occurring WiFi-fp + BLE cluster is a "person" more stable than any single radio.
+`modules/copresence.py` links **mobile** contacts (Wi-Fi client + BLE; APs excluded) that are
+present in nearly the same polls (co-presence count + Jaccard) with a transience guard, so an
+always-on ambient device never fuses with a visitor and two fixtures never fuse. Conservative
+(bias to a missed link over a false merge), bounded, off via `CROSS_PHY_LINKING_ENABLED`; links
+persist (`contact_links`) so a returning person re-links fast. Display/identity only.
 
 **Entity store landing.** `modules/entity_store.py` (durable SQLite: `probe_evidence`,
-`device_fingerprint`, `entities`, `observations`, plus `contact_designator` and `pnl_evidence`)
-records every device via `record_poll()` at the poll site, so it captures for **both** modes
-(orthogonal to scoring). Per-device rows are real upserts; only `observations` grows, bounded
-by a retention sweep (`ENTITY_OBSERVATION_RETENTION_DAYS` default 30, 0 = forever; swept at
-most every `ENTITY_PRUNE_INTERVAL_SECONDS` default 3600). Guarded — a store failure never
-affects capture or detection. **Shipped:** within-session identity. **Remaining for P4:** the
-*cross-session* pass — link fingerprints into stable entities across days and emit "returning
-entity."
+`device_fingerprint`, `entities`, `observations`, `contact_designator`, `pnl_evidence`, plus
+the phase-B `contact_registry` and phase-C `contact_links`) records every device via
+`record_poll()` at the poll site, so it captures for **both** modes (orthogonal to scoring).
+Per-device rows are real upserts; only `observations` grows, bounded by a batched, WAL-backed
+retention sweep (`ENTITY_OBSERVATION_RETENTION_DAYS` default 30, 0 = forever; swept at most
+every `ENTITY_PRUNE_INTERVAL_SECONDS` default 3600). Guarded — a store failure never affects
+capture or detection. **Shipped:** within-session identity (phase A), *cross-session*
+returning-entity recognition (phase B — `contact_registry` remembers a contact across
+sessions/days and flags "seen before"), and cross-PHY person linking (phase C). All
+display/identity — the scoring key is untouched.
 
 **Enrichment round 1 (#146, capture+keying+GUI only — scoring key deliberately unchanged
 until validated on real captures):**
@@ -484,11 +490,13 @@ detector you can't trust during learning isn't deployable regardless.
    read) + the owed P1 approaching walk-test. Closes "blind while learning" and "fatigues over
    days" → run a **short confirmation soak** read for during-learning and multi-day FP
    behaviour.
-2. **Fingerprinting program (round 2+).** Validate the shipped PNL/reconnect enrichment on real
-   captures, then wire it into scoring; then cross-PHY WiFi↔BT linking (one device → one
-   contact).
-3. **Cross-session returning-entity (P4 remainder).** Link fingerprints into stable entities
-   across days/sessions and emit "returning entity" — the original counter-surveillance payoff.
+2. **Fingerprinting program (round 2+).** ✅ Contact-identity tiers, within-session return,
+   cross-session returning-entity, cross-PHY person linking, and resident-vs-visitor are shipped
+   (phases A–C, all display/identity). Remaining: validate the shipped PNL/reconnect enrichment
+   on real captures and wire it into *scoring* (still deliberately identity-only today), and
+   calibrate the medium-tier / co-presence thresholds on a multi-day soak.
+3. **Cross-session returning-entity (P4).** ✅ Shipped (phase B): a durable contact registry
+   remembers a contact across sessions/days and flags "seen before" (returning entity).
 4. **AP evil-twin detection.** Fingerprint AP beacons; flag a known SSID appearing with a new
    IE set/BSSID, or an AP beaconing what nearby devices probe for (karma). Plus the **P7
    remainder** (durable cross-day air baseline + daily-orbiter novelty suppression, GUI severity
@@ -508,7 +516,7 @@ the detector.
 | **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Merged & green; owes the positive walk-test | **① (owes walk-test)** |
 | **P2** | Egregious-during-baseline safety net (§5.2) | ◑ Implemented (Phase 2.6) — density-tuned Wi-Fi + modality-specific BLE threshold, now paging via `force_page` (the 0.5-score events were display-only before the fix). *Owes:* the on-chase calibration walk-test (does a deliberately-close device page without flooding) | **① lead (owes walk-test)** |
 | **P3** | Adaptation — rolling baseline (§5.4) | ◑ Implemented & wired — `promotion_policy.py` (swappable criterion, slow-in/fast-out invariant), `BaselineStore` promote/demote + post-freeze accumulator, `FixedScoring.run_adaptation_sweep`, the guarded `_adaptation_sweep_loop` task, 30 passing tests. Defaults `off`; **activated on chase** (`ADAPTATION_POSTURE=conservative`). *Owes:* multi-day post-freeze validation that FP decays without absorbing an intermittent returner | **① lead (owes validation)** |
-| **P4** | Cross-session entity resolution | ◑ Within-session fingerprint capture+keying merged & live (flood ~36→3–5/cycle); round-1 PNL/reconnect enrichment merged (capture+GUI only). Cross-session *returning-entity* linkage + scoring integration remain | ②/③ |
+| **P4** | Cross-session entity resolution + cross-PHY | ✅ Phases A–C shipped (branch soaking): contact-identity tiers (strong/medium) + within-session return (A); durable cross-session returning-entity via `contact_registry` (B); cross-PHY person linking via `copresence.py` + resident-vs-visitor (C). All display/identity — scoring key untouched. *Owed:* multi-day threshold calibration (medium tier / co-presence), and wiring identity into scoring | ②/③ |
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, bounded tracks, ID-less split, Remote ID pruning + surface; 24 h retention; returning-ICAO as same identity | ✅ shipped |
 | **P7** | Aircraft of interest: orbit/loiter detection (§9) | ◑ Mostly shipped — geometry + scorer (`air_geometry.py`/`air_scoring.py`), live scoring in `_poll_adsb`, alerting reframed to of-interest only (soak #3 confirmed). *Deferred:* durable cross-day per-ICAO baseline + daily-orbiter suppression; GUI severity badge; Remote ID loiter fusion | follow-on |
@@ -547,12 +555,25 @@ without swallowing an intermittent returner. *Exit:* FP decays without absorbing
 returners. *Deferred:* swapping in `ConsistencyPatternPolicy`; a "graveyard" GUI panel for
 demotions (the producer ships; the consumer is later).
 
-**P4 — Cross-session entity resolution.** Within-session identity is live (§6). Remaining: a
-resolution pass over the entity store merging fingerprints/probe evidence into stable entities
-across sessions, surfacing "returning entity." *Tests:* two MAC-rotated sightings sharing a
-fingerprint resolve to one entity; distinct devices don't merge; a known device re-identifies
-across a restart and a day boundary. *Exit:* cross-session re-identification works on known
-devices.
+**P4 — Cross-session entity resolution + cross-PHY.** ✅ Shipped across three phases (branch
+`feat/contact-identity-tiers`, soaking on chase before merge), all display/identity — the
+scoring key is deliberately untouched:
+- **A — contact-identity tiers + within-session return.** A device re-links across rotation at a
+  *strong* (rare distinctive SSID anchor) or *medium* (`FP_MEDIUM_MAX_DF`, looser anchor) tier;
+  the GUI collapses its rotating addresses into one row and flags a **return** after an absence
+  (`WIFI_RETURN_GAP_SECONDS`).
+- **B — cross-session returning-entity.** `EntityStore.contact_registry` remembers a contact
+  across sessions/days (visits, distinct days) and flags a **returning entity** ("seen before")
+  when it reappears in a new session — guarded so a quick restart isn't a false return
+  (`ENTITY_RETURN_MIN_GAP_SECONDS`).
+- **C — cross-PHY person linking + resident/visitor.** `copresence.py` links a person's co-present
+  **mobile** radios (Wi-Fi client + BLE; APs excluded) into one person, over-merge-safe (Jaccard +
+  transience), persisted (`contact_links`); the local APs anchor a **resident-vs-visitor** call
+  (local-network affinity / baseline membership vs. a lingering novel stranger).
+*Owed:* multi-day calibration of the medium-tier and co-presence thresholds; wiring the
+identity signals into scoring (they inform display/awareness today, not what pages). *Honest
+limit:* re-identification is only as stable as the contact key, and cross-PHY links are sparse
+where BLE capture is thin.
 
 **P5 owed slice.** The learning-vs-frozen baseline framing (time remaining) and the anomaly
 list framed by signal/severity. (Durable history + live-mirror are done.)

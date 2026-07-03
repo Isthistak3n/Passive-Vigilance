@@ -44,6 +44,17 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _parse_iso(s) -> Optional[datetime]:
+    """Parse a stored UTC ISO timestamp, tolerant of a naive string; None on failure."""
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 class EntityStore:
     """SQLite-backed durable store for probe evidence, fingerprints, entities,
     and observation history. All writes are additive; none affect scoring."""
@@ -229,6 +240,40 @@ class EntityStore:
                 last_seen   TEXT    NOT NULL,
                 match_count INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (probe_fingerprint, ssid)
+            )
+            """
+        )
+        # Cross-session contact registry (P4 phase B): the durable memory of a
+        # rotation-stable CONTACT identity (the wifi-fp:/ble-fp: key from
+        # device_identity.contact_identity) — when it was first/last seen, how many
+        # distinct SESSIONS and distinct DAYS it has appeared in, and the last session
+        # id. This is what lets a device seen on a prior day/restart be recognised as
+        # a RETURNING ENTITY rather than a fresh contact ("has this been here before?").
+        # Keyed on the contact identity, NOT the MAC, so it survives rotation.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contact_registry (
+                identity_key  TEXT PRIMARY KEY,
+                first_seen    TEXT    NOT NULL,
+                last_seen     TEXT    NOT NULL,
+                last_session  TEXT,
+                last_day      TEXT    NOT NULL,
+                visits        INTEGER NOT NULL DEFAULT 1,
+                distinct_days INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        # Cross-PHY co-presence links (P4 phase C): a pair of rotation-stable contact
+        # identities observed travelling together (present in nearly the same polls) —
+        # the two radios of one "person". Durable so a returning pair re-links fast.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contact_links (
+                key_a        TEXT NOT NULL,
+                key_b        TEXT NOT NULL,
+                first_linked TEXT NOT NULL,
+                last_seen    TEXT NOT NULL,
+                PRIMARY KEY (key_a, key_b)
             )
             """
         )
@@ -476,9 +521,86 @@ class EntityStore:
     def count(self, table: str) -> int:
         if table not in ("probe_evidence", "device_fingerprint", "entities",
                          "observations", "contact_designator", "pnl_evidence",
-                         "beacon_evidence", "network_affinity"):
+                         "beacon_evidence", "network_affinity", "contact_registry",
+                         "contact_links"):
             raise ValueError(f"unknown table {table!r}")
         return self._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+
+    def record_contact_link(self, key_a: str, key_b: str, now: datetime) -> None:
+        """Persist (or refresh) a co-presence link between two contact identities
+        (P4-C). Keys are stored order-independently so a pair has one durable row,
+        letting a returning person re-link immediately across sessions."""
+        a, b = (key_a, key_b) if key_a <= key_b else (key_b, key_a)
+        self._conn.execute(
+            "INSERT INTO contact_links (key_a, key_b, first_linked, last_seen) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(key_a, key_b) DO UPDATE SET last_seen = excluded.last_seen",
+            (a, b, _iso(now), _iso(now)),
+        )
+        self._conn.commit()
+
+    def known_links(self) -> list:
+        """All durable contact links as ``[(key_a, key_b), ...]`` — loaded at startup
+        so a person seen on a prior session/day re-links fast."""
+        return [(r["key_a"], r["key_b"]) for r in self._conn.execute(
+            "SELECT key_a, key_b FROM contact_links")]
+
+    def record_contact_sighting(self, identity_key: str, now: datetime,
+                                session_id: str) -> dict:
+        """Record that CONTACT ``identity_key`` was seen ``now`` in ``session_id`` and
+        return its state as it was BEFORE this sighting (cross-session memory, P4-B).
+
+        The returned dict describes the prior record so the caller can decide whether
+        this is a returning entity::
+
+            {"known": bool,                 # was this contact in the registry already?
+             "prior_last_seen": datetime|None,
+             "visits": int,                 # distinct sessions before this one
+             "distinct_days": int,          # distinct UTC days before this one
+             "last_session": str|None}      # the session it was last seen in
+
+        A ``visits``/``distinct_days`` only advances when the session / UTC day changes,
+        so many sightings within one run don't inflate the counts. Called once per new
+        contact per session by the orchestrator, so write volume is low. Never called
+        for a ``mac:`` identity (those rotate and can't be tracked across sessions).
+        """
+        today = now.astimezone(timezone.utc).date().isoformat()
+        row = self._conn.execute(
+            "SELECT first_seen, last_seen, last_session, last_day, visits, distinct_days "
+            "FROM contact_registry WHERE identity_key = ?", (identity_key,),
+        ).fetchone()
+        if row is None:
+            self._conn.execute(
+                "INSERT INTO contact_registry "
+                "(identity_key, first_seen, last_seen, last_session, last_day, visits, distinct_days) "
+                "VALUES (?, ?, ?, ?, ?, 1, 1)",
+                (identity_key, _iso(now), _iso(now), session_id, today),
+            )
+            self._conn.commit()
+            return {"known": False, "prior_last_seen": None, "visits": 0,
+                    "distinct_days": 0, "last_session": None}
+        prior = {
+            "known": True,
+            "prior_last_seen": _parse_iso(row["last_seen"]),
+            "visits": int(row["visits"]),
+            "distinct_days": int(row["distinct_days"]),
+            "last_session": row["last_session"],
+        }
+        new_visits = row["visits"] + (1 if session_id != row["last_session"] else 0)
+        new_days = row["distinct_days"] + (1 if today != row["last_day"] else 0)
+        self._conn.execute(
+            "UPDATE contact_registry SET last_seen = ?, last_session = ?, last_day = ?, "
+            "visits = ?, distinct_days = ? WHERE identity_key = ?",
+            (_iso(now), session_id, today, new_visits, new_days, identity_key),
+        )
+        self._conn.commit()
+        return prior
+
+    def contact_registry_row(self, identity_key: str):
+        """Raw registry row for a contact identity, or None (tests / inspection)."""
+        return self._conn.execute(
+            "SELECT * FROM contact_registry WHERE identity_key = ?", (identity_key,)
+        ).fetchone()
 
     def accumulated_pnl(self, probe_fingerprint) -> list:
         """The preferred-network list (named SSIDs) accumulated under this IE-set

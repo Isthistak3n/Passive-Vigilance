@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from modules.ble_fingerprint import compute_ble_fingerprint
-from modules.wifi_fingerprint import compute_identity_key
+from modules.wifi_fingerprint import anchored_identity_key, compute_identity_key
 
 _BLE_ADVERT_KEYS = ("company_ids", "service_uuids", "service_data_uuids", "appearance")
 
@@ -74,3 +74,38 @@ def fingerprint_label(device: dict) -> str:
     kind, or probed SSID), else ``""`` — used to label the GUI's collapsed row."""
     fp = _fingerprint(device)
     return fp.label if (fp is not None and fp.strong) else ""
+
+
+def contact_identity(device: dict):
+    """The DISPLAY contact identity for a device: ``(key, confidence)``.
+
+    This is intentionally MORE inclusive than :func:`strong_fingerprint` (the scoring
+    key) so a returning randomized device re-links to one contact instead of showing
+    as new — the confidence-tiered approach, never a hard merge of provably-distinct
+    devices. It does NOT feed scoring; only the contact designator / GUI dedup use it.
+
+    Tiers, strongest first:
+      * ``strong``  — a strong content fingerprint: WiFi anchored on a rare
+        distinctive probed SSID (``fp_anchor``, df ≤ the strong bar) or a BLE advert
+        with a real discriminator. Same key the scorer uses, so it lines up.
+      * ``medium``  — WiFi anchored on a LESS-rare SSID (``fp_anchor_medium``, a looser
+        df bar the orchestrator attaches): still stable (anchored on a real SSID that
+        doesn't churn) but more likely to coincide between two same-model devices in
+        one household, so it is surfaced as "likely same", not certain.
+      * ``weak``    — nothing stable+distinctive (only common public SSIDs, or no named
+        SSID, or a bare-vendor BLE advert). Returns ``(None, "weak")``; the caller keeps
+        the device ``mac:``-keyed and un-tracked, exactly as before — no over-merge.
+    """
+    if is_ble_device(device):
+        fp = compute_ble_fingerprint(_ble_advert_view(device))
+        return (fp.key, "strong") if (fp is not None and fp.strong) else (None, "weak")
+    probe_fp = device.get("probe_fingerprint")
+    if not probe_fp:
+        return None, "weak"
+    strong_anchor = (device.get("fp_anchor") or "").strip()
+    if strong_anchor:
+        return anchored_identity_key(probe_fp, strong_anchor), "strong"
+    medium_anchor = (device.get("fp_anchor_medium") or "").strip()
+    if medium_anchor:
+        return anchored_identity_key(probe_fp, medium_anchor), "medium"
+    return None, "weak"

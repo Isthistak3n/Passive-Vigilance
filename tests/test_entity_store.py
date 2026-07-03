@@ -525,3 +525,79 @@ def test_incremental_vacuum_actually_reclaims_pages(tmp_path):
     after = s._conn.execute("PRAGMA freelist_count").fetchone()[0]
     assert after < before
     s.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-session contact registry (P4 phase B) — durable "returning entity" memory
+# ---------------------------------------------------------------------------
+
+
+def test_contact_registry_first_sighting_is_not_known():
+    s = _store()
+    prior = s.record_contact_sighting("wifi-fp:abc", T0, "sess-1")
+    assert prior["known"] is False
+    assert s.count("contact_registry") == 1
+    assert s.contact_registry_row("wifi-fp:abc")["visits"] == 1
+    s.close()
+
+
+def test_contact_registry_same_session_does_not_add_visit():
+    s = _store()
+    s.record_contact_sighting("wifi-fp:abc", T0, "sess-1")
+    prior = s.record_contact_sighting("wifi-fp:abc", T0 + timedelta(minutes=5), "sess-1")
+    assert prior["known"] is True and prior["last_session"] == "sess-1"
+    row = s.contact_registry_row("wifi-fp:abc")
+    assert row["visits"] == 1                 # same session -> no new visit
+    assert row["distinct_days"] == 1
+    s.close()
+
+
+def test_contact_registry_new_session_adds_visit_and_reports_prior():
+    s = _store()
+    s.record_contact_sighting("wifi-fp:abc", T0, "sess-1")
+    prior = s.record_contact_sighting("wifi-fp:abc", T0 + timedelta(hours=26), "sess-2")
+    assert prior["known"] is True
+    assert prior["last_session"] == "sess-1"
+    assert prior["prior_last_seen"] == T0
+    row = s.contact_registry_row("wifi-fp:abc")
+    assert row["visits"] == 2                 # new session -> visit++
+    assert row["distinct_days"] == 2          # crossed a UTC day boundary
+    s.close()
+
+
+def test_contact_registry_survives_reopen(tmp_path):
+    db = str(tmp_path / "e.db")
+    s1 = EntityStore(db)
+    s1.record_contact_sighting("wifi-fp:xyz", T0, "sess-1")
+    s1.close()
+    s2 = EntityStore(db)
+    prior = s2.record_contact_sighting("wifi-fp:xyz", T0 + timedelta(days=1), "sess-2")
+    assert prior["known"] is True and prior["last_session"] == "sess-1"
+    assert s2.contact_registry_row("wifi-fp:xyz")["visits"] == 2
+    s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-PHY contact links (P4 phase C) — durable person-link memory
+# ---------------------------------------------------------------------------
+
+
+def test_contact_link_records_order_independent():
+    s = _store()
+    s.record_contact_link("wifi-fp:a", "ble-fp:b", T0)
+    s.record_contact_link("ble-fp:b", "wifi-fp:a", T0 + timedelta(minutes=1))  # reversed
+    assert s.count("contact_links") == 1                 # one row, not two
+    assert sorted(s.known_links()[0]) == ["ble-fp:b", "wifi-fp:a"]
+    s.close()
+
+
+def test_known_links_round_trips_across_reopen(tmp_path):
+    db = str(tmp_path / "e.db")
+    s1 = EntityStore(db)
+    s1.record_contact_link("wifi-fp:a", "ble-fp:b", T0)
+    s1.record_contact_link("wifi-fp:c", "ble-fp:d", T0)
+    s1.close()
+    s2 = EntityStore(db)
+    links = {tuple(sorted(p)) for p in s2.known_links()}
+    assert links == {("ble-fp:b", "wifi-fp:a"), ("ble-fp:d", "wifi-fp:c")}
+    s2.close()

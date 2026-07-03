@@ -71,6 +71,17 @@ def _label(device: dict, ssids: list[str], name: str) -> str:
     return device.get("type") or "Wi-Fi"
 
 
+def anchored_identity_key(probe_fp, anchor: str) -> str:
+    """The ``wifi-fp:`` key for an IE-set hash anchored on a probed SSID.
+
+    Shared by the strong scoring key (:func:`compute_identity_key`) and the display
+    CONTACT identity (:func:`modules.device_identity.contact_identity`), which anchors
+    on a less-rare SSID for a medium-confidence tier. Anchoring on a *stable* SSID
+    (rather than the per-poll probe slice) is what makes the key survive rotation."""
+    canonical = f"f:{probe_fp}|a:{anchor}"
+    return "wifi-fp:" + hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
+
+
 def compute_identity_key(device: dict) -> Optional[WiFiFingerprint]:
     """The rotation-stable SCORING identity key for a WiFi client: the IE-set hash
     anchored on the device's rarest *distinctive* probed SSID (``fp_anchor``, set on
@@ -89,9 +100,7 @@ def compute_identity_key(device: dict) -> Optional[WiFiFingerprint]:
     anchor = (device.get("fp_anchor") or "").strip()
     if not probe_fp or not anchor:
         return None
-    canonical = f"f:{probe_fp}|a:{anchor}"
-    key = "wifi-fp:" + hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
-    return WiFiFingerprint(key=key, strong=True, label=anchor)
+    return WiFiFingerprint(key=anchored_identity_key(probe_fp, anchor), strong=True, label=anchor)
 
 
 @dataclass(frozen=True)

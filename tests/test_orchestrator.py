@@ -2357,3 +2357,290 @@ async def test_poll_acars_tail_still_wins_over_position(orch, tmp_path):
     await so._poll_acars()
     assert so._aircraft_index["byreg"].get("acars")       # tail match won
     assert "acars" not in so._aircraft_index["bypos"]
+
+
+# ---------------------------------------------------------------------------
+# Contact identity tiers + WiFi/BT return detection (Phase A fingerprinting)
+# ---------------------------------------------------------------------------
+
+
+def _wifi_event(mac, fingerprint="", device_type="Wi-Fi Client", ssid=""):
+    return _make_detection_event(
+        mac=mac, score=0.85, alert_level="likely",
+        manufacturer="Acme", device_type=device_type, ssid=ssid,
+        first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        locations=[], observation_count=5,
+    ) if False else DetectionEvent(
+        mac=mac, score=0.85,
+        score_breakdown={"novelty": 1.0},
+        first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        last_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        locations=[], observation_count=5, manufacturer="Acme",
+        device_type=device_type, alert_level="likely", mac_type="randomized",
+        ssid=ssid, fingerprint=fingerprint, fingerprint_label="Acme",
+    )
+
+
+def test_resolve_contact_uses_medium_tier_from_device(orch):
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:01", fingerprint="")   # scoring key is mac: (weak)
+    device = {"macaddr": "a2:00:00:00:00:01", "type": "Wi-Fi Client",
+              "probe_fingerprint": 4242, "fp_anchor_medium": "GymWiFi"}
+    designator, confidence, identity_key = so._resolve_contact(ev, device)
+    assert confidence == "medium"
+    assert identity_key.startswith("wifi-fp:")   # NOT mac: — re-linkable
+
+
+def test_resolve_contact_stable_across_mac_rotation(orch):
+    """The whole point: two different MACs of one device resolve to the SAME contact
+    identity (and, via the persisted number, the same designator)."""
+    so = orch.sensor_orchestrator
+    dev_a = {"macaddr": "a2:00:00:00:00:aa", "type": "Wi-Fi Client",
+             "probe_fingerprint": 555, "fp_anchor_medium": "HomeX"}
+    dev_b = {"macaddr": "a2:00:00:00:00:bb", "type": "Wi-Fi Client",
+             "probe_fingerprint": 555, "fp_anchor_medium": "HomeX"}
+    _, _, key_a = so._resolve_contact(_wifi_event("a2:00:00:00:00:aa"), dev_a)
+    _, _, key_b = so._resolve_contact(_wifi_event("a2:00:00:00:00:bb"), dev_b)
+    assert key_a == key_b
+
+
+def test_resolve_contact_falls_back_to_mac_when_weak(orch):
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:01", fingerprint="")
+    device = {"macaddr": "a2:00:00:00:00:01", "type": "Wi-Fi Client"}  # no anchor/IE
+    _, confidence, identity_key = so._resolve_contact(ev, device)
+    assert confidence == "weak"
+    assert identity_key == "mac:a2:00:00:00:00:01"
+
+
+def test_note_wifi_return_flags_after_gap(orch):
+    so = orch.sensor_orchestrator
+    so._wifi_return_gap_s = 900
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    r1, c1 = so._note_wifi_return("wifi-fp:abc", t0)
+    assert r1 is False and c1 == 0                     # first sighting: not a return
+    r2, c2 = so._note_wifi_return("wifi-fp:abc", t0 + timedelta(minutes=5))
+    assert r2 is False                                 # still present: not a return
+    r3, c3 = so._note_wifi_return("wifi-fp:abc", t0 + timedelta(minutes=30))
+    assert r3 is True and c3 == 1                      # back after a 25-min gap
+
+
+def test_note_wifi_return_never_claims_on_mac_identity(orch):
+    so = orch.sensor_orchestrator
+    so._wifi_return_gap_s = 900
+    t0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    so._note_wifi_return("mac:a2:00:00:00:00:01", t0)
+    r, _ = so._note_wifi_return("mac:a2:00:00:00:00:01", t0 + timedelta(hours=2))
+    assert r is False   # a rotating mac: identity can't be a trusted "same device"
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_marks_returning_contact_on_wifi_event(orch):
+    so = orch.sensor_orchestrator
+    orch._kismet_active = True
+    so._wifi_return_gap_s = 900
+    # The mocked entity store's distinctive_anchors returns a truthy MagicMock that
+    # would pollute fp_anchor; drop it so the device's own medium anchor is used (a
+    # real store returns a dict, so this only isolates the mock).
+    so.entity_store = None
+    # Seed the contact as last seen 30 min ago so this poll reads as a return.
+    dev = {"macaddr": "a2:00:00:00:00:cc", "type": "Wi-Fi Client",
+           "probe_fingerprint": 777, "fp_anchor_medium": "HomeY", "last_signal": -50}
+    ev = _wifi_event("a2:00:00:00:00:cc")
+    _, _, ck = so._resolve_contact(ev, dev)
+    so._contact_last_seen[ck] = datetime.now(timezone.utc) - timedelta(minutes=30)
+
+    orch.kismet.poll_devices = AsyncMock(return_value=[dev])
+    orch.persistence.update.return_value = [ev]
+    so.gui_server = MagicMock()
+    await so._poll_kismet()
+
+    row = so._wifi_event_index["a2:00:00:00:00:cc"]
+    assert row["returning"] is True
+    assert row["contact_confidence"] == "medium"
+    assert row["contact_key"] == ck
+
+
+# ---------------------------------------------------------------------------
+# Cross-session returning entity (Phase B) — durable "seen before" recognition
+# ---------------------------------------------------------------------------
+
+
+def test_cross_session_return_flags_prior_session(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    so._entity_return_min_gap_s = 3600
+    # Seed a prior session's sighting a day ago.
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    so.entity_store.record_contact_sighting("wifi-fp:known1", past, "sess-1")
+
+    res = so._note_cross_session_return("wifi-fp:known1", "strong", datetime.now(timezone.utc))
+    assert res["returning_entity"] is True
+    assert res["entity_visits"] == 2
+    assert res["entity_days_known"] >= 1
+    so.entity_store.close()
+
+
+def test_cross_session_first_ever_sighting_not_returning(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-1"
+    res = so._note_cross_session_return("wifi-fp:brandnew", "strong", datetime.now(timezone.utc))
+    assert res["returning_entity"] is False
+    # But it IS now recorded for next time.
+    assert so.entity_store.contact_registry_row("wifi-fp:brandnew") is not None
+    so.entity_store.close()
+
+
+def test_cross_session_quick_restart_not_a_return(orch):
+    """A prior sighting only minutes ago (a crash-restart, new session id) must NOT
+    read as a return visit — the min-gap guard, unless it's a different UTC day."""
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    so._entity_return_min_gap_s = 3600
+    now = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    so.entity_store.record_contact_sighting(
+        "wifi-fp:recent", now - timedelta(minutes=3), "sess-1")
+    res = so._note_cross_session_return("wifi-fp:recent", "strong", now)
+    assert res["returning_entity"] is False   # 3 min ago, same day -> not a return
+    so.entity_store.close()
+
+
+def test_cross_session_ignores_mac_identity(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    res = so._note_cross_session_return("mac:a2:00:00:00:00:01", "weak", datetime.now(timezone.utc))
+    assert res["returning_entity"] is False
+    assert so.entity_store.count("contact_registry") == 0   # mac: never recorded
+    so.entity_store.close()
+
+
+def test_cross_session_result_cached_per_session(orch):
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    so.session_id = "sess-2"
+    so._entity_return_min_gap_s = 3600
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    so.entity_store.record_contact_sighting("wifi-fp:k", past, "sess-1")
+    r1 = so._note_cross_session_return("wifi-fp:k", "strong", datetime.now(timezone.utc))
+    r2 = so._note_cross_session_return("wifi-fp:k", "strong", datetime.now(timezone.utc))
+    assert r1 == r2 and r1["returning_entity"] is True
+    # Recorded once this session (the registry advanced a single visit, not two).
+    assert so.entity_store.contact_registry_row("wifi-fp:k")["visits"] == 2
+    so.entity_store.close()
+
+
+def test_resolve_contact_mac_scoring_fingerprint_is_weak_not_strong(orch):
+    """Regression (caught on chase): FixedScoring sets event.fingerprint to
+    'mac:<mac>' for un-fingerprinted devices; that is NOT a strong content
+    fingerprint, so the contact must be labeled weak and mac:-keyed, not strong."""
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:07", fingerprint="mac:a2:00:00:00:00:07")
+    device = {"macaddr": "a2:00:00:00:00:07", "type": "Wi-Fi Client"}  # no anchor/IE
+    _, confidence, identity_key = so._resolve_contact(ev, device)
+    assert confidence == "weak"
+    assert identity_key.startswith("mac:")
+
+
+def test_resolve_contact_real_fingerprint_still_strong(orch):
+    so = orch.sensor_orchestrator
+    ev = _wifi_event("a2:00:00:00:00:08", fingerprint="wifi-fp:deadbeef")
+    _, confidence, identity_key = so._resolve_contact(ev, device=None)
+    assert confidence == "strong"
+    assert identity_key == "wifi-fp:deadbeef"
+
+
+# ---------------------------------------------------------------------------
+# Cross-PHY co-presence + resident/visitor (Phase C)
+# ---------------------------------------------------------------------------
+
+
+def test_is_mobile_contact_excludes_aps_and_bridges(orch):
+    so = orch.sensor_orchestrator
+    assert so._is_mobile_contact("Wi-Fi Client") is True
+    assert so._is_mobile_contact("BTLE") is True
+    assert so._is_mobile_contact("Wi-Fi AP") is False
+    assert so._is_mobile_contact("Wi-Fi Bridged") is False
+    assert so._is_mobile_contact("Wi-Fi WDS AP") is False
+
+
+def test_resident_status_classification(orch):
+    so = orch.sensor_orchestrator
+    # Non-mobile (AP/bridge) is the environment — never resident/visitor.
+    assert so._resident_status(False, {"network_affinity": []}, {"novelty": 1.0}) == ""
+    # Mobile, probes a locally-beaconed network -> resident.
+    assert so._resident_status(True, {"network_affinity": ["HomeWiFi"]}, {}) == "resident"
+    # Mobile, novel with no local affinity -> visitor.
+    assert so._resident_status(True, {"network_affinity": []}, {"novelty": 1.0}) == "visitor"
+    # Mobile, a known baseline device (novelty off) -> resident.
+    assert so._resident_status(True, {"network_affinity": []}, {"novelty": 0.0, "off_schedule": 1.0}) == "resident"
+    # Mobile, no baseline signal at all -> unknown.
+    assert so._resident_status(True, {"network_affinity": []}, {}) == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_person_links_mobile_wifi_and_ble(orch):
+    """A Wi-Fi client and a BLE device that are present together every poll link
+    into one person; the AP present alongside them does NOT join."""
+    from modules.entity_store import EntityStore
+    so = orch.sensor_orchestrator
+    so.entity_store = EntityStore(":memory:")
+    # Fresh conservative linker with a low bar for the test.
+    from modules.copresence import CoPresenceLinker
+    so._copresence_linker = CoPresenceLinker(min_polls=3, min_jaccard=0.6,
+                                             min_obs_polls=2, min_fixture_polls=3)
+    orch._kismet_active = True
+
+    phone_wifi = {"macaddr": "a2:00:00:00:00:11", "type": "Wi-Fi Client",
+                  "probe_fingerprint": 111, "fp_anchor": "MyHouse", "last_signal": -40}
+    phone_ble = {"macaddr": "c2:00:00:00:00:22", "type": "BTLE",
+                 "service_uuids": [0x180D], "name": "MyPhone", "last_signal": -45}
+    ap = {"macaddr": "d2:00:00:00:00:33", "type": "Wi-Fi AP",
+          "probe_fingerprint": 999, "fp_anchor": "NeighborAP", "last_signal": -60}
+    devices = [phone_wifi, phone_ble, ap]
+
+    def ev(mac, fp):
+        return DetectionEvent(
+            mac=mac, score=0.85, score_breakdown={"novelty": 1.0},
+            first_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            last_seen=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            locations=[], observation_count=5, manufacturer="Acme",
+            device_type=("BTLE" if mac.startswith("c2") else "Wi-Fi Client" if mac.startswith("a2") else "Wi-Fi AP"),
+            alert_level="likely", mac_type="randomized", ssid="", fingerprint=fp,
+            fingerprint_label="x")
+
+    from modules import device_identity
+    # resolve the stable contact keys the linker will see
+    wifi_key = device_identity.contact_identity(phone_wifi)[0]
+    ble_key = device_identity.contact_identity(phone_ble)[0]
+    orch.kismet.poll_devices = AsyncMock(return_value=devices)
+    orch.persistence.update.return_value = [
+        ev("a2:00:00:00:00:11", "wifi-fp:x"), ev("c2:00:00:00:00:22", ""),
+        ev("d2:00:00:00:00:33", "wifi-fp:y")]
+    for _ in range(5):
+        await so._poll_kismet()
+
+    # The wiring: the linker is fed the MOBILE contacts (Wi-Fi client + BLE) but NOT
+    # the AP — APs are the environment, never person-linked. (Cluster formation itself
+    # is covered in test_copresence.py; a short all-present run makes them fixtures.)
+    lk = so._copresence_linker
+    ap_key = device_identity.contact_identity(ap)[0]
+    assert wifi_key in lk._present_count and ble_key in lk._present_count
+    assert ap_key not in lk._present_count
+    so.entity_store.close()
+
+
+def test_copresence_noop_when_linker_disabled(orch):
+    so = orch.sensor_orchestrator
+    so._copresence_linker = None          # disabled (CROSS_PHY_LINKING_ENABLED=false)
+    so._update_copresence({"wifi-fp:a", "ble-fp:b"}, datetime.now(timezone.utc))
+    assert so._person_of == {}            # no clustering when disabled

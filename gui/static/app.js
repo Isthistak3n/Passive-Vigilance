@@ -129,6 +129,9 @@ function acarsSummary(latest, e) {
 // A device's rotation-stable identity: its strong fingerprint if it has one,
 // else its MAC. Rows sharing an identity are one logical device.
 function wifiIdentity(e) {
+  // The rotation-stable DISPLAY identity (strong or medium tier) collapses a
+  // device's rotating addresses — and a returning device — into one contact.
+  if (e.contact_key) return e.contact_key;
   const fp = e.fingerprint || '';
   return (fp.indexOf('wifi-fp:') === 0 || fp.indexOf('ble-fp:') === 0) ? fp : (e.mac || '');
 }
@@ -291,11 +294,17 @@ const tables = {
       for (const e of state.wifi) {
         const id = wifiIdentity(e);
         let g = groups.get(id);
-        if (!g) { g = { latest: e, macs: new Set(), pnl: new Set(), affinity: new Set(), reconnect: false }; groups.set(id, g); }
+        if (!g) { g = { latest: e, macs: new Set(), pnl: new Set(), affinity: new Set(), reconnect: false, returning: false, returnCount: 0 }; groups.set(id, g); }
         if (e.mac) g.macs.add(e.mac);
         for (const s of (e.probe_ssids_all || [])) g.pnl.add(s);
         for (const s of (e.network_affinity || [])) g.affinity.add(s);
         if (e.reconnect) g.reconnect = true;
+        if (e.returning) g.returning = true;
+        if (e.return_count) g.returnCount = Math.max(g.returnCount, e.return_count);
+        if (e.returning_entity) g.returningEntity = true;
+        if (e.entity_visits) g.entityVisits = Math.max(g.entityVisits || 0, e.entity_visits);
+        if (e.entity_days_known) g.entityDays = Math.max(g.entityDays || 0, e.entity_days_known);
+        if (e.entity_last_seen) g.entityLastSeen = e.entity_last_seen;
         const t1 = new Date(g.latest.last_seen || g.latest.timestamp || 0).getTime();
         const t2 = new Date(e.last_seen || e.timestamp || 0).getTime();
         if (t2 >= t1) g.latest = e;
@@ -304,6 +313,11 @@ const tables = {
         const e = g.latest;
         return {
           contact: e.contact || e.fingerprint_label || '',
+          confidence: e.contact_confidence || '',
+          returning: g.returning, return_count: g.returnCount,
+          returning_entity: !!g.returningEntity, entity_visits: g.entityVisits || 0,
+          entity_days: g.entityDays || 0, entity_last_seen: g.entityLastSeen || '',
+          belongs: e.belongs || '', person_id: e.person_id || '', person_size: e.person_size || 0,
           mac: e.mac || '', ssid: e.ssid || '', mac_type: e.mac_type || '',
           score: e.score != null ? e.score : 0, alert_level: e.alert_level || '',
           seen: e.observation_count || 0, manufacturer: e.manufacturer || '',
@@ -326,9 +340,33 @@ const tables = {
       const affinityCell = r.affinity
         ? `<span title="probed networks confirmed beaconing here: ${esc(r.affinity)}">${esc(r.affinity)}</span>`
         : '—';
+      // Medium-confidence contacts are "likely same" (a looser identity anchor), so
+      // mark them so an operator doesn't read a medium link as certain. Returning =
+      // this contact came back after an absence, like a returning aircraft.
+      const conf = r.confidence === 'medium'
+        ? ' <span class="conf-medium" title="likely the same device — matched on a less-distinctive signature">~</span>'
+        : '';
+      const ret = r.returning
+        ? ` <span class="returning" title="Re-seen after an absence — same contact (${r.return_count || 1}×)">↩ RETURN${(r.return_count || 1) > 1 ? ' ×' + r.return_count : ''}</span>`
+        : '';
+      // Cross-session: this contact was here on a PRIOR session/day — the "seen before"
+      // (are-you-being-cased) signal, distinct from a within-session return above.
+      const known = r.returning_entity
+        ? ` <span class="known-entity" title="Seen on a prior session/day — last ${r.entity_last_seen || '?'}, known across ${r.entity_days || 1} day(s)">⌂ KNOWN${r.entity_visits > 1 ? ' ×' + r.entity_visits : ''}</span>`
+        : '';
+      // Environment: resident (probes a network beaconed here) vs a novel visitor
+      // with no local affinity; and a person cluster of a mobile's linked radios.
+      const belongs = r.belongs === 'resident'
+        ? ' <span class="belongs-resident" title="Probes a network that beacons here — belongs to this place">⌂ resident</span>'
+        : (r.belongs === 'visitor'
+          ? ' <span class="belongs-visitor" title="Novel, with no affinity to any local network — a visitor">✦ VISITOR</span>'
+          : '');
+      const person = (r.person_id && r.person_size > 1)
+        ? ` <span class="person-badge" title="Travels with ${r.person_size - 1} other radio(s) — likely one person">👥 ${r.person_size}</span>`
+        : '';
       return `
-    <tr>
-      <td>${r.contact ? esc(r.contact) : '—'}</td>
+    <tr class="${r.returning || r.returning_entity ? 'returning-row' : ''}${r.belongs === 'visitor' ? ' visitor-row' : ''}">
+      <td>${r.contact ? esc(r.contact) : '—'}${conf}${ret}${known}${belongs}${person}</td>
       <td>${macCell}</td>
       <td>${r.ssid ? esc(r.ssid) : '—'}</td>
       <td>${r.mac_type || '—'}</td>
