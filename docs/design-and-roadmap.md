@@ -450,7 +450,7 @@ zlib-compressed binary (a fragile, version-specific trie), so a clean off-node S
 
 # Part II — Roadmap
 
-## Where we are (2026-06)
+## Where we are (2026-07)
 
 Merged on `main`: the `NODE_MODE` fork + `ScoringEngine` strategy; `FixedScoring` (novelty +
 off-schedule + graduated severity + per-device activation guard + egregious-during-baseline,
@@ -482,6 +482,19 @@ deployability and set the lead priority (**detection-quality completion**):
 
 Identity and air-picture depth follow detection-quality — they make alerts *mean more*, but a
 detector you can't trust during learning isn't deployable regardless.
+
+### Field-hardening pass (2026-07-03/04)
+
+A concentrated week of on-node reliability work closed three field failure modes that were
+independent of detection logic and had been costing capture uptime: the **Kismet WiFi-source
+SOURCEERROR degradation** (root-caused to log-DB fsync stalls inside the timer engine → fixed by
+disabling Kismet disk logging, #190), the **RTL8812AU WiFi adapter** (swapped to the out-of-tree
+`rtl88XXau` driver, #188), and a recurrence of the **SDR wedge** (contained by a node-local
+auto-`usbreset` watchdog). Method note: the Kismet root cause was found by journal-triggered live
+gdb thread dumps at the failure moment, after adapter/heat/memory/UI theories were each tested and
+eliminated — the discipline being *prove the mechanism, don't automate around the symptom*. These
+are captured in Standing Risks below. With them closed, the remaining gate to a **1.0** tag is
+unattended multi-day stability, not features — tracked in **#191** (1.0 release readiness).
 
 ## Forward roadmap (priority order)
 
@@ -591,13 +604,20 @@ multi-node correlation (the follower-resolves-to-fixed pattern, §5.5). All genu
 
 ## Standing risks
 
-- **SDR-wedge on time-share handoff — validated clean (2026-06-30).** The 2026-06-21 readsb "SDR
-  wedged" crash-loop was the headline risk for the SDR pivot (§11). On the live ADS-B+AIS cycle
-  (`adsb:600,ais:30`) it did **not** recur: readsb exits gracefully for the AIS slice and
-  re-acquires with **0 wedges** — the settle barrier + start/stop handshakes carry the handoff on
-  their own. `SDR_HANDOFF_USB_RESET` is the escalation but was a no-op (usbreset got a `/dev` path
-  it rejects) → fixed to VID:PID in #171; unneeded in practice. A 2nd VHF dongle (DEDICATED) would
-  remove the ADS-B blackout during AIS slices entirely. Residual risk is low.
+- **SDR-wedge — recurs independent of the handoff (updated 2026-07-04).** The time-share handoff
+  itself is clean: on the ADS-B+AIS cycle readsb exits gracefully for the AIS slice and re-acquires
+  with **0 handoff wedges** (settle barrier + start/stop handshakes; `SDR_HANDOFF_USB_RESET` fixed to
+  VID:PID in #171 but unneeded for handoffs). **However, on 2026-07-03 the dongle wedged mid-stream
+  with no handoff involved** — readsb decoded normally for minutes, then samples silently stopped and
+  systemd crash-looped it 22 times; the kernel showed no USB error, and the same morning the device
+  had briefly fallen off the bus ("Cannot enable. Maybe the USB cable is bad?"). This is a dongle
+  firmware/physical-layer hang, not a software fault: a service restart never clears it, only a
+  USB-level `usbreset 0bda:2838` does. **Containment installed (node-local, not in-repo):** a wedge
+  watchdog (`/etc/cron.d/sdr-wedge-watch`, every 2 min) that auto-`usbreset`s on ≥2 "SDR wedged"
+  lines in 3 min — caught in ~2–4 min vs the ~hours the manual incident ran. Only one unexplained
+  incident to date, so it reads as an intermittent-dongle anomaly, not a pattern; a 2nd VHF dongle
+  (DEDICATED) or a dongle swap is the durable answer if it recurs. Watchdog disposition is a 1.0
+  checkbox (#191).
 - **Post-freeze memory leak — RETIRED.** Soak #3 ran ~42 h post-freeze, RSS bounded
   (~116–200 MB, no drift); `all_events` dedups per device.
 - **Alert fatigue — largely addressed.** Soak #1 novelty flood and soak #2 off-schedule flood
@@ -610,6 +630,19 @@ multi-node correlation (the follower-resolves-to-fixed pattern, §5.5). All genu
   ungroupable) is preserved.
 - **BLE-as-identity is environment-limited** here (mostly bare advertisers); the longer-range
   dongle improves capture, but cross-PHY BLE↔WiFi linking is unbuilt.
+- **Kismet WiFi-source SOURCEERROR degradation — root-caused & fixed (#190, 2026-07-04).** The WiFi
+  capture source dropped ("IPC connection closed") at a rate that climbed with Kismet's uptime — a
+  couple/hr fresh to ~one every 2–3 min by hour nine, each a ~20 s capture gap. Proven by three
+  identical mid-stall gdb thread dumps: Kismet runs its log-DB flushes **inside its serial timer
+  engine**, each commit ends in an `fdatasync()` to the SD card, and an SD flash-GC pause >15 s
+  blocks the source keep-alive pings that ride the same engine — so the busiest source (WiFi) crosses
+  its 15 s deadline and suicides. Uptime curve = the session `.kismet` file growing/fragmenting; a
+  restart reset it because a fresh file has a small fsync tail. **Fix: `enable_logging=false`** in the
+  site config (nothing consumes Kismet's disk logs here — PV is REST-only, no WiGLE on a fixed node),
+  which removes SQLite/fsync from Kismet entirely. Eliminated en route: adapter/driver/USB (usbreset
+  no-op), heat, memory, device-tracker size, GPS, and the browser web-UI (tabs-closed test negative).
+  Under overnight validation; a fixed-node deploy-doc recommendation and cron retirement are 1.0
+  checkboxes (#191).
 
 ---
 
