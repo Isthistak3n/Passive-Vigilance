@@ -600,3 +600,20 @@ tr.visitor-row { background: rgba(248, 81, 73, 0.06); }
 .survey-table td { padding: 4px 8px; border-bottom: 1px solid #161b22; color: #c9d1d9; }
 .survey-table tr.bed-down td { background: #1b2130; color: #e6edf3; font-weight: 500; }
 .survey-pending, .survey-empty { color: #6e7681; font-style: italic; }
+
+/* Survey outcome badges + bed-down headline */
+.survey-outcome { font-size: 11px; padding: 1px 8px; border-radius: 10px; font-weight: 600; }
+.survey-out-resident { background: #1a3a1a; color: #3fb950; }
+.survey-out-seen     { background: #241f17; color: #d29922; }
+.survey-out-absent   { background: #3a1a1a; color: #f85149; }
+.survey-bed { margin: 6px 0; padding: 8px 10px; background: #12161d; border-radius: 6px; color: #e6edf3; }
+.survey-bed code { color: #8b949e; }
+.survey-bed code.bssid { color: #58a6ff; }
+.survey-wigle { border-left: 3px solid #c586ff; }
+.survey-note { color: #6e7681; font-size: 12px; font-weight: 400; }
+.survey-locality { font-size: 12px; color: #8b949e; }
+.survey-locality.here { color: #d29922; }
+.survey-locality.neighborhood { color: #3fb950; }
+.survey-locality.distant { color: #58a6ff; }
+.survey-seen { margin-top: 6px; }
+.survey-seen summary { color: #8b949e; cursor: pointer; font-size: 13px; }

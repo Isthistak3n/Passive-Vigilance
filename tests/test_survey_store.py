@@ -77,13 +77,18 @@ def test_dwell_is_gap_tolerant(tmp_path):
             tid, timestamp=base2 + timedelta(seconds=60 * i),
             lat=SPOT_A[0], lon=SPOT_A[1], rssi=-48)
 
-    findings = s.compute_findings(tid, tz=timezone.utc)
-    assert len(findings) == 1
-    f = findings[0]
+    result = s.compute_findings(tid, tz=timezone.utc)
+    clusters = result["clusters"]
+    assert len(clusters) == 1
+    f = clusters[0]
     # Dwell = 4 min (run 1) + 2 min (run 2) = 360 s; the 30-min gap is excluded.
     assert abs(f["dwell_seconds"] - 360.0) < 1e-6
     assert f["visit_count"] == 2
     assert f["obs_count"] == 8
+    # Device seen but no local home AP found -> a WiGLE candidate.
+    assert result["outcome"] == "seen"
+    assert result["wigle_candidate"] is True
+    assert result["home_ap"] is None
 
 
 def test_two_locations_ranked_by_dwell_and_return(tmp_path):
@@ -102,12 +107,12 @@ def test_two_locations_ranked_by_dwell_and_return(tmp_path):
             tid, timestamp=base + timedelta(seconds=60 * i),
             lat=SPOT_A[0], lon=SPOT_A[1], rssi=-45)
 
-    findings = s.compute_findings(tid, tz=timezone.utc)
-    assert len(findings) == 2
-    assert findings[0]["rank"] == 0
+    clusters = s.compute_findings(tid, tz=timezone.utc)["clusters"]
+    assert len(clusters) == 2
+    assert clusters[0]["rank"] == 0
     # Rank 0 is SPOT_A (the long stay).
-    assert abs(findings[0]["cluster_lat"] - SPOT_A[0]) < 1e-4
-    assert findings[0]["dwell_seconds"] > findings[1]["dwell_seconds"]
+    assert abs(clusters[0]["cluster_lat"] - SPOT_A[0]) < 1e-4
+    assert clusters[0]["dwell_seconds"] > clusters[1]["dwell_seconds"]
 
 
 def test_overnight_and_distinct_nights(tmp_path):
@@ -124,7 +129,7 @@ def test_overnight_and_distinct_nights(tmp_path):
         s.record_survey_observation(tid, timestamp=t,
                                     lat=SPOT_A[0], lon=SPOT_A[1], rssi=-50)
 
-    f = s.compute_findings(tid, tz=timezone.utc, night_hours="22-06")[0]
+    f = s.compute_findings(tid, tz=timezone.utc, night_hours="22-06")["clusters"][0]
     assert f["is_overnight"] is True
     assert f["distinct_nights"] == 2
 
@@ -136,33 +141,73 @@ def test_max_rssi_skips_zero_placeholder(tmp_path):
     for rssi in (-60, 0, -48, None):
         s.record_survey_observation(tid, timestamp=T0, lat=SPOT_A[0],
                                     lon=SPOT_A[1], rssi=rssi)
-    f = s.compute_findings(tid, tz=timezone.utc)[0]
+    f = s.compute_findings(tid, tz=timezone.utc)["clusters"][0]
     assert f["max_rssi"] == -48
 
 
-def test_ingest_findings_marks_complete(tmp_path):
-    """Fixed-side ingest stores pushed findings and completes the tasking."""
+def test_home_ap_association_is_the_bed_down(tmp_path):
+    """A local AP beaconing the device's home network locates the bed-down in one
+    patrol — no dwell accumulation needed — and is NOT a WiGLE candidate."""
     s = _store(tmp_path)
     tid = s.enqueue_tasking("wifi-fp:abc", now=T0)
-    pushed = [{
-        "rank": 0, "cluster_lat": SPOT_A[0], "cluster_lon": SPOT_A[1],
-        "dwell_seconds": 3600, "visit_count": 3, "distinct_days": 2,
-        "distinct_nights": 1, "first_seen": _iso(T0), "last_seen": _iso(T0),
-        "max_rssi": -40, "is_overnight": True, "obs_count": 42,
-    }]
-    s.ingest_findings(tid, pushed, survey_node="mobile-1")
+    for i in range(4):
+        s.record_survey_observation(
+            tid, timestamp=T0 + timedelta(seconds=30 * i),
+            lat=SPOT_A[0], lon=SPOT_A[1], rssi=-55,
+            kind="ap", bssid="00:11:22:33:44:55", ssid="HOME_NET_5G")
+    result = s.compute_findings(tid, tz=timezone.utc)
+    assert result["outcome"] == "resident"
+    assert result["wigle_candidate"] is False
+    ap = result["home_ap"]
+    assert ap["bssid"] == "00:11:22:33:44:55"
+    assert ap["ssid"] == "HOME_NET_5G"
+    assert abs(ap["lat"] - SPOT_A[0]) < 1e-4
+    # And it round-trips through the store read.
+    assert s.findings_for(tid)["home_ap"]["bssid"] == "00:11:22:33:44:55"
+
+
+def test_not_located_outcome(tmp_path):
+    """A task with zero observations resolves to not_located / WiGLE candidate."""
+    s = _store(tmp_path)
+    tid = s.enqueue_tasking("wifi-fp:abc", now=T0)
+    result = s.compute_findings(tid, tz=timezone.utc)
+    assert result["located"] is False
+    assert result["outcome"] == "not_located"
+    assert result["wigle_candidate"] is True
+    assert result["home_ap"] is None
+
+
+def test_ingest_result_marks_complete_and_stores_home_ap(tmp_path):
+    """Fixed-side ingest stores a pushed result (home AP + clusters) and completes it."""
+    s = _store(tmp_path)
+    tid = s.enqueue_tasking("wifi-fp:abc", now=T0)
+    pushed = {
+        "located": True, "outcome": "resident", "wigle_candidate": False,
+        "home_ap": {"bssid": "aa:bb:cc:dd:ee:ff", "ssid": "HOME_NET_5G",
+                    "lat": SPOT_A[0], "lon": SPOT_A[1], "max_rssi": -50, "obs_count": 6},
+        "clusters": [{"rank": 0, "cluster_lat": SPOT_A[0], "cluster_lon": SPOT_A[1],
+                      "dwell_seconds": 300, "visit_count": 1, "distinct_days": 1,
+                      "distinct_nights": 0, "max_rssi": -48, "is_overnight": False,
+                      "obs_count": 5}],
+    }
+    s.ingest_result(tid, pushed, survey_node="mobile-1")
     got = s.findings_for(tid)
-    assert len(got) == 1
-    assert got[0]["is_overnight"] is True
-    assert got[0]["survey_node"] == "mobile-1"
-    assert s.get_tasking(tid)["status"] == "complete"
+    assert got["home_ap"]["ssid"] == "HOME_NET_5G"
+    assert len(got["clusters"]) == 1
+    t = s.get_tasking(tid)
+    assert t["status"] == "complete"
+    tf = [x for x in s.taskings_with_findings() if x["task_id"] == tid][0]
+    assert tf["outcome"] == "resident"
+    assert tf["wigle_candidate"] is False
 
 
 def test_upsert_tasking_preserves_local_completed_status(tmp_path):
     """A pulled tasking must not resurrect a survey the local node already completed."""
     s = _store(tmp_path)
     tid = s.enqueue_tasking("wifi-fp:abc", now=T0)
-    s.ingest_findings(tid, [], complete=True)
+    s.ingest_result(tid, {"located": False, "outcome": "not_located",
+                          "wigle_candidate": True, "home_ap": None, "clusters": []},
+                    complete=True)
     s.upsert_tasking({"task_id": tid, "identity_key": "wifi-fp:abc",
                       "status": "open", "reason": "operator"})
     assert s.get_tasking(tid)["status"] == "complete"

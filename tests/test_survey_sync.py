@@ -25,7 +25,7 @@ class _FakeFixedNode:
 
     def __init__(self, token=TOKEN):
         self._token = token
-        self.pushed = []  # (task_id, findings) received via POST /api/survey
+        self.pushed = []  # (task_id, result) received via POST /api/survey
 
     def _authed(self, request) -> bool:
         return request.headers.get("Authorization") == f"Bearer {self._token}"
@@ -44,7 +44,7 @@ class _FakeFixedNode:
         if not self._authed(request):
             return web.json_response({"error": "Unauthorized"}, status=401)
         body = await request.json()
-        self.pushed.append((body.get("task_id"), body.get("findings")))
+        self.pushed.append((body.get("task_id"), body.get("result")))
         return web.json_response({"ok": True})
 
 
@@ -115,7 +115,8 @@ def test_push_findings_delivers_payload():
         try:
             sync = SurveySync(url, TOKEN)
             ok = await sync.push_findings(
-                "t1", [{"cluster_lat": 1.0, "cluster_lon": 2.0}],
+                "t1", {"outcome": "resident", "home_ap": {"bssid": "a", "ssid": "N"},
+                       "clusters": []},
                 survey_node="mobile-1")
             return ok
         finally:
@@ -127,7 +128,7 @@ def test_push_findings_delivers_payload():
 
 def test_push_findings_soft_fails_when_unreachable():
     sync = SurveySync("http://127.0.0.1:1", TOKEN, timeout=1.0)
-    assert _run(sync.push_findings("t1", [])) is False
+    assert _run(sync.push_findings("t1", {})) is False
 
 
 def test_not_configured_is_noop():
@@ -135,4 +136,4 @@ def test_not_configured_is_noop():
     assert sync.configured is False
     assert _run(sync.reachable()) is False
     assert _run(sync.pull_taskings()) is None
-    assert _run(sync.push_findings("t1", [])) is False
+    assert _run(sync.push_findings("t1", {})) is False

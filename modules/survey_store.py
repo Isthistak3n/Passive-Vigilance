@@ -28,6 +28,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone, tzinfo
 from math import atan2, cos, radians, sin, sqrt
 from pathlib import Path
@@ -176,7 +177,14 @@ class SurveyStore:
                 evidence     TEXT,
                 created_at   TEXT NOT NULL,
                 origin_node  TEXT,
-                status       TEXT NOT NULL DEFAULT 'open'
+                status       TEXT NOT NULL DEFAULT 'open',
+                -- Survey outcome once the mobile node reports: 'resident' (home AP found
+                -- locally), 'seen' (device seen but no local home AP), 'not_located'
+                -- (patrolled, found nothing). wigle_candidate is set when the home AP was
+                -- NOT found in the local wardrive, so the operator may deliberately run a
+                -- WiGLE lookup (the query itself is a separate, manual step — not here).
+                outcome         TEXT,
+                wigle_candidate INTEGER NOT NULL DEFAULT 0
             )
             """
         )
@@ -196,7 +204,13 @@ class SurveyStore:
                 timestamp TEXT NOT NULL,
                 lat       REAL,
                 lon       REAL,
-                rssi      REAL
+                rssi      REAL,
+                -- 'device' = the tasked device itself was seen here; 'ap' = a local AP
+                -- beaconing the device's distinctive home network was heard here (its
+                -- BSSID/SSID recorded) — the single-patrol bed-down signal.
+                kind      TEXT NOT NULL DEFAULT 'device',
+                bssid     TEXT,
+                ssid      TEXT
             )
             """
         )
@@ -227,14 +241,37 @@ class SurveyStore:
                 is_overnight    INTEGER,
                 obs_count       INTEGER,
                 survey_node     TEXT,
-                computed_at     TEXT
+                computed_at     TEXT,
+                -- 'device_cluster' = a place the device itself was seen; 'home_ap' = the
+                -- located home AP (bed-down headline), with its BSSID/SSID.
+                kind            TEXT NOT NULL DEFAULT 'device_cluster',
+                bssid           TEXT,
+                ssid            TEXT
             )
             """
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_finding_task ON survey_finding(task_id, rank)"
         )
+        self._migrate(cur)
         self._conn.commit()
+
+    def _migrate(self, cur) -> None:
+        """Add columns introduced after a dev DB may already exist (SQLite has no
+        ADD COLUMN IF NOT EXISTS). No-op on a fresh DB created by the statements above."""
+        want = {
+            "survey_tasking": [("outcome", "TEXT"),
+                               ("wigle_candidate", "INTEGER NOT NULL DEFAULT 0")],
+            "survey_observation": [("kind", "TEXT NOT NULL DEFAULT 'device'"),
+                                   ("bssid", "TEXT"), ("ssid", "TEXT")],
+            "survey_finding": [("kind", "TEXT NOT NULL DEFAULT 'device_cluster'"),
+                               ("bssid", "TEXT"), ("ssid", "TEXT")],
+        }
+        for table, cols in want.items():
+            have = {r["name"] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()}
+            for name, decl in cols:
+                if name not in have:
+                    cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     # ------------------------------------------------------------------
     # Taskings
@@ -381,14 +418,20 @@ class SurveyStore:
         lat: Optional[float] = None,
         lon: Optional[float] = None,
         rssi: Optional[float] = None,
+        kind: str = "device",
+        bssid: Optional[str] = None,
+        ssid: Optional[str] = None,
     ) -> None:
-        """Record one sighting of a tasked target. Called on the poll thread when the
-        mobile matcher fires; the node's own GPS fix is the position."""
+        """Record one survey sighting. ``kind='device'`` = the tasked device itself was
+        seen here; ``kind='ap'`` = a local AP beaconing the device's distinctive home
+        network was heard here (its BSSID/SSID captured) — the single-patrol bed-down
+        signal. Called on the poll thread; the node's own GPS fix is the position."""
         ts = _iso(timestamp or datetime.now(timezone.utc))
         self._conn.execute(
-            "INSERT INTO survey_observation (task_id, timestamp, lat, lon, rssi) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (task_id, ts, lat, lon, rssi),
+            "INSERT INTO survey_observation "
+            "(task_id, timestamp, lat, lon, rssi, kind, bssid, ssid) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, ts, lat, lon, rssi, kind, bssid, ssid),
         )
         self._conn.commit()
 
@@ -422,32 +465,75 @@ class SurveyStore:
         tz: Optional[tzinfo] = None,
         survey_node: Optional[str] = None,
         persist: bool = True,
-    ) -> list:
-        """Cluster a task's observations into ranked bed-down findings.
+    ) -> dict:
+        """Resolve a task's survey observations into a **structured result**.
 
-        Greedy nearest-centroid spatial clustering (the PersistenceEngine approach),
-        then per cluster: a **gap-tolerant dwell** (sum of consecutive in-cluster
-        gaps not exceeding *visit_gap_seconds*, so a reception blind spot never
-        inflates time-present), a **visit count** (runs separated by a larger gap),
-        distinct calendar days, distinct nights, strongest RSSI, and an overnight
-        flag. Clusters are ranked by ``dwell × max(visits, 1)`` — the strongest
-        dwell-and-return cluster (rank 0) is the residence headline. When *persist*,
-        the task's findings are replaced wholesale in ``survey_finding``.
+        The bed-down is resolved by AP ASSOCIATION first: if the mobile node heard a
+        local AP beaconing the device's distinctive home network (``kind='ap'``
+        observations), that AP's location is the residence — a single patrol suffices,
+        no dwell accumulation needed. The device's own sightings (``kind='device'``)
+        are clustered too and carry the dwell/return/overnight annotation as
+        *confidence*, not as the primary signal.
 
-        *tz* controls the local time used for the night test (defaults to the host's
-        local zone); tests pass a fixed zone for determinism.
+        Returns a dict::
+
+            {task_id, survey_node, located, home_ap, clusters, wigle_candidate, outcome}
+
+        * ``home_ap`` — ``{bssid, ssid, lat, lon, max_rssi, obs_count}`` or None.
+        * ``outcome`` — ``resident`` (home AP found locally) / ``seen`` (device seen,
+          no local home AP) / ``not_located`` (patrolled, found nothing).
+        * ``wigle_candidate`` — True when the home AP was NOT found locally, so the
+          operator may deliberately run a WiGLE lookup (a separate, manual step).
+
+        When *persist*, the result replaces the task's stored findings and updates its
+        outcome/wigle flag. *tz* fixes the night-test zone for deterministic tests.
         """
         start_h, end_h = _parse_night_hours(night_hours or _NIGHT_HOURS)
         local_tz = tz if tz is not None else datetime.now().astimezone().tzinfo
 
         rows = self._conn.execute(
-            "SELECT timestamp, lat, lon, rssi FROM survey_observation "
-            "WHERE task_id = ? ORDER BY timestamp",
+            "SELECT timestamp, lat, lon, rssi, kind, bssid, ssid "
+            "FROM survey_observation WHERE task_id = ? ORDER BY timestamp",
             (task_id,),
         ).fetchall()
+        device_rows = [r for r in rows if (r["kind"] or "device") == "device"]
+        ap_rows = [r for r in rows if r["kind"] == "ap"]
 
-        # Greedy spatial clustering; each cluster keeps its observation list so the
-        # temporal features can be derived after assignment.
+        # Device sightings -> ranked spatial clusters (dwell/return = annotation).
+        clusters = [
+            self._cluster_finding(c, visit_gap_seconds, start_h, end_h, local_tz)
+            for c in self._spatial_clusters(device_rows, threshold_meters)
+        ]
+        clusters.sort(key=lambda f: f["dwell_seconds"] * max(f["visit_count"], 1),
+                      reverse=True)
+        for rank, f in enumerate(clusters):
+            f["rank"] = rank
+
+        # AP associations -> the dominant cluster is the located home AP.
+        home_ap = self._resolve_home_ap(
+            self._spatial_clusters(ap_rows, threshold_meters))
+
+        located = bool(clusters or home_ap)
+        if home_ap is not None:
+            outcome, wigle_candidate = "resident", False
+        elif clusters:
+            outcome, wigle_candidate = "seen", True
+        else:
+            outcome, wigle_candidate = "not_located", True
+
+        result = {
+            "task_id": task_id, "survey_node": survey_node,
+            "located": located, "home_ap": home_ap, "clusters": clusters,
+            "wigle_candidate": wigle_candidate, "outcome": outcome,
+        }
+        if persist:
+            self._store_result(task_id, result, survey_node)
+        return result
+
+    @staticmethod
+    def _spatial_clusters(rows: list, threshold_meters: float) -> list:
+        """Greedy nearest-centroid clustering (the PersistenceEngine approach); each
+        cluster keeps its observation rows so temporal/AP features derive afterwards."""
         clusters: list = []
         for r in rows:
             lat, lon = r["lat"], r["lon"]
@@ -465,24 +551,26 @@ class SurveyStore:
                     break
             if not placed:
                 clusters.append({"lat": lat, "lon": lon, "count": 1, "obs": [r]})
+        return clusters
 
-        findings = [
-            self._cluster_finding(c, visit_gap_seconds, start_h, end_h, local_tz)
-            for c in clusters
-        ]
-        # Rank by dwell-and-return; strongest first.
-        findings.sort(
-            key=lambda f: f["dwell_seconds"] * max(f["visit_count"], 1),
-            reverse=True,
-        )
-        for rank, f in enumerate(findings):
-            f["rank"] = rank
-            f["task_id"] = task_id
-            f["survey_node"] = survey_node
-
-        if persist:
-            self._store_findings(task_id, findings, survey_node)
-        return findings
+    @staticmethod
+    def _resolve_home_ap(ap_clusters: list) -> Optional[dict]:
+        """The located home AP: the AP-association cluster with the most sightings.
+        Its dominant BSSID + SSID name it; its centroid locates it."""
+        if not ap_clusters:
+            return None
+        best = max(ap_clusters, key=lambda c: c["count"])
+        bssids = Counter(o["bssid"] for o in best["obs"] if o["bssid"])
+        ssids = Counter(o["ssid"] for o in best["obs"] if o["ssid"])
+        rssis = [o["rssi"] for o in best["obs"]
+                 if o["rssi"] is not None and o["rssi"] != 0]
+        return {
+            "bssid": bssids.most_common(1)[0][0] if bssids else None,
+            "ssid": ssids.most_common(1)[0][0] if ssids else None,
+            "lat": best["lat"], "lon": best["lon"],
+            "max_rssi": max(rssis) if rssis else None,
+            "obs_count": best["count"],
+        }
 
     @staticmethod
     def _cluster_finding(cluster: dict, visit_gap_seconds: float,
@@ -531,49 +619,52 @@ class SurveyStore:
         }
 
     @_synchronized
-    def _store_findings(self, task_id: str, findings: list,
-                        survey_node: Optional[str]) -> None:
-        """Replace a task's findings wholesale (idempotent recompute/ingest)."""
+    def _store_result(self, task_id: str, result: dict,
+                      survey_node: Optional[str]) -> None:
+        """Replace a task's findings wholesale from a structured result (idempotent
+        recompute/ingest): the located home AP as one ``home_ap`` finding row plus the
+        device-sighting clusters, and the task's outcome/wigle flag."""
         computed_at = _iso(datetime.now(timezone.utc))
         self._conn.execute("DELETE FROM survey_finding WHERE task_id = ?", (task_id,))
-        for f in findings:
+
+        ap = result.get("home_ap")
+        if ap:
+            self._conn.execute(
+                "INSERT INTO survey_finding "
+                "(task_id, rank, cluster_lat, cluster_lon, max_rssi, obs_count, "
+                " survey_node, computed_at, kind, bssid, ssid) "
+                "VALUES (?,?,?,?,?,?,?,?, 'home_ap', ?, ?)",
+                (task_id, 0, ap.get("lat"), ap.get("lon"), ap.get("max_rssi"),
+                 ap.get("obs_count", 0), survey_node, computed_at,
+                 ap.get("bssid"), ap.get("ssid")),
+            )
+        for f in result.get("clusters", []):
             self._conn.execute(
                 "INSERT INTO survey_finding "
                 "(task_id, rank, cluster_lat, cluster_lon, dwell_seconds, "
                 " visit_count, distinct_days, distinct_nights, first_seen, "
                 " last_seen, max_rssi, is_overnight, obs_count, survey_node, "
-                " computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (task_id, f.get("rank", 0), f["cluster_lat"], f["cluster_lon"],
-                 f["dwell_seconds"], f["visit_count"], f["distinct_days"],
-                 f["distinct_nights"], f["first_seen"], f["last_seen"],
-                 f["max_rssi"], 1 if f["is_overnight"] else 0, f["obs_count"],
+                " computed_at, kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'device_cluster')",
+                (task_id, f.get("rank", 0), f.get("cluster_lat"), f.get("cluster_lon"),
+                 f.get("dwell_seconds", 0.0), f.get("visit_count", 0),
+                 f.get("distinct_days", 0), f.get("distinct_nights", 0),
+                 f.get("first_seen"), f.get("last_seen"), f.get("max_rssi"),
+                 1 if f.get("is_overnight") else 0, f.get("obs_count", 0),
                  survey_node, computed_at),
             )
+        self._conn.execute(
+            "UPDATE survey_tasking SET outcome = ?, wigle_candidate = ? WHERE task_id = ?",
+            (result.get("outcome"), 1 if result.get("wigle_candidate") else 0, task_id),
+        )
         self._conn.commit()
 
     @_synchronized
-    def ingest_findings(self, task_id: str, findings: list,
-                        survey_node: Optional[str] = None,
-                        complete: bool = True) -> None:
-        """Fixed-side: store findings pushed by a mobile node and (by default) mark
-        the tasking complete. Normalises the incoming dicts to the stored shape."""
-        norm = []
-        for f in findings:
-            norm.append({
-                "rank": f.get("rank", 0),
-                "cluster_lat": f.get("cluster_lat"),
-                "cluster_lon": f.get("cluster_lon"),
-                "dwell_seconds": f.get("dwell_seconds", 0.0),
-                "visit_count": f.get("visit_count", 0),
-                "distinct_days": f.get("distinct_days", 0),
-                "distinct_nights": f.get("distinct_nights", 0),
-                "first_seen": f.get("first_seen"),
-                "last_seen": f.get("last_seen"),
-                "max_rssi": f.get("max_rssi"),
-                "is_overnight": bool(f.get("is_overnight")),
-                "obs_count": f.get("obs_count", 0),
-            })
-        self._store_findings(task_id, norm, survey_node)
+    def ingest_result(self, task_id: str, result: dict,
+                      survey_node: Optional[str] = None,
+                      complete: bool = True) -> None:
+        """Fixed-side: store a structured survey result pushed by a mobile node and (by
+        default) mark the tasking complete."""
+        self._store_result(task_id, result, survey_node or result.get("survey_node"))
         if complete:
             self._conn.execute(
                 "UPDATE survey_tasking SET status = 'complete' WHERE task_id = ?",
@@ -582,26 +673,38 @@ class SurveyStore:
             self._conn.commit()
 
     @_synchronized
-    def findings_for(self, task_id: str) -> list:
+    def findings_for(self, task_id: str) -> dict:
+        """The stored survey result for a task: ``{home_ap, clusters}`` (home_ap is
+        None when no local home AP was located)."""
         rows = self._conn.execute(
             "SELECT * FROM survey_finding WHERE task_id = ? ORDER BY rank",
             (task_id,),
         ).fetchall()
-        out = []
+        home_ap = None
+        clusters = []
         for r in rows:
             d = dict(r)
-            d["is_overnight"] = bool(d.get("is_overnight"))
-            out.append(d)
-        return out
+            if d.get("kind") == "home_ap":
+                home_ap = {"bssid": d.get("bssid"), "ssid": d.get("ssid"),
+                           "lat": d.get("cluster_lat"), "lon": d.get("cluster_lon"),
+                           "max_rssi": d.get("max_rssi"), "obs_count": d.get("obs_count")}
+            else:
+                d["is_overnight"] = bool(d.get("is_overnight"))
+                clusters.append(d)
+        return {"home_ap": home_ap, "clusters": clusters}
 
     @_synchronized
     def taskings_with_findings(self) -> list:
-        """Fixed-side GUI feed: every tasking joined with its findings (findings may
-        be empty for an as-yet-unsurveyed target)."""
+        """Fixed-side GUI feed: every tasking with its resolved survey result —
+        ``outcome`` (resident/seen/not_located), ``wigle_candidate``, the located
+        ``home_ap``, and the device-sighting ``clusters``."""
         out = []
         for t in self.all_taskings():
             t = dict(t)
-            t["findings"] = self.findings_for(t["task_id"])
+            res = self.findings_for(t["task_id"])
+            t["home_ap"] = res["home_ap"]
+            t["clusters"] = res["clusters"]
+            t["wigle_candidate"] = bool(t.get("wigle_candidate"))
             out.append(t)
         return out
 

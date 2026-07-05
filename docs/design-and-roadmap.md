@@ -476,20 +476,39 @@ to the executor, and fails soft — an unreachable base node is the normal field
 `SURVEY_AUTOTASK` (default off) additionally enrolls high-severity strong-fingerprint contacts.
 `SurveyStore.enqueue_tasking` de-dups on identity so re-flagging never floods the watchlist.
 
-**Survey execution + bed-down.** On the mobile node, `_record_survey_hits` records a tagged
-observation (its own GPS fix as position) every poll a tasked target is seen — over the full
-device list, since a target need not score suspicious to be surveyed. `compute_findings` clusters
-those observations (the PersistenceEngine spatial core) and ranks locations by **dwell × return**:
-a **gap-tolerant dwell** (a blind gap never inflates time-present), visit/day/night counts, an
-overnight flag, and strongest RSSI (0/None skipped, the zero-RSSI rule). The top cluster is the
-residence headline. Findings offload to the fixed node's **Survey tab** ("target beds down at X:
-6 h dwell, 3 nights").
+**Survey execution — bed-down by AP association (single patrol).** The residence question is
+"where does this device belong," and the strongest answer doesn't need repeat patrols to build
+dwell: if the mobile node's wardrive hears a **local AP beaconing the device's distinctive home
+network** (its anchor SSID), that AP's location *is* the bed-down — resolved in one pass.
+`_record_survey_hits` records two signals per poll (its own GPS fix as position): an **AP
+association** (`kind='ap'`, the local AP's BSSID/SSID) and a **direct sighting** of the device
+itself. `compute_findings` returns a structured result — `home_ap` (the located residence),
+device-sighting `clusters` (dwell/return/overnight kept as *confidence annotation*, not the
+mechanism), and an `outcome`:
+- **resident** — home AP found locally → here's where it lives.
+- **seen** — device glimpsed but its home network isn't on the air locally → home is elsewhere →
+  **WiGLE candidate**.
+- **not_located** — after `SURVEY_MIN_PATROL_POLLS` of wardriving it was never found → **WiGLE
+  candidate**.
+
+The fixed node's **Survey tab** shows the outcome, the home AP, and — measured from the **fixed
+node's own position** (`air_geometry.resolve_reference`: a GUI-pinned home wins, else the live
+fix) — how far the residence is (here / neighborhood / distant). A `wigle_candidate` flag is
+surfaced when the home AP wasn't found locally; the WiGLE lookup that would locate its home from
+its known networks is a **deliberate operator action, deferred to a follow-up PR** (§10) — the
+query is outbound and opsec-sensitive, so it is never automated here.
 
 **Honest limits.** Only well-fingerprinted contacts are surveyable (named probe SSIDs are ~26% of
-WiFi clients here; BLE anchors sparser), so this hunts the identifiable, not everyone. Probing is
-intermittent, so a WiFi match lands only on polls where the device emits the anchor SSID — fine,
-the survey accumulates across many polls. Modules: `survey_store.py` (both nodes),
-`survey_sync.py` (mobile client), endpoints in `gui/server.py`, hooks in `orchestrator.py`.
+WiFi clients here; BLE anchors sparser), so this hunts the identifiable, not everyone. AP
+association needs the home network to actually beacon within the wardrive's reach; a distinctive
+anchor keeps false matches low but a shared SSID name is a candidate, not a certainty. Modules:
+`survey_store.py` (both nodes), `survey_sync.py` (mobile client), endpoints + distance annotation
+in `gui/server.py`, hooks in `orchestrator.py`.
+
+**Next (follow-up PR):** the WiGLE query client — for a `wigle_candidate`, look up the device's
+probed SSIDs (client) or BSSID (AP) in WiGLE to locate its home AP, opsec-gated and
+augments-never-gates per §10 — plus the reverse §5.5 fusion (a follower first seen on the mobile
+node later surfacing at the fixed node).
 
 ---
 

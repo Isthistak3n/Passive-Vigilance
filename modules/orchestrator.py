@@ -131,6 +131,13 @@ class SensorOrchestrator:
         # Taskings we've already flipped to 'surveying' this session (avoid a status
         # write every poll a target is seen).
         self._survey_started: set = set()
+        # Patrol effort per task (polls processed since it was pulled) — a task the
+        # mobile node has patrolled this many polls without locating the device OR its
+        # home AP is reported "not located" (a WiGLE candidate), so a device that was
+        # simply never encountered doesn't sit silently forever.
+        self._survey_patrol_polls: dict = {}
+        self._survey_min_patrol_polls = int(
+            os.getenv("SURVEY_MIN_PATROL_POLLS", "20"))
         # Mobile-node client to the fixed node's survey endpoints. Inert (no URL)
         # unless SURVEY_FIXED_URL is set; the sync loop no-ops when not configured.
         self._survey_sync = SurveySync(
@@ -1021,36 +1028,72 @@ class SensorOrchestrator:
         return {anchored_identity_key(probe_fp, s) for s in ssids}
 
     def _record_survey_hits(self, devices: list) -> None:
-        """Mobile side: record a survey observation for every observed device whose
-        identity matches an open tasking. The node's own GPS fix is the position (it
-        reports where IT is when it sees the target). Fully guarded — a survey-store
-        failure never disturbs capture or scoring."""
+        """Mobile side: for every open tasking, record where it was located this poll.
+
+        Two location signals, in order of strength:
+          * **AP association** — a local AP beaconing the tasked device's distinctive
+            home network (its anchor SSID) is heard; its BSSID/SSID + the node's GPS
+            fix are the residence. This resolves a bed-down in a SINGLE patrol, no dwell
+            accumulation needed (the operator's insight).
+          * **Direct sighting** — the tasked device itself is observed (matched by the
+            portable candidate keys); where the node is standing is recorded.
+
+        Also advances each open task's patrol effort so a device that is never
+        encountered eventually reads "not located" (a WiGLE candidate) rather than
+        staying silent. The node's own GPS fix is the position; fully guarded."""
         if self.survey_store is None or self._node_mode != "mobile":
             return
         try:
-            tasked = self.survey_store.open_identity_keys()  # {identity_key: task_id}
+            taskings = self.survey_store.open_taskings()
         except Exception as exc:
-            logger.debug("survey open_identity_keys failed: %s", exc)
+            logger.debug("survey open_taskings failed: %s", exc)
             return
-        if not tasked:
+        if not taskings:
             return
-        tasked_keys = set(tasked)
+        key_to_task = {t["identity_key"]: t["task_id"] for t in taskings}
+        tasked_keys = set(key_to_task)
+        # Distinctive home SSID (the anchor) -> task ids, for AP-association matching.
+        ssid_to_tasks: dict = {}
+        for t in taskings:
+            anchor = ((t.get("evidence") or {}).get("anchor") or "").strip()
+            if anchor:
+                ssid_to_tasks.setdefault(anchor.lower(), []).append(t["task_id"])
+
         now = datetime.now(timezone.utc)
         fix = self._current_fix or {}
         lat, lon = fix.get("lat"), fix.get("lon")
+
+        # Patrol effort: one poll processed for every open task this cycle.
+        for t in taskings:
+            tid = t["task_id"]
+            self._survey_patrol_polls[tid] = self._survey_patrol_polls.get(tid, 0) + 1
+
         for d in devices:
-            hits = self._device_candidate_keys(d) & tasked_keys
-            for key in hits:
-                tid = tasked[key]
-                try:
-                    self.survey_store.record_survey_observation(
-                        tid, timestamp=now, lat=lat, lon=lon,
-                        rssi=d.get("last_signal"))
-                    if tid not in self._survey_started:
-                        self.survey_store.set_status(tid, "surveying")
-                        self._survey_started.add(tid)
-                except Exception as exc:
-                    logger.debug("survey observation write failed: %s", exc)
+            # Direct device sighting.
+            for key in (self._device_candidate_keys(d) & tasked_keys):
+                self._record_survey_obs(key_to_task[key], now, lat, lon,
+                                        d.get("last_signal"))
+            # AP association: is this a local AP beaconing a tasked device's home SSID?
+            beaconed = (d.get("beaconed_ssid") or "").strip().lower()
+            if beaconed and beaconed in ssid_to_tasks:
+                for tid in ssid_to_tasks[beaconed]:
+                    self._record_survey_obs(
+                        tid, now, lat, lon, d.get("last_signal"),
+                        kind="ap", bssid=d.get("macaddr"),
+                        ssid=d.get("beaconed_ssid"))
+
+    def _record_survey_obs(self, tid, now, lat, lon, rssi, *,
+                           kind="device", bssid=None, ssid=None) -> None:
+        """Write one survey observation and flip the task to 'surveying' on first hit."""
+        try:
+            self.survey_store.record_survey_observation(
+                tid, timestamp=now, lat=lat, lon=lon, rssi=rssi,
+                kind=kind, bssid=bssid, ssid=ssid)
+            if tid not in self._survey_started:
+                self.survey_store.set_status(tid, "surveying")
+                self._survey_started.add(tid)
+        except Exception as exc:
+            logger.debug("survey observation write failed: %s", exc)
 
     def _build_survey_evidence(self, event, device, contact, contact_key) -> Optional[dict]:
         """Assemble the tasking evidence for a surveyable contact, or None when the
@@ -1128,11 +1171,11 @@ class SensorOrchestrator:
                 pulled = await self._survey_sync.pull_taskings()
                 if pulled:
                     await loop.run_in_executor(None, self._ingest_pulled_taskings, pulled)
-                # Compute findings (DB-heavy) off the loop, then push each.
+                # Compute survey results (DB-heavy) off the loop, then push each.
                 prepared = await loop.run_in_executor(None, self._prepare_survey_findings)
-                for tid, findings in prepared:
+                for tid, result in prepared:
                     ok = await self._survey_sync.push_findings(
-                        tid, findings, self._survey_node)
+                        tid, result, self._survey_node)
                     if ok:
                         await loop.run_in_executor(
                             None, self.survey_store.set_status, tid, "complete")
@@ -1149,20 +1192,27 @@ class SensorOrchestrator:
                 logger.debug("survey tasking upsert failed: %s", exc)
 
     def _prepare_survey_findings(self) -> list:
-        """Compute (task_id, findings) for every task with fresh observations —
-        executor-thread work so clustering never blocks the loop."""
+        """Compute ``(task_id, result)`` for every open task the mobile node has either
+        located OR patrolled long enough to declare "not located" — executor-thread work
+        so the clustering never blocks the loop. A task pulled but not yet patrolled the
+        minimum is skipped (still surveying), so we never push a premature not-found."""
         out = []
         try:
-            task_ids = self.survey_store.tasks_with_observations()
+            taskings = self.survey_store.open_taskings()
         except Exception as exc:
-            logger.debug("survey tasks_with_observations failed: %s", exc)
+            logger.debug("survey open_taskings failed: %s", exc)
             return out
-        for tid in task_ids:
+        for t in taskings:
+            tid = t["task_id"]
             try:
-                findings = self.survey_store.compute_findings(
+                has_obs = self.survey_store.observation_count(tid) > 0
+                patrolled = (self._survey_patrol_polls.get(tid, 0)
+                             >= self._survey_min_patrol_polls)
+                if not (has_obs or patrolled):
+                    continue  # still surveying — don't report yet
+                result = self.survey_store.compute_findings(
                     tid, survey_node=self._survey_node)
-                if findings:
-                    out.append((tid, findings))
+                out.append((tid, result))
             except Exception as exc:
                 logger.debug("survey compute_findings failed for %s: %s", tid, exc)
         return out

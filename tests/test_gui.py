@@ -1016,17 +1016,21 @@ class TestGUIServerSurveyEndpoints(unittest.TestCase):
                      json={"identity_key": "wifi-fp:abc"}).get_json()["task_id"]
         r = c.post("/api/survey", headers=self._h(),
                    json={"task_id": tid, "survey_node": "m1",
-                         "findings": [{"cluster_lat": 1.0, "cluster_lon": 2.0,
-                                       "dwell_seconds": 60, "visit_count": 1,
-                                       "is_overnight": True}]})
+                         "result": {"located": True, "outcome": "resident",
+                                    "wigle_candidate": False,
+                                    "home_ap": {"bssid": "aa:bb", "ssid": "HOME",
+                                                "lat": 1.0, "lon": 2.0,
+                                                "max_rssi": -50, "obs_count": 4},
+                                    "clusters": []}})
         self.assertEqual(r.status_code, 200)
         body = c.get("/api/survey", headers=self._h()).get_json()
         row = [t for t in body if t["task_id"] == tid][0]
         self.assertEqual(row["status"], "complete")
-        self.assertEqual(len(row["findings"]), 1)
-        self.assertTrue(row["findings"][0]["is_overnight"])
+        self.assertEqual(row["outcome"], "resident")
+        self.assertFalse(row["wigle_candidate"])
+        self.assertEqual(row["home_ap"]["ssid"], "HOME")
 
-    def test_survey_offload_requires_findings_list(self):
+    def test_survey_offload_requires_result_object(self):
         c = self._client()
         tid = c.post("/api/tasking", headers=self._h(),
                      json={"identity_key": "wifi-fp:abc"}).get_json()["task_id"]

@@ -93,17 +93,18 @@ class SurveySync:
             logger.debug("Survey pull failed (%s): %s", url, exc)
             return None
 
-    async def push_findings(self, task_id: str, findings: list,
+    async def push_findings(self, task_id: str, result: dict,
                             survey_node: Optional[str] = None) -> bool:
-        """POST computed findings for one tasking to the fixed node. Returns True on
-        success; False (soft) on any failure so the caller can retry next cycle."""
+        """POST a computed survey result (located home AP + device clusters + outcome)
+        for one tasking to the fixed node. Returns True on success; False (soft) on any
+        failure so the caller can retry next cycle."""
         if not self._base:
             return False
         url = f"{self._base}/api/survey"
         payload = {
             "task_id": task_id,
             "survey_node": survey_node,
-            "findings": findings,
+            "result": result,
         }
         try:
             async with aiohttp.ClientSession(headers=self._headers()) as session:

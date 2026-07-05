@@ -108,20 +108,22 @@ def test_fixed_to_mobile_survey_roundtrip():
                 tasked[identity_key], timestamp=T0 + timedelta(seconds=60 * i),
                 lat=SPOT[0], lon=SPOT[1], rssi=observed["last_signal"])
 
-        # 4. Compute findings and push them back over the wire.
-        findings = mobile_store.compute_findings(
+        # 4. Compute the survey result and push it back over the wire.
+        result = mobile_store.compute_findings(
             tid, tz=timezone.utc, survey_node="mobile-test")
-        assert findings and findings[0]["dwell_seconds"] >= 600
-        assert await sync.push_findings(tid, findings, "mobile-test") is True
+        assert result["clusters"] and result["clusters"][0]["dwell_seconds"] >= 600
+        assert await sync.push_findings(tid, result, "mobile-test") is True
 
     asyncio.run(drive_mobile())
 
-    # 5. The fixed node now holds the bed-down finding and the tasking is complete.
+    # 5. The fixed node now holds the survey result and the tasking is complete.
     got = fixed_store.findings_for(tid)
-    assert len(got) == 1
-    assert abs(got[0]["cluster_lat"] - SPOT[0]) < 1e-3
-    assert got[0]["dwell_seconds"] >= 600
-    assert got[0]["survey_node"] == "mobile-test"
+    assert len(got["clusters"]) == 1
+    assert abs(got["clusters"][0]["cluster_lat"] - SPOT[0]) < 1e-3
+    assert got["clusters"][0]["dwell_seconds"] >= 600
+    tf = [t for t in fixed_store.taskings_with_findings() if t["task_id"] == tid][0]
+    assert tf["outcome"] == "seen"        # device seen, no local home AP
+    assert tf["wigle_candidate"] is True
     assert fixed_store.get_tasking(tid)["status"] == "complete"
 
     gui.stop()

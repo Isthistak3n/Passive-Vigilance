@@ -912,20 +912,40 @@ function fmtDwell(secs) {
 function addSurveyMarkers() {
   layers.survey.clearLayers();
   for (const t of state.survey) {
-    (t.findings || []).forEach((f, i) => {
-      if (f.cluster_lat == null || f.cluster_lon == null) return;
-      const headline = i === 0;
-      L.circleMarker([f.cluster_lat, f.cluster_lon], {
-        radius: headline ? 10 : 6,
-        color: '#c586ff', weight: headline ? 3 : 1, fillOpacity: headline ? 0.6 : 0.35,
+    const target = esc(t.designator || t.identity_key || 'target');
+    // The located home AP is the bed-down headline (a star).
+    if (t.home_ap && t.home_ap.lat != null && t.home_ap.lon != null) {
+      L.circleMarker([t.home_ap.lat, t.home_ap.lon], {
+        radius: 11, color: '#c586ff', weight: 3, fillOpacity: 0.6,
       }).bindPopup(
-        `<b>${esc(t.designator || t.identity_key || 'target')}</b>` +
-        `<br>${headline ? 'Bed-down' : 'Seen'} — dwell ${fmtDwell(f.dwell_seconds)}` +
+        `<b>${target}</b><br><b>Bed-down (home AP)</b>` +
+        `<br>${esc(t.home_ap.ssid || '')} ${t.home_ap.bssid ? '(' + esc(t.home_ap.bssid) + ')' : ''}` +
+        (t.home_ap.distance_m != null ? `<br>${fmtDist(t.home_ap.distance_m)} from node — ${t.home_ap.locality || ''}` : '')
+      ).addTo(layers.survey);
+    }
+    // Direct sightings of the device itself (secondary).
+    (t.clusters || []).forEach(f => {
+      if (f.cluster_lat == null || f.cluster_lon == null) return;
+      L.circleMarker([f.cluster_lat, f.cluster_lon], {
+        radius: 6, color: '#8b949e', weight: 1, fillOpacity: 0.35,
+      }).bindPopup(
+        `<b>${target}</b><br>Seen here — dwell ${fmtDwell(f.dwell_seconds)}` +
         `<br>${f.visit_count || 0} visit(s), ${f.distinct_nights || 0} night(s)` +
         (f.is_overnight ? '<br><b>overnight</b>' : '')
       ).addTo(layers.survey);
     });
   }
+}
+
+const _SURVEY_OUTCOME = {
+  resident:     { label: 'RESIDENT', cls: 'survey-out-resident', hint: 'Home AP found in the local area' },
+  seen:         { label: 'SEEN — HOME ELSEWHERE', cls: 'survey-out-seen', hint: 'Device seen locally but its home network was not — a WiGLE candidate' },
+  not_located:  { label: 'NOT LOCATED', cls: 'survey-out-absent', hint: 'Not found in the local wardrive — a WiGLE candidate' },
+};
+
+function fmtDist(m) {
+  if (m == null) return '';
+  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
 }
 
 function renderSurvey() {
@@ -938,34 +958,52 @@ function renderSurvey() {
     return;
   }
   list.innerHTML = state.survey.map(t => {
-    const findings = t.findings || [];
     const statusCls = `survey-status-${(t.status || 'open')}`;
-    const rows = findings.length ? findings.map((f, i) => `
-      <tr class="${i === 0 ? 'bed-down' : ''}">
-        <td>${i === 0 ? '★' : (i + 1)}</td>
+    const out = _SURVEY_OUTCOME[t.outcome] || null;
+    const ap = t.home_ap;
+    // Headline: the located home AP (the bed-down), or a pending/not-found note.
+    let headline;
+    if (ap) {
+      const where = ap.lat != null
+        ? `<code>${(+ap.lat).toFixed(5)}, ${(+ap.lon).toFixed(5)}</code>` : '—';
+      const dist = ap.distance_m != null
+        ? ` <span class="survey-locality ${ap.locality || ''}">${fmtDist(ap.distance_m)} from node · ${ap.locality || ''}</span>` : '';
+      headline = `<div class="survey-bed">🏠 <b>Beds down at</b> ${esc(ap.ssid || 'home AP')}
+        ${ap.bssid ? `<code class="bssid">${esc(ap.bssid)}</code>` : ''} — ${where}${dist}</div>`;
+    } else if (t.outcome === 'not_located' || t.outcome === 'seen') {
+      headline = `<div class="survey-bed survey-wigle">🛰️ Home AP not found in the local wardrive —
+        <b>WiGLE candidate</b> <span class="survey-note">(look up its home networks; the query is a separate, deliberate step)</span></div>`;
+    } else {
+      headline = '<div class="survey-bed survey-pending">Surveying — no bed-down located yet.</div>';
+    }
+    // Secondary: where the device itself was seen (annotation).
+    const clusters = t.clusters || [];
+    const rows = clusters.map((f, i) => `
+      <tr>
         <td><code>${f.cluster_lat != null ? (+f.cluster_lat).toFixed(5) : '—'}, ${f.cluster_lon != null ? (+f.cluster_lon).toFixed(5) : '—'}</code></td>
+        <td>${f.distance_m != null ? fmtDist(f.distance_m) : '—'}</td>
         <td>${fmtDwell(f.dwell_seconds)}</td>
         <td>${f.visit_count || 0}</td>
-        <td>${f.distinct_days || 0}</td>
         <td>${f.distinct_nights || 0}${f.is_overnight ? ' 🌙' : ''}</td>
         <td>${f.max_rssi != null ? f.max_rssi : '—'}</td>
-        <td>${f.obs_count || 0}</td>
-      </tr>`).join('')
-      : '<tr><td colspan="8" class="survey-pending">No bed-down data yet — awaiting the mobile node\'s survey.</td></tr>';
+      </tr>`).join('');
+    const seenTable = clusters.length ? `
+      <details class="survey-seen"><summary>Also seen at ${clusters.length} spot(s)</summary>
+        <table class="survey-table">
+          <thead><tr><th>Location</th><th>Dist</th><th>Dwell</th><th>Visits</th><th>Nights</th><th>RSSI</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </details>` : '';
     return `
       <div class="survey-card">
         <div class="survey-card-head">
           <span class="survey-target">${esc(t.designator || t.identity_key || 'target')}</span>
           <span class="survey-status ${statusCls}">${esc(t.status || 'open')}</span>
+          ${out ? `<span class="survey-outcome ${out.cls}" title="${out.hint}">${out.label}</span>` : ''}
           <span class="survey-reason">${esc(t.reason || '')}</span>
         </div>
-        <table class="survey-table">
-          <thead><tr>
-            <th>#</th><th>Location</th><th>Dwell</th><th>Visits</th>
-            <th>Days</th><th>Nights</th><th>Max RSSI</th><th>Obs</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
+        ${headline}
+        ${seenTable}
       </div>`;
   }).join('');
   addSurveyMarkers();

@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 _HERE = Path(__file__).parent
 _MAX_RECENT = 200
 
+# Survey locality bands (metres from the FIXED node's reference position): within
+# IMMEDIATE = essentially where the node already sees it (not new); within
+# NEIGHBORHOOD = found elsewhere in the local area (resident there); beyond = distant.
+_SURVEY_IMMEDIATE_M = float(os.getenv("SURVEY_IMMEDIATE_METERS", "150"))
+_SURVEY_NEIGHBORHOOD_M = float(os.getenv("SURVEY_NEIGHBORHOOD_METERS", "3000"))
+
 # Durable-history bounds (P5): how many events a panel rebuilds from on-disk
 # session logs, and how many session directories to walk back through. Kept
 # bounded so a long-running node's history reads stay cheap; env-overridable.
@@ -471,26 +477,28 @@ class GUIServer:
 
             if _req.method == "GET":
                 try:
-                    return jsonify(self._survey_store.taskings_with_findings())
+                    taskings = self._survey_store.taskings_with_findings()
+                    self._annotate_survey_distance(taskings)
+                    return jsonify(taskings)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.error("api_survey GET failed: %s", exc)
                     return jsonify({"error": "survey read failed"}), 500
 
             data = _req.get_json(silent=True) or {}
             task_id = str(data.get("task_id", "")).strip()
-            findings = data.get("findings")
-            if not task_id or not isinstance(findings, list):
-                return jsonify({"error": "task_id and a findings list are required"}), 400
+            result = data.get("result")
+            if not task_id or not isinstance(result, dict):
+                return jsonify({"error": "task_id and a result object are required"}), 400
             try:
-                self._survey_store.ingest_findings(
-                    task_id, findings, survey_node=data.get("survey_node"))
+                self._survey_store.ingest_result(
+                    task_id, result, survey_node=data.get("survey_node"))
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error("api_survey POST failed: %s", exc)
                 return jsonify({"error": "survey write failed"}), 500
-            logger.info("Survey findings ingested for %s (%d cluster(s))",
-                        task_id, len(findings))
+            logger.info("Survey result ingested for %s (outcome=%s)",
+                        task_id, result.get("outcome"))
             self.push_event("survey", {"kind": "finding", "task_id": task_id,
-                                       "count": len(findings)})
+                                       "outcome": result.get("outcome")})
             return jsonify({"ingested": True, "task_id": task_id})
 
         @app.route("/api/remote_id")
@@ -709,6 +717,43 @@ class GUIServer:
                     break
         events.reverse()  # oldest -> newest for the client
         return events
+
+    def _annotate_survey_distance(self, taskings: list) -> None:
+        """Tag each survey location with its distance from the FIXED node and a
+        locality band (here / neighborhood / distant). The node's position is the
+        reference (a GUI-pinned home wins, else the live fix), so the operator reads
+        "the home AP is 0.8 km from your node" — resident nearby vs. home elsewhere.
+        No reference (no GPS, no pin) -> distances are left absent. Guarded."""
+        try:
+            from modules import air_geometry
+            orch = self._orchestrator
+            fix = getattr(orch, "_current_fix", None) if orch is not None else None
+            ref = air_geometry.resolve_reference(fix, os.environ)
+        except Exception:
+            ref = None
+        if not ref:
+            return
+        rlat, rlon = ref
+
+        def band(m):
+            if m <= _SURVEY_IMMEDIATE_M:
+                return "here"
+            if m <= _SURVEY_NEIGHBORHOOD_M:
+                return "neighborhood"
+            return "distant"
+
+        for t in taskings:
+            for loc in ([t.get("home_ap")] if t.get("home_ap") else []) + (t.get("clusters") or []):
+                lat = loc.get("lat", loc.get("cluster_lat"))
+                lon = loc.get("lon", loc.get("cluster_lon"))
+                if lat is None or lon is None:
+                    continue
+                try:
+                    m = air_geometry.haversine_nm(rlat, rlon, lat, lon) * 1852.0
+                except Exception:
+                    continue
+                loc["distance_m"] = round(m)
+                loc["locality"] = band(m)
 
     def push_event(self, event_type: str, data: dict) -> None:
         """Broadcast a sensor event to all connected SSE clients.
