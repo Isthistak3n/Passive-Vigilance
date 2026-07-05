@@ -962,3 +962,83 @@ class TestGUIServerAircraftEndpoint(unittest.TestCase):
         self.assertEqual(
             {r["icao"] for r in client.get("/api/aircraft").get_json()},
             {"OLD", "NEW"})
+
+
+class TestGUIServerSurveyEndpoints(unittest.TestCase):
+    """/api/tasking and /api/survey — the recon-pair endpoints."""
+
+    def _client(self, token="tok", store=None):
+        from gui.server import GUIServer
+        from modules.survey_store import SurveyStore
+        self._store = store if store is not None else SurveyStore(":memory:")
+        with patch.dict(os.environ, {"GUI_TOKEN": token}):
+            gui = GUIServer(survey_store=self._store)
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping survey-endpoint tests")
+        return gui.app.test_client()
+
+    def _h(self, token="tok"):
+        return {"Authorization": f"Bearer {token}"}
+
+    def test_tasking_requires_auth(self):
+        c = self._client()
+        self.assertEqual(c.get("/api/tasking").status_code, 401)
+
+    def test_tasking_refused_without_token_configured(self):
+        c = self._client(token="")  # open node — control endpoints must refuse
+        self.assertEqual(c.get("/api/tasking").status_code, 403)
+
+    def test_enqueue_and_list_tasking(self):
+        c = self._client()
+        r = c.post("/api/tasking", headers=self._h(),
+                   json={"identity_key": "wifi-fp:abc", "designator": "CLI-X-1",
+                         "reason": "novelty"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["task_id"])
+        listed = c.get("/api/tasking", headers=self._h()).get_json()
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["identity_key"], "wifi-fp:abc")
+
+    def test_mac_key_is_not_surveyable(self):
+        c = self._client()
+        r = c.post("/api/tasking", headers=self._h(),
+                   json={"identity_key": "mac:aa:bb:cc:dd:ee:ff"})
+        self.assertEqual(r.status_code, 422)
+
+    def test_missing_identity_key_is_rejected(self):
+        c = self._client()
+        r = c.post("/api/tasking", headers=self._h(), json={})
+        self.assertEqual(r.status_code, 400)
+
+    def test_survey_offload_ingests_and_completes(self):
+        c = self._client()
+        tid = c.post("/api/tasking", headers=self._h(),
+                     json={"identity_key": "wifi-fp:abc"}).get_json()["task_id"]
+        r = c.post("/api/survey", headers=self._h(),
+                   json={"task_id": tid, "survey_node": "m1",
+                         "findings": [{"cluster_lat": 1.0, "cluster_lon": 2.0,
+                                       "dwell_seconds": 60, "visit_count": 1,
+                                       "is_overnight": True}]})
+        self.assertEqual(r.status_code, 200)
+        body = c.get("/api/survey", headers=self._h()).get_json()
+        row = [t for t in body if t["task_id"] == tid][0]
+        self.assertEqual(row["status"], "complete")
+        self.assertEqual(len(row["findings"]), 1)
+        self.assertTrue(row["findings"][0]["is_overnight"])
+
+    def test_survey_offload_requires_findings_list(self):
+        c = self._client()
+        tid = c.post("/api/tasking", headers=self._h(),
+                     json={"identity_key": "wifi-fp:abc"}).get_json()["task_id"]
+        r = c.post("/api/survey", headers=self._h(), json={"task_id": tid})
+        self.assertEqual(r.status_code, 400)
+
+    def test_endpoints_404_when_survey_disabled(self):
+        from gui.server import GUIServer
+        with patch.dict(os.environ, {"GUI_TOKEN": "tok"}):
+            gui = GUIServer(survey_store=None)
+        if gui.app is None:
+            self.skipTest("Flask not installed")
+        c = gui.app.test_client()
+        self.assertEqual(c.get("/api/tasking", headers=self._h()).status_code, 404)
+        self.assertEqual(c.get("/api/survey", headers=self._h()).status_code, 404)

@@ -112,10 +112,14 @@ class GUIServer:
         port: int = 8080,
         orchestrator=None,
         env_path=None,
+        survey_store=None,
     ) -> None:
         self._host = host
         self._port = port
         self._orchestrator = orchestrator  # weak back-reference for /api/status
+        # SurveyStore handle (recon pair). Present only on a node with SURVEY_ENABLED;
+        # None -> the tasking/survey endpoints report the feature is off.
+        self._survey_store = survey_store
         # .env path the mode toggle writes to; overridable for tests.
         self._env_path = Path(env_path) if env_path else _DEFAULT_ENV_PATH
 
@@ -392,6 +396,103 @@ class GUIServer:
                 ),
             })
 
+        @app.route("/api/tasking", methods=["GET", "POST"])
+        def api_tasking():
+            """Survey taskings for the recon pair (design §5.5).
+
+            GET returns the open taskings — the watchlist the mobile node pulls.
+            POST enqueues a tasking for a contact (the operator's "Task survey"
+            action). Both are token-gated: the tasking list reveals what is being
+            investigated (opsec), and enqueuing is a control action — so when no
+            GUI_TOKEN is configured, ``check_auth`` runs open and we must refuse
+            here, exactly like ``/api/mode`` POST.
+            """
+            from flask import request as _req
+
+            if not gui_token:
+                return jsonify({
+                    "error": "survey endpoints require GUI_TOKEN to be configured",
+                }), 403
+            if self._survey_store is None:
+                return jsonify({"error": "survey feature not enabled on this node"}), 404
+
+            if _req.method == "GET":
+                try:
+                    return jsonify(self._survey_store.open_taskings())
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error("api_tasking GET failed: %s", exc)
+                    return jsonify({"error": "tasking read failed"}), 500
+
+            data = _req.get_json(silent=True) or {}
+            identity_key = str(data.get("identity_key", "")).strip()
+            if not identity_key:
+                return jsonify({"error": "identity_key is required"}), 400
+            # A bare mac: key is not portable to another node (randomized MACs), so a
+            # tasking on it could never match on the mobile node — refuse it rather
+            # than issue a dead task.
+            if identity_key.startswith("mac:"):
+                return jsonify({
+                    "error": "this contact has no rotation-stable fingerprint and "
+                             "cannot be surveyed by another node",
+                }), 422
+            try:
+                task_id = self._survey_store.enqueue_tasking(
+                    identity_key,
+                    designator=data.get("designator"),
+                    reason=data.get("reason") or "operator",
+                    evidence=data.get("evidence"),
+                    origin_node=data.get("origin_node"),
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("api_tasking POST failed: %s", exc)
+                return jsonify({"error": "tasking write failed"}), 500
+            logger.info("Survey tasking enqueued: %s (%s)", task_id, identity_key)
+            self.push_event("survey", {"kind": "tasking", "task_id": task_id,
+                                       "identity_key": identity_key})
+            return jsonify({"task_id": task_id, "saved": True})
+
+        @app.route("/api/survey", methods=["GET", "POST"])
+        def api_survey():
+            """Survey findings for the recon pair.
+
+            GET returns every tasking joined with its bed-down findings (the fixed
+            node's Survey panel feed). POST is the mobile node's offload: it ingests
+            findings for a tasking and marks it complete. Token-gated like
+            ``/api/tasking``.
+            """
+            from flask import request as _req
+
+            if not gui_token:
+                return jsonify({
+                    "error": "survey endpoints require GUI_TOKEN to be configured",
+                }), 403
+            if self._survey_store is None:
+                return jsonify({"error": "survey feature not enabled on this node"}), 404
+
+            if _req.method == "GET":
+                try:
+                    return jsonify(self._survey_store.taskings_with_findings())
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error("api_survey GET failed: %s", exc)
+                    return jsonify({"error": "survey read failed"}), 500
+
+            data = _req.get_json(silent=True) or {}
+            task_id = str(data.get("task_id", "")).strip()
+            findings = data.get("findings")
+            if not task_id or not isinstance(findings, list):
+                return jsonify({"error": "task_id and a findings list are required"}), 400
+            try:
+                self._survey_store.ingest_findings(
+                    task_id, findings, survey_node=data.get("survey_node"))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("api_survey POST failed: %s", exc)
+                return jsonify({"error": "survey write failed"}), 500
+            logger.info("Survey findings ingested for %s (%d cluster(s))",
+                        task_id, len(findings))
+            self.push_event("survey", {"kind": "finding", "task_id": task_id,
+                                       "count": len(findings)})
+            return jsonify({"ingested": True, "task_id": task_id})
+
         @app.route("/api/remote_id")
         def api_remote_id():
             # Remote ID is an air contact, so it serves the live per-UAS current-sky
@@ -615,7 +716,8 @@ class GUIServer:
         Thread-safe — may be called from the asyncio thread or any other thread.
 
         Args:
-            event_type: One of ``wifi``, ``aircraft``, ``drone``, ``alert``, ``nearby``.
+            event_type: One of ``wifi``, ``aircraft``, ``drone``, ``alert``,
+                ``nearby``, ``survey`` (a nudge to refetch /api/survey).
             data:       Event dict (must be JSON-serialisable).
         """
         payload_dict = {"type": event_type, **data}

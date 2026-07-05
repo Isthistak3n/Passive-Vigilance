@@ -572,3 +572,31 @@ tr.visitor-row { background: rgba(248, 81, 73, 0.06); }
   .nearby-scroll { right: 6px; bottom: 8px; gap: 6px; }
   .nearby-scroll-btn { width: 38px; height: 38px; font-size: 14px; }
 }
+
+/* ── Recon-pair survey (design §5.5) ─────────────────────────────────────── */
+.btn-task {
+  background: #1f2b3a; color: #58a6ff; border: 1px solid #2f4a6a;
+  border-radius: 4px; padding: 2px 8px; font-size: 12px; cursor: pointer;
+}
+.btn-task:hover { background: #24344a; color: #79c0ff; }
+.tasked-badge { color: #3fb950; font-size: 12px; }
+.survey-help { color: #6e7681; font-size: 13px; }
+
+.survey-card {
+  background: #161b22; border: 1px solid #21262d; border-radius: 6px;
+  margin: 10px 0; padding: 10px 12px;
+}
+.survey-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.survey-target { color: #c9d1d9; font-weight: 600; }
+.survey-reason { color: #6e7681; font-size: 12px; }
+.survey-status { font-size: 11px; padding: 1px 8px; border-radius: 10px; text-transform: uppercase; }
+.survey-status-open      { background: #21262d; color: #8b949e; }
+.survey-status-surveying { background: #241f17; color: #d29922; }
+.survey-status-complete  { background: #1a3a1a; color: #3fb950; }
+.survey-status-cancelled { background: #3a1a1a; color: #f85149; }
+
+.survey-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.survey-table th { text-align: left; color: #8b949e; font-weight: 500; padding: 4px 8px; border-bottom: 1px solid #21262d; }
+.survey-table td { padding: 4px 8px; border-bottom: 1px solid #161b22; color: #c9d1d9; }
+.survey-table tr.bed-down td { background: #1b2130; color: #e6edf3; font-weight: 500; }
+.survey-pending, .survey-empty { color: #6e7681; font-style: italic; }

@@ -75,6 +75,8 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/fixed_scoring.py` | `FixedScoring` | **Fixed** scoring (baseline-deviation): novelty + off-schedule + graduated severity |
 | `modules/baseline_store.py` | `BaselineStore` | Durable SQLite baseline; crash-safe learning window; per-device hour-mask + RSSI stats |
 | `modules/entity_store.py` | `EntityStore` | Durable SQLite entity/observation store; recorded at the poll site for both modes; also the P4 `contact_registry` (cross-session returning-entity) + `contact_links` (cross-PHY person links) |
+| `modules/survey_store.py` | `SurveyStore` | Recon-pair (design §5.5) durable SQLite: survey taskings, mobile-side observations, and bed-down findings; used by BOTH nodes; thread-safe (Flask GUI reads it). Guarded — never affects capture |
+| `modules/survey_sync.py` | `SurveySync` | Mobile-node `aiohttp` client to the fixed node's survey endpoints (`pull_taskings`/`push_findings`/`reachable`); store-and-forward, fails soft when the base node is unreachable |
 | `modules/copresence.py` | `CoPresenceLinker` | P4-C cross-PHY person linking — groups a person's co-present MOBILE radios (Wi-Fi client + BLE; APs excluded) via co-presence count + Jaccard + transience guard; over-merge-safe, bounded, pure |
 | `gui/__init__.py` | — | Empty package marker |
 | `gui/server.py` | `GUIServer` | Flask in daemon thread; SSE `/stream`; REST `/api/*` |

@@ -7,7 +7,16 @@ const state = {
   ais:      [],   // deduplicated by MMSI
   alerts:   [],
   remoteId: [],   // deduplicated by UAS ID
+  survey:   [],   // recon-pair taskings (each with its bed-down findings)
 };
+
+// ── Recon-pair survey state (design §5.5) ────────────────────────────────────
+// Declared up here (before the tables render) so the WiFi cell() reference is not
+// in the temporal dead zone. surveyEnabled flips true only once /api/survey answers
+// 200 (a fixed node with SURVEY_ENABLED + GUI_TOKEN), which also unhides the tab.
+let surveyEnabled = false;
+const surveyEvidenceMap = new Map();  // contact_key -> tasking evidence (for the POST)
+const taskedKeys = new Set();          // contact_keys already tasked this session
 
 // ── Leaflet map ──────────────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([51.5, -0.1], 10);
@@ -20,6 +29,7 @@ const layers = {
   wifi:     L.layerGroup().addTo(map),
   aircraft: L.layerGroup().addTo(map),
   ais:      L.layerGroup().addTo(map),
+  survey:   L.layerGroup().addTo(map),
 };
 
 function wifiColor(level) {
@@ -311,9 +321,15 @@ const tables = {
       }
       return [...groups.values()].map(g => {
         const e = g.latest;
+        // Recon-pair: remember the tasking evidence for this contact so the "Task
+        // survey" click can POST it without re-deriving it in the browser.
+        if (e.surveyable && e.contact_key && e.survey_evidence) {
+          surveyEvidenceMap.set(e.contact_key, e.survey_evidence);
+        }
         return {
           contact: e.contact || e.fingerprint_label || '',
           confidence: e.contact_confidence || '',
+          surveyable: !!e.surveyable, contact_key: e.contact_key || '',
           returning: g.returning, return_count: g.returnCount,
           returning_entity: !!g.returningEntity, entity_visits: g.entityVisits || 0,
           entity_days: g.entityDays || 0, entity_last_seen: g.entityLastSeen || '',
@@ -378,6 +394,7 @@ const tables = {
       <td class="pnl-cell">${affinityCell}</td>
       <td>${reconnectCell}</td>
       <td>${fmtTime(r.last)}</td>
+      ${surveyEnabled ? `<td class="survey-cell">${surveyButtonCell(r)}</td>` : ''}
     </tr>`;
     },
   }),
@@ -756,6 +773,9 @@ function connectSSE() {
       state.alerts.push(data);
       setBadge('badge-alerts', state.alerts.length);
       renderAlerts();
+    } else if (type === 'survey') {
+      // A tasking was issued or findings were offloaded — refetch the survey view.
+      if (surveyEnabled) loadSurvey();
     }
   };
 
@@ -775,6 +795,9 @@ connectSSE();
 // makes the dashboard a live mirror of the JSON, not a refresh-to-update snapshot.
 // Cheap full re-seed; markers are rebuilt idempotently (see seedFromRest).
 setInterval(seedFromRest, 15000);
+
+// Refresh the survey view on the same cadence (only once the feature is live).
+setInterval(() => { if (surveyEnabled) loadSurvey(); }, 15000);
 
 // Re-render the aircraft panel on a timer so recency decay applies (and stale
 // contacts expire) even during quiet periods with no new SSE pushes — e.g. while
@@ -823,3 +846,152 @@ function renderBaseline(scoring) {
   }
 }
 
+
+// ── Recon-pair survey (design §5.5) ──────────────────────────────────────────
+// The fixed node issues survey taskings and the mobile node offloads the bed-down
+// locations it found. This block: (1) a "Task survey" action on each surveyable
+// WiFi contact, and (2) the Survey tab that shows each tasking's ranked findings.
+// The whole feature is inert unless /api/survey answers (SURVEY_ENABLED + a token).
+
+// Same token dance as the mode control: the page loads with ?token=<GUI_TOKEN>,
+// which the browser turns into a cookie carried on same-origin fetches. We also
+// append ?token= as a belt-and-braces for the control POST.
+const SURVEY_TOKEN = new URLSearchParams(location.search).get('token') || '';
+function surveyUrl(path) {
+  return SURVEY_TOKEN ? `${path}?token=${encodeURIComponent(SURVEY_TOKEN)}` : path;
+}
+
+function surveyButtonCell(r) {
+  if (!r.surveyable || !r.contact_key) {
+    return '<span class="no-pos" title="No rotation-stable fingerprint — cannot be surveyed by another node">—</span>';
+  }
+  if (taskedKeys.has(r.contact_key)) {
+    return '<span class="tasked-badge" title="Survey tasking issued">✓ tasked</span>';
+  }
+  return `<button class="btn-task" data-key="${esc(r.contact_key)}" data-contact="${esc(r.contact || '')}">Task survey</button>`;
+}
+
+async function taskContact(key, designator) {
+  const evidence = surveyEvidenceMap.get(key) || null;
+  try {
+    const resp = await fetch(surveyUrl('/api/tasking'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        identity_key: key, designator, reason: 'operator', evidence,
+      }),
+    });
+    if (resp.ok) {
+      taskedKeys.add(key);
+      renderWifi();
+      loadSurvey();
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      alert(`Could not task survey: ${err.error || resp.status}`);
+    }
+  } catch (e) {
+    alert('Could not reach the node to issue the tasking.');
+  }
+}
+
+// Event delegation — the WiFi tbody is re-rendered as innerHTML, so bind once here.
+document.getElementById('wifi-tbody')?.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.btn-task');
+  if (!btn) return;
+  taskContact(btn.dataset.key, btn.dataset.contact || '');
+});
+
+function fmtDwell(secs) {
+  secs = Math.max(0, Math.floor(secs || 0));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${secs}s`;
+}
+
+function addSurveyMarkers() {
+  layers.survey.clearLayers();
+  for (const t of state.survey) {
+    (t.findings || []).forEach((f, i) => {
+      if (f.cluster_lat == null || f.cluster_lon == null) return;
+      const headline = i === 0;
+      L.circleMarker([f.cluster_lat, f.cluster_lon], {
+        radius: headline ? 10 : 6,
+        color: '#c586ff', weight: headline ? 3 : 1, fillOpacity: headline ? 0.6 : 0.35,
+      }).bindPopup(
+        `<b>${esc(t.designator || t.identity_key || 'target')}</b>` +
+        `<br>${headline ? 'Bed-down' : 'Seen'} — dwell ${fmtDwell(f.dwell_seconds)}` +
+        `<br>${f.visit_count || 0} visit(s), ${f.distinct_nights || 0} night(s)` +
+        (f.is_overnight ? '<br><b>overnight</b>' : '')
+      ).addTo(layers.survey);
+    });
+  }
+}
+
+function renderSurvey() {
+  const list = document.getElementById('survey-list');
+  if (!list) return;
+  setBadge('badge-survey', state.survey.length);
+  if (!state.survey.length) {
+    list.innerHTML = '<p class="survey-empty">No survey taskings yet. Use "Task survey" on a WiFi contact to dispatch the mobile node.</p>';
+    addSurveyMarkers();
+    return;
+  }
+  list.innerHTML = state.survey.map(t => {
+    const findings = t.findings || [];
+    const statusCls = `survey-status-${(t.status || 'open')}`;
+    const rows = findings.length ? findings.map((f, i) => `
+      <tr class="${i === 0 ? 'bed-down' : ''}">
+        <td>${i === 0 ? '★' : (i + 1)}</td>
+        <td><code>${f.cluster_lat != null ? (+f.cluster_lat).toFixed(5) : '—'}, ${f.cluster_lon != null ? (+f.cluster_lon).toFixed(5) : '—'}</code></td>
+        <td>${fmtDwell(f.dwell_seconds)}</td>
+        <td>${f.visit_count || 0}</td>
+        <td>${f.distinct_days || 0}</td>
+        <td>${f.distinct_nights || 0}${f.is_overnight ? ' 🌙' : ''}</td>
+        <td>${f.max_rssi != null ? f.max_rssi : '—'}</td>
+        <td>${f.obs_count || 0}</td>
+      </tr>`).join('')
+      : '<tr><td colspan="8" class="survey-pending">No bed-down data yet — awaiting the mobile node\'s survey.</td></tr>';
+    return `
+      <div class="survey-card">
+        <div class="survey-card-head">
+          <span class="survey-target">${esc(t.designator || t.identity_key || 'target')}</span>
+          <span class="survey-status ${statusCls}">${esc(t.status || 'open')}</span>
+          <span class="survey-reason">${esc(t.reason || '')}</span>
+        </div>
+        <table class="survey-table">
+          <thead><tr>
+            <th>#</th><th>Location</th><th>Dwell</th><th>Visits</th>
+            <th>Days</th><th>Nights</th><th>Max RSSI</th><th>Obs</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }).join('');
+  addSurveyMarkers();
+}
+
+async function loadSurvey() {
+  try {
+    const r = await fetch(surveyUrl('/api/survey'));
+    if (r.status === 404 || r.status === 403) { return false; }  // feature off / no token
+    if (!r.ok) return surveyEnabled;
+    const data = await r.json();
+    state.survey = Array.isArray(data) ? data : [];
+    if (!surveyEnabled) {
+      // First successful answer — reveal the tab, the WiFi Survey column, and re-render.
+      surveyEnabled = true;
+      document.getElementById('tabbtn-survey')?.removeAttribute('hidden');
+      document.querySelector('.survey-col')?.removeAttribute('hidden');
+      renderWifi();
+    }
+    renderSurvey();
+    return true;
+  } catch { return surveyEnabled; }
+}
+
+document.getElementById('survey-refresh')?.addEventListener('click', loadSurvey);
+
+// Probe once on load; if survey is enabled this reveals the UI, otherwise it stays
+// hidden and the feature is entirely dormant.
+loadSurvey();

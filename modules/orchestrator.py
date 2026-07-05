@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -21,7 +22,11 @@ from modules import air_geometry, air_scoring, contact_designator, device_identi
 from modules.copresence import CoPresenceLinker
 from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
 from modules.sdr_manager import SDRMode
-from modules.wifi_fingerprint import compute_pnl_fingerprint
+from modules.survey_sync import SurveySync
+from modules.wifi_fingerprint import anchored_identity_key, compute_pnl_fingerprint
+
+# Alert-level ordering for the survey auto-task severity gate (weakest -> strongest).
+_SEVERITY_ORDER = {"suspicious": 0, "likely": 1, "high": 2}
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -70,6 +75,7 @@ class SensorOrchestrator:
         probe_analyzer,
         gui_server,
         entity_store=None,
+        survey_store=None,
         remote_id=None,
         ble_scanner=None,
         ais=None,
@@ -105,6 +111,30 @@ class SensorOrchestrator:
         # scoring strategy, so it runs here at the poll site for EVERY NODE_MODE,
         # not inside any ScoringEngine. May be None (recording disabled).
         self.entity_store = entity_store
+        # Recon-pair survey store (design §5.5). Present only when SURVEY_ENABLED.
+        # On the FIXED node it holds taskings + received findings; on the MOBILE
+        # node it holds pulled taskings + accumulated survey observations. None ->
+        # the whole survey path is inert. All calls are guarded — a survey-store
+        # failure must never touch capture or detection.
+        self.survey_store = survey_store
+        # Fixed-node auto-tasking (opt-in): enroll a high-severity, strongly-
+        # fingerprinted contact as a survey target without an operator step. Off by
+        # default so the operator "Task survey" button is the primary path.
+        self._survey_autotask = os.getenv("SURVEY_AUTOTASK", "off").strip().lower() in (
+            "on", "true", "1", "yes")
+        self._survey_autotask_min_level = os.getenv(
+            "SURVEY_AUTOTASK_MIN_LEVEL", "high").strip().lower()
+        # This node's identifier, stamped on findings/taskings so the fixed node can
+        # attribute a survey to the node that ran it.
+        self._survey_node = (os.getenv("SURVEY_NODE_ID", "").strip()
+                             or socket.gethostname())
+        # Taskings we've already flipped to 'surveying' this session (avoid a status
+        # write every poll a target is seen).
+        self._survey_started: set = set()
+        # Mobile-node client to the fixed node's survey endpoints. Inert (no URL)
+        # unless SURVEY_FIXED_URL is set; the sync loop no-ops when not configured.
+        self._survey_sync = SurveySync(
+            os.getenv("SURVEY_FIXED_URL", ""), os.getenv("SURVEY_TOKEN", ""))
         self.remote_id = remote_id
         # Passive BLE advertisement scanner (owns hci0). Optional — None unless
         # BLE_SCANNER_ENABLED. It captures adverts continuously off the asyncio
@@ -959,6 +989,184 @@ class SensorOrchestrator:
         number = self._assign_contact_number(identity_key, group)
         return contact_designator.designator(cls, ident, number), confidence, identity_key
 
+    # ------------------------------------------------------------------
+    # Recon-pair survey (design §5.5)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _device_candidate_keys(device: dict) -> set:
+        """The portable identity keys an observed device *could* be tasked under.
+
+        A survey tasking names a device by its rotation-stable content key. BLE keys
+        (``ble-fp:``) are pure advertisement content, so a device has exactly one and
+        it is directly portable across nodes. A WiFi ``wifi-fp:`` key is the IE-set
+        hash anchored on ONE distinctive probed SSID — but which SSID the FIXED node
+        anchored on depends on its own local SSID rarity, so we cannot assume the
+        mobile node would pick the same anchor. Instead we enumerate the key this
+        device would produce for EACH of its own named probed SSIDs as the anchor:
+        the tasked key is in that set whenever this device probes the SSID the fixed
+        node anchored on. This makes the match deterministic without either node
+        having to agree on anchor selection. (Probing is intermittent, so a match may
+        land only on the polls where the device emits the anchor SSID — fine, the
+        survey accumulates observations across many polls.)
+        """
+        if device_identity.is_ble_device(device):
+            k = device_identity.strong_fingerprint(device)
+            return {k} if k else set()
+        probe_fp = device.get("probe_fingerprint")
+        if not probe_fp:
+            return set()
+        ssids = {s for s in (device.get("probe_ssids") or [])
+                 if isinstance(s, str) and s.strip()}
+        return {anchored_identity_key(probe_fp, s) for s in ssids}
+
+    def _record_survey_hits(self, devices: list) -> None:
+        """Mobile side: record a survey observation for every observed device whose
+        identity matches an open tasking. The node's own GPS fix is the position (it
+        reports where IT is when it sees the target). Fully guarded — a survey-store
+        failure never disturbs capture or scoring."""
+        if self.survey_store is None or self._node_mode != "mobile":
+            return
+        try:
+            tasked = self.survey_store.open_identity_keys()  # {identity_key: task_id}
+        except Exception as exc:
+            logger.debug("survey open_identity_keys failed: %s", exc)
+            return
+        if not tasked:
+            return
+        tasked_keys = set(tasked)
+        now = datetime.now(timezone.utc)
+        fix = self._current_fix or {}
+        lat, lon = fix.get("lat"), fix.get("lon")
+        for d in devices:
+            hits = self._device_candidate_keys(d) & tasked_keys
+            for key in hits:
+                tid = tasked[key]
+                try:
+                    self.survey_store.record_survey_observation(
+                        tid, timestamp=now, lat=lat, lon=lon,
+                        rssi=d.get("last_signal"))
+                    if tid not in self._survey_started:
+                        self.survey_store.set_status(tid, "surveying")
+                        self._survey_started.add(tid)
+                except Exception as exc:
+                    logger.debug("survey observation write failed: %s", exc)
+
+    def _build_survey_evidence(self, event, device, contact, contact_key) -> Optional[dict]:
+        """Assemble the tasking evidence for a surveyable contact, or None when the
+        contact has no portable key (a bare ``mac:`` device cannot be re-identified on
+        another node). Carried on the WiFi event dict so the operator's "Task survey"
+        button can echo it back, and reused by the fixed-node auto-task path."""
+        # No survey store -> the feature is off; skip the work (and the per-event field).
+        if self.survey_store is None:
+            return None
+        if not contact_key or str(contact_key).startswith("mac:"):
+            return None
+        modality = "ble" if (device and device_identity.is_ble_device(device)) else "wifi"
+        return {
+            "modality": modality,
+            "identity_key": contact_key,
+            "designator": contact,
+            "manufacturer": event.manufacturer,
+            "device_type": event.device_type,
+            # WiFi match/debug aids (None for BLE, whose key is content-portable).
+            "probe_fingerprint": (device or {}).get("probe_fingerprint"),
+            "anchor": (device or {}).get("fp_anchor"),
+            "label": event.fingerprint_label,
+        }
+
+    def _maybe_autotask(self, event, contact, contact_key, evidence) -> None:
+        """Fixed-node opt-in: enroll a high-severity, strongly-fingerprinted contact
+        as a survey target. De-dup + surveyability are enforced by the store and by
+        ``evidence`` being None for a ``mac:`` contact; the severity gate keeps the
+        watchlist to genuine threats. Guarded."""
+        if (not self._survey_autotask or self._node_mode != "fixed"
+                or self.survey_store is None or evidence is None):
+            return
+        bar = _SEVERITY_ORDER.get(self._survey_autotask_min_level, 2)
+        if _SEVERITY_ORDER.get(event.alert_level, -1) < bar:
+            return
+        try:
+            self.survey_store.enqueue_tasking(
+                contact_key, designator=contact,
+                reason=self._autotask_reason(event), evidence=evidence,
+                origin_node=self._survey_node)
+        except Exception as exc:
+            logger.debug("survey auto-task failed: %s", exc)
+
+    @staticmethod
+    def _autotask_reason(event) -> str:
+        """Best-effort human reason from the score breakdown (novelty/off-schedule/
+        approaching), else the alert level."""
+        bd = getattr(event, "score_breakdown", None) or {}
+        for sig in ("novelty", "approaching", "off_schedule", "returning"):
+            if bd.get(sig):
+                return sig
+        return f"auto:{event.alert_level}"
+
+    async def _survey_sync_loop(self) -> None:
+        """Mobile side: periodically, when the fixed node is reachable, pull open
+        taskings and push computed findings for any surveyed target — the
+        store-and-forward exchange (design §5.5). A separate guarded background task
+        (like the adaptation sweep); all DB work is offloaded to the executor so the
+        clustering never blocks the event loop, and all HTTP fails soft (an
+        unreachable base node is the normal field state)."""
+        if not self._survey_sync.configured or self.survey_store is None:
+            return  # not a syncing mobile node — nothing to do
+        interval = float(os.getenv("SURVEY_SYNC_INTERVAL_SECONDS", "120"))
+        loop = asyncio.get_running_loop()
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                raise
+            if self._stop_event.is_set():
+                break
+            try:
+                if not await self._survey_sync.reachable():
+                    continue
+                pulled = await self._survey_sync.pull_taskings()
+                if pulled:
+                    await loop.run_in_executor(None, self._ingest_pulled_taskings, pulled)
+                # Compute findings (DB-heavy) off the loop, then push each.
+                prepared = await loop.run_in_executor(None, self._prepare_survey_findings)
+                for tid, findings in prepared:
+                    ok = await self._survey_sync.push_findings(
+                        tid, findings, self._survey_node)
+                    if ok:
+                        await loop.run_in_executor(
+                            None, self.survey_store.set_status, tid, "complete")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("Survey sync error (capture unaffected): %s", exc)
+
+    def _ingest_pulled_taskings(self, pulled: list) -> None:
+        for t in pulled:
+            try:
+                self.survey_store.upsert_tasking(t)
+            except Exception as exc:
+                logger.debug("survey tasking upsert failed: %s", exc)
+
+    def _prepare_survey_findings(self) -> list:
+        """Compute (task_id, findings) for every task with fresh observations —
+        executor-thread work so clustering never blocks the loop."""
+        out = []
+        try:
+            task_ids = self.survey_store.tasks_with_observations()
+        except Exception as exc:
+            logger.debug("survey tasks_with_observations failed: %s", exc)
+            return out
+        for tid in task_ids:
+            try:
+                findings = self.survey_store.compute_findings(
+                    tid, survey_node=self._survey_node)
+                if findings:
+                    out.append((tid, findings))
+            except Exception as exc:
+                logger.debug("survey compute_findings failed for %s: %s", tid, exc)
+        return out
+
     def _note_wifi_return(self, identity_key: str, now: datetime) -> tuple:
         '''Track per-contact last-seen so a device that left the area and came back is
         marked a RETURN (like a returning aircraft) instead of a fresh contact.
@@ -1216,6 +1424,12 @@ class SensorOrchestrator:
                 if medium:
                     d["fp_anchor_medium"] = medium
 
+        # Recon-pair survey matcher (mobile side): record where any tasked target is
+        # seen. Runs on the full device list (a target need not score suspicious to be
+        # surveyed) AFTER anchor attachment + BLE merge, so identity resolution has
+        # everything it needs. No-op on a fixed node / when no taskings are open.
+        self._record_survey_hits(devices)
+
         # Live "nearby" feed for the mobile GUI — every currently-polled device
         # (WiFi + BLE), independent of the persistence engine's score/GPS-cluster
         # gate. Pushed AFTER anchor attachment so WiFi devices carry fp_anchor and
@@ -1273,6 +1487,11 @@ class SensorOrchestrator:
             person_id = self._person_of.get(contact_key)
             person_size = self._person_size.get(person_id, 0) if person_id else 0
             self._maybe_alert_visitor(contact_key, belongs, event.observation_count, contact)
+            # Recon-pair: the evidence a survey tasking needs, or None for a
+            # non-portable mac: contact (drives the GUI "Task survey" button + the
+            # fixed-node auto-task path). Surveyable only when strongly fingerprinted.
+            survey_evidence = self._build_survey_evidence(event, device, contact, contact_key)
+            self._maybe_autotask(event, contact, contact_key, survey_evidence)
             existing = self._wifi_event_index.get(event.mac)
             if existing is not None:
                 # Same device flagged again — update the ongoing detection in place
@@ -1299,6 +1518,8 @@ class SensorOrchestrator:
                     "entity_days_known": xsession["entity_days_known"],
                     "entity_last_seen": xsession["entity_last_seen"],
                     "belongs": belongs, "person_id": person_id, "person_size": person_size,
+                    "surveyable": survey_evidence is not None,
+                    "survey_evidence": survey_evidence,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
                 if event.alert_level != prev_level or returning:
@@ -1329,6 +1550,9 @@ class SensorOrchestrator:
                     "lat": event.locations[0]["lat"] if event.locations else None,
                     "lon": event.locations[0]["lon"] if event.locations else None,
                     "locations": event.locations,
+                    # Recon-pair: is this contact surveyable, and the tasking evidence.
+                    "surveyable": survey_evidence is not None,
+                    "survey_evidence": survey_evidence,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     **enriched,
                 }

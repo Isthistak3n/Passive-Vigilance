@@ -446,6 +446,51 @@ fully functional (correlation falls back to callsign with no registry at all).
 *Note:* the offline DB is built from a public CSV, not tar1090's bundled `db-*` shards — those are
 zlib-compressed binary (a fragile, version-specific trie), so a clean off-node SQLite is the robust source.
 
+## 12. Reconnaissance pair — fixed tasks, mobile surveys (multi-node, §5.5 realised)
+
+The fixed and mobile threat models (§1) are complementary halves of one workflow: the
+**fixed** node learns a place and surfaces a suspicious device; the **mobile** node — whose
+native strength is location diversity ("where does this go?") — is dispatched on a **survey**
+to find where that device **beds down** (lingers long / returns across days / overnight =
+residence); the survey data flows back to the fixed node. This is the multi-node correlation
+§5.5 named and the roadmap deferred, now built (`SURVEY_ENABLED`, default off).
+
+**The enabler — portable identity.** A tasking must name a device a *different* node can
+recognise. Raw MACs rotate, but the content identity keys (`wifi-fp:` / `ble-fp:`,
+§6) are content-derived and deterministic, so two nodes seeing the same device compute the
+same key. BLE keys are pure advertisement content (directly portable). A WiFi key is the IE-set
+hash anchored on one distinctive probed SSID — and *which* SSID a node anchors on depends on its
+own local SSID rarity, so the mobile matcher does not assume a shared anchor: it tests whether an
+observed device *could produce* the tasked key by trying each of the device's own probed SSIDs as
+the anchor (`_device_candidate_keys`). A bare `mac:` contact has no portable key and is **not
+surveyable** — the UI/endpoint refuse it rather than issue a task that could never match.
+
+**Topology — store-and-forward over the base LAN.** The fixed node is the always-on server (it
+already runs the authenticated Flask GUI); the mobile node is offline while surveying and syncs
+only when back in range: `GET /api/tasking` (pull the watchlist), `POST /api/survey` (offload
+findings). Both are token-gated control actions (refused when no `GUI_TOKEN`). All sync HTTP runs
+off the poll hot path in a guarded background task (`_survey_sync_loop`), DB clustering offloaded
+to the executor, and fails soft — an unreachable base node is the normal field state.
+
+**Tasking.** Operator-initiated is primary (a "Task survey" button on a surveyable WiFi contact);
+`SURVEY_AUTOTASK` (default off) additionally enrolls high-severity strong-fingerprint contacts.
+`SurveyStore.enqueue_tasking` de-dups on identity so re-flagging never floods the watchlist.
+
+**Survey execution + bed-down.** On the mobile node, `_record_survey_hits` records a tagged
+observation (its own GPS fix as position) every poll a tasked target is seen — over the full
+device list, since a target need not score suspicious to be surveyed. `compute_findings` clusters
+those observations (the PersistenceEngine spatial core) and ranks locations by **dwell × return**:
+a **gap-tolerant dwell** (a blind gap never inflates time-present), visit/day/night counts, an
+overnight flag, and strongest RSSI (0/None skipped, the zero-RSSI rule). The top cluster is the
+residence headline. Findings offload to the fixed node's **Survey tab** ("target beds down at X:
+6 h dwell, 3 nights").
+
+**Honest limits.** Only well-fingerprinted contacts are surveyable (named probe SSIDs are ~26% of
+WiFi clients here; BLE anchors sparser), so this hunts the identifiable, not everyone. Probing is
+intermittent, so a WiFi match lands only on polls where the device emits the anchor SSID — fine,
+the survey accumulates across many polls. Modules: `survey_store.py` (both nodes),
+`survey_sync.py` (mobile client), endpoints in `gui/server.py`, hooks in `orchestrator.py`.
+
 ---
 
 # Part II — Roadmap
@@ -586,8 +631,10 @@ classifier (done, display-only) → baseline + scoring + alerting → Remote ID 
 ## Deliberately deferred
 
 GPS-movement sanity check (§2) and relocation re-baseline (§2) — low value for a stationary
-base station; WiGLE resident-vs-visitor enrichment and watchboxes/origin-geofencing (§10);
-multi-node correlation (the follower-resolves-to-fixed pattern, §5.5). All genuinely later.
+base station; WiGLE resident-vs-visitor enrichment and watchboxes/origin-geofencing (§10). The
+multi-node **reconnaissance pair** (fixed tasks → mobile survey → offload, §5.5/§12) is now
+**built** (`SURVEY_ENABLED`, default off) — no longer deferred; the remaining §5.5 slice is the
+*reverse* fusion (a follower seen on the mobile node later surfacing at the fixed node).
 
 ## Standing risks
 
