@@ -426,6 +426,43 @@ async def test_poll_kismet_force_page_pages_below_threshold(orch):
 
 
 @pytest.mark.asyncio
+async def test_poll_kismet_cooldown_keys_on_fingerprint_not_mac(orch):
+    """Two rotated MACs of ONE logical contact (shared fingerprint) collapse into
+    a single alert — the cooldown keys on event.fingerprint, so address rotation
+    no longer defeats it (#193: one contact fired 3,385 alerts across 65 MACs)."""
+    so = orch.sensor_orchestrator
+    orch._kismet_active = True
+    so.entity_store.record_contact_sighting.return_value = {"known": False}
+    for mac in ("aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"):
+        ev = _make_detection_event(mac=mac, fingerprint="wifi-fp:deadbeef",
+                                   alert_level="high", score=0.95)
+        orch.persistence.update.return_value = [ev]
+        orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": mac}])
+        await so._poll_kismet()
+    await _drain_alerts(orch)
+
+    assert orch._mock_backend.send_persistence_alert.call_count == 1   # not 2
+
+
+@pytest.mark.asyncio
+async def test_poll_kismet_distinct_fingerprints_each_alert(orch):
+    """Over-merge guard: two contacts with DIFFERENT fingerprints each alert — the
+    fingerprint cooldown must not fold distinct devices into one bucket."""
+    so = orch.sensor_orchestrator
+    orch._kismet_active = True
+    so.entity_store.record_contact_sighting.return_value = {"known": False}
+    for mac, fp in (("aa:bb:cc:dd:ee:01", "wifi-fp:aaaa"),
+                    ("aa:bb:cc:dd:ee:02", "wifi-fp:bbbb")):
+        ev = _make_detection_event(mac=mac, fingerprint=fp, alert_level="high", score=0.95)
+        orch.persistence.update.return_value = [ev]
+        orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": mac}])
+        await so._poll_kismet()
+    await _drain_alerts(orch)
+
+    assert orch._mock_backend.send_persistence_alert.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_poll_kismet_dedups_repeated_device_into_one_event(orch):
     """A device that re-flags every poll updates ONE ongoing detection in place,
     not a new row each poll — the post-freeze memory-bound fix."""

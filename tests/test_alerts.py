@@ -125,6 +125,22 @@ async def test_rate_limiter_allows_after_cooldown_expires():
 
 
 @pytest.mark.asyncio
+async def test_rate_limiter_cooldown_override():
+    """A per-call cooldown_override applies its own window for that key, and a
+    later check against the shorter default still fires through a longer override
+    — so an escalation isn't masked by an earlier low-severity long cooldown (#193)."""
+    rl = RateLimiter(cooldown_seconds=300)
+    with patch("modules.alerts.time.monotonic") as mock_time:
+        mock_time.return_value = 0.0
+        assert await rl.is_allowed("k", cooldown_override=3600) is True   # first page (long window)
+        mock_time.return_value = 400.0
+        # 400 s elapsed: the 3600 s override still blocks the repeat...
+        assert await rl.is_allowed("k", cooldown_override=3600) is False
+        # ...but the default 300 s window has passed, so a normal alert fires.
+        assert await rl.is_allowed("k") is True
+
+
+@pytest.mark.asyncio
 async def test_rate_limiter_reset_allows_immediate_realert():
     rl = RateLimiter(cooldown_seconds=300)
     await rl.is_allowed("mac:aa:bb:cc:dd:ee:ff")
