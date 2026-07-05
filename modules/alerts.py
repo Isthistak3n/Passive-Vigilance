@@ -121,11 +121,21 @@ class RateLimiter:
         if persist_path:
             self._load_state()
 
-    def _do_check(self, key: str) -> bool:
-        """Sync core of the rate-limit check — callers must hold ``self._lock``."""
+    def _do_check(self, key: str, cooldown_override: Optional[float] = None) -> bool:
+        """Sync core of the rate-limit check — callers must hold ``self._lock``.
+
+        ``cooldown_override`` lets a single caller use a longer (or shorter)
+        window than the instance default for this one key without a second
+        limiter — e.g. the egregious-during-baseline page path damps a persistent
+        contact to once per hour while ordinary alerts keep the 300 s default.
+        Because the window is per-call on a shared key, a later higher-severity
+        alert checked against the *shorter* default still fires through a longer
+        cooldown set by an earlier low-severity page (escalations aren't masked).
+        """
         now = time.monotonic()
+        cooldown = self._cooldown if cooldown_override is None else cooldown_override
         last = self._last_alert.get(key)
-        if last is None or (now - last) >= self._cooldown:
+        if last is None or (now - last) >= cooldown:
             self._last_alert[key] = now
             if self._persist_path:
                 self._save_state()
@@ -138,15 +148,17 @@ class RateLimiter:
         # remaining cooldown across a restart, so the extra write bought nothing.
         return False
 
-    async def is_allowed(self, key: str) -> bool:
+    async def is_allowed(self, key: str, cooldown_override: Optional[float] = None) -> bool:
         """Return True if *key* has not been alerted within the cooldown period.
 
         Records the current time for the key when returning True and
         persists the updated state to disk if a persist_path is configured.
-        Thread-safe for concurrent asyncio tasks via ``self._lock``.
+        ``cooldown_override`` (seconds) applies a per-call window for this key
+        instead of the instance default. Thread-safe for concurrent asyncio
+        tasks via ``self._lock``.
         """
         async with self._lock:
-            return self._do_check(key)
+            return self._do_check(key, cooldown_override)
 
     async def reset(self, key: str) -> None:
         """Manually clear a key's cooldown so it can alert immediately."""

@@ -330,6 +330,13 @@ class SensorOrchestrator:
         # Default 0.7 (likely) — the 2026-06 post-freeze read drowned the operator in
         # ~50 suspicious (0.5) flags/poll vs 2 high; suspicious is display-only now.
         self._wifi_page_min_score = float(os.getenv("WIFI_ALERT_MIN_SCORE", "0.7"))
+        # Egregious-during-baseline pages (design 5.2, force_page) recur every poll
+        # for a persistent close contact; with the WiFi cooldown now keyed on the
+        # rotation-stable fingerprint they collapse to one bucket, and this longer
+        # window damps that bucket to ~once/hour during the multi-day learn (a
+        # deliberately-present device is surfaced, not flooded — see #193).
+        self._egregious_alert_cooldown = int(
+            os.getenv("EGREGIOUS_ALERT_COOLDOWN_SECONDS", "3600"))
         self.drone_detections: list[dict] = []
         # Index freq-band -> the drone event already in drone_detections, so a
         # persistent emitter heard on every sweep becomes ONE event (refreshed
@@ -1345,7 +1352,19 @@ class SensorOrchestrator:
                 # deliberate exception: a single egregious signal scores 0.5, which
                 # never clears the bar, but it is a safety-net alert that must page.
                 self._stats["alerts_below_threshold"] = self._stats.get("alerts_below_threshold", 0) + 1
-            elif await self.rate_limiter.is_allowed(f"persist:{event.mac}"):
+            # Cooldown key is the rotation-stable scoring fingerprint (fp:/mac:),
+            # NOT the raw MAC: a randomized-MAC device rotates its address every
+            # few minutes, so keying on event.mac gave each rotation a fresh key
+            # and defeated the cooldown entirely (#193 — one logical contact fired
+            # 3,385 alerts across 65 MACs). event.fingerprint collapses the
+            # rotations into one bucket while keeping un-fingerprintable devices on
+            # mac: (the over-merge guard — distinct devices never share a bucket).
+            # force_page (egregious-during-baseline) events use the longer window.
+            elif await self.rate_limiter.is_allowed(
+                f"persist:{event.fingerprint or event.mac}",
+                cooldown_override=(
+                    self._egregious_alert_cooldown if event.force_page else None),
+            ):
                 self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
                 self._stats["alerts_sent"] += 1
                 self._record_alert(
@@ -1354,7 +1373,7 @@ class SensorOrchestrator:
                     f"{event.score:.2f}, {event.observation_count} obs",
                     severity=event.alert_level, mac=event.mac,
                     alert_level=event.alert_level, score=event.score,
-                    contact=contact,
+                    contact=contact, contact_key=contact_key,
                 )
             else:
                 self._stats["alerts_rate_limited"] += 1
