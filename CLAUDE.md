@@ -236,6 +236,10 @@ Re-run the monitor mode commands after any NM restart.
 - GUI mode toggle: `POST /api/mode` (requires `GUI_TOKEN`) writes `NODE_MODE` to
   `.env` surgically/atomically; mode is read only at startup, so the change needs
   a restart.
+- **Reconnaissance pair (fixed + mobile team):** a fixed node can task a mobile node
+  to survey where a flagged device beds down (by AP association) and receive the
+  findings back (`SURVEY_ENABLED`, default off; `SurveyStore`/`SurveySync`). Full
+  design + on-node validation plan: **`docs/design-recon-pair.md`**.
 
 ## Persistence Engine (mobile scoring)
 

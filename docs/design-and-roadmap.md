@@ -448,67 +448,10 @@ zlib-compressed binary (a fragile, version-specific trie), so a clean off-node S
 
 ## 12. Reconnaissance pair — fixed tasks, mobile surveys (multi-node, §5.5 realised)
 
-The fixed and mobile threat models (§1) are complementary halves of one workflow: the
-**fixed** node learns a place and surfaces a suspicious device; the **mobile** node — whose
-native strength is location diversity ("where does this go?") — is dispatched on a **survey**
-to find where that device **beds down** (lingers long / returns across days / overnight =
-residence); the survey data flows back to the fixed node. This is the multi-node correlation
-§5.5 named and the roadmap deferred, now built (`SURVEY_ENABLED`, default off).
-
-**The enabler — portable identity.** A tasking must name a device a *different* node can
-recognise. Raw MACs rotate, but the content identity keys (`wifi-fp:` / `ble-fp:`,
-§6) are content-derived and deterministic, so two nodes seeing the same device compute the
-same key. BLE keys are pure advertisement content (directly portable). A WiFi key is the IE-set
-hash anchored on one distinctive probed SSID — and *which* SSID a node anchors on depends on its
-own local SSID rarity, so the mobile matcher does not assume a shared anchor: it tests whether an
-observed device *could produce* the tasked key by trying each of the device's own probed SSIDs as
-the anchor (`_device_candidate_keys`). A bare `mac:` contact has no portable key and is **not
-surveyable** — the UI/endpoint refuse it rather than issue a task that could never match.
-
-**Topology — store-and-forward over the base LAN.** The fixed node is the always-on server (it
-already runs the authenticated Flask GUI); the mobile node is offline while surveying and syncs
-only when back in range: `GET /api/tasking` (pull the watchlist), `POST /api/survey` (offload
-findings). Both are token-gated control actions (refused when no `GUI_TOKEN`). All sync HTTP runs
-off the poll hot path in a guarded background task (`_survey_sync_loop`), DB clustering offloaded
-to the executor, and fails soft — an unreachable base node is the normal field state.
-
-**Tasking.** Operator-initiated is primary (a "Task survey" button on a surveyable WiFi contact);
-`SURVEY_AUTOTASK` (default off) additionally enrolls high-severity strong-fingerprint contacts.
-`SurveyStore.enqueue_tasking` de-dups on identity so re-flagging never floods the watchlist.
-
-**Survey execution — bed-down by AP association (single patrol).** The residence question is
-"where does this device belong," and the strongest answer doesn't need repeat patrols to build
-dwell: if the mobile node's wardrive hears a **local AP beaconing the device's distinctive home
-network** (its anchor SSID), that AP's location *is* the bed-down — resolved in one pass.
-`_record_survey_hits` records two signals per poll (its own GPS fix as position): an **AP
-association** (`kind='ap'`, the local AP's BSSID/SSID) and a **direct sighting** of the device
-itself. `compute_findings` returns a structured result — `home_ap` (the located residence),
-device-sighting `clusters` (dwell/return/overnight kept as *confidence annotation*, not the
-mechanism), and an `outcome`:
-- **resident** — home AP found locally → here's where it lives.
-- **seen** — device glimpsed but its home network isn't on the air locally → home is elsewhere →
-  **WiGLE candidate**.
-- **not_located** — after `SURVEY_MIN_PATROL_POLLS` of wardriving it was never found → **WiGLE
-  candidate**.
-
-The fixed node's **Survey tab** shows the outcome, the home AP, and — measured from the **fixed
-node's own position** (`air_geometry.resolve_reference`: a GUI-pinned home wins, else the live
-fix) — how far the residence is (here / neighborhood / distant). A `wigle_candidate` flag is
-surfaced when the home AP wasn't found locally; the WiGLE lookup that would locate its home from
-its known networks is a **deliberate operator action, deferred to a follow-up PR** (§10) — the
-query is outbound and opsec-sensitive, so it is never automated here.
-
-**Honest limits.** Only well-fingerprinted contacts are surveyable (named probe SSIDs are ~26% of
-WiFi clients here; BLE anchors sparser), so this hunts the identifiable, not everyone. AP
-association needs the home network to actually beacon within the wardrive's reach; a distinctive
-anchor keeps false matches low but a shared SSID name is a candidate, not a certainty. Modules:
-`survey_store.py` (both nodes), `survey_sync.py` (mobile client), endpoints + distance annotation
-in `gui/server.py`, hooks in `orchestrator.py`.
-
-**Next (follow-up PR):** the WiGLE query client — for a `wigle_candidate`, look up the device's
-probed SSIDs (client) or BSSID (AP) in WiGLE to locate its home AP, opsec-gated and
-augments-never-gates per §10 — plus the reverse §5.5 fusion (a follower first seen on the mobile
-node later surfacing at the fixed node).
+The fixed↔mobile recon pair (fixed node tasks a survey → mobile node finds where a flagged device
+beds down, by AP association → findings offload back) is **built (PR #195, `SURVEY_ENABLED`, default
+off)** and realises the multi-node correlation §5.5 named. Its full design and the on-node phased
+validation plan live in a dedicated document — **see [design-recon-pair.md](design-recon-pair.md)**.
 
 ---
 
@@ -524,7 +467,9 @@ store (both modes); randomization-resistant fingerprint capture + keying for WiF
 (§6–7); contact designators (§8); the full operator GUI (durable history across all panels,
 live-mirror); the air-picture GUI + Remote ID surface; and the P7-core air persistence scorer
 with alerting reframed to *of-interest only*. Built but **not merged:** the approaching-signal
-(rising-RSSI) trigger (Phase 2.5 / P1) — owes a positive walk-test.
+(rising-RSSI) trigger (Phase 2.5 / P1) — owes a positive walk-test; and the **reconnaissance pair**
+(P8, PR #195, [design-recon-pair.md](design-recon-pair.md)) — built, now entering on-node
+pair-validation.
 
 ## What drives the sequencing now
 
@@ -584,6 +529,7 @@ the detector.
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, bounded tracks, ID-less split, Remote ID pruning + surface; 24 h retention; returning-ICAO as same identity | ✅ shipped |
 | **P7** | Aircraft of interest: orbit/loiter detection (§9) | ◑ Mostly shipped — geometry + scorer (`air_geometry.py`/`air_scoring.py`), live scoring in `_poll_adsb`, alerting reframed to of-interest only (soak #3 confirmed). *Deferred:* durable cross-day per-ICAO baseline + daily-orbiter suppression; GUI severity badge; Remote ID loiter fusion | follow-on |
+| **P8** | Reconnaissance pair — fixed tasks / mobile surveys / offload ([design-recon-pair.md](design-recon-pair.md)) | ◑ Built (PR #195, `SURVEY_ENABLED` default off): tasking + store-and-forward sync + AP-association bed-down + WiGLE-candidate flag. *Owes:* the on-node phased pair-validation (Ph0–Ph4) in design-recon-pair.md Part II | follow-on (owes pair-validation) |
 
 ### Phase detail (the open work)
 
@@ -619,25 +565,11 @@ without swallowing an intermittent returner. *Exit:* FP decays without absorbing
 returners. *Deferred:* swapping in `ConsistencyPatternPolicy`; a "graveyard" GUI panel for
 demotions (the producer ships; the consumer is later).
 
-**P4 — Cross-session entity resolution + cross-PHY.** ✅ Shipped across three phases (branch
-`feat/contact-identity-tiers`, soaking on chase before merge), all display/identity — the
-scoring key is deliberately untouched:
-- **A — contact-identity tiers + within-session return.** A device re-links across rotation at a
-  *strong* (rare distinctive SSID anchor) or *medium* (`FP_MEDIUM_MAX_DF`, looser anchor) tier;
-  the GUI collapses its rotating addresses into one row and flags a **return** after an absence
-  (`WIFI_RETURN_GAP_SECONDS`).
-- **B — cross-session returning-entity.** `EntityStore.contact_registry` remembers a contact
-  across sessions/days (visits, distinct days) and flags a **returning entity** ("seen before")
-  when it reappears in a new session — guarded so a quick restart isn't a false return
-  (`ENTITY_RETURN_MIN_GAP_SECONDS`).
-- **C — cross-PHY person linking + resident/visitor.** `copresence.py` links a person's co-present
-  **mobile** radios (Wi-Fi client + BLE; APs excluded) into one person, over-merge-safe (Jaccard +
-  transience), persisted (`contact_links`); the local APs anchor a **resident-vs-visitor** call
-  (local-network affinity / baseline membership vs. a lingering novel stranger).
-*Owed:* multi-day calibration of the medium-tier and co-presence thresholds; wiring the
-identity signals into scoring (they inform display/awareness today, not what pages). *Honest
-limit:* re-identification is only as stable as the contact key, and cross-PHY links are sparse
-where BLE capture is thin.
+**P4 — Cross-session entity resolution + cross-PHY.** ✅ Shipped (phases A–C, all display/identity;
+scoring key untouched): contact-identity tiers + within-session return (A), cross-session
+returning-entity via `EntityStore.contact_registry` (B), cross-PHY person linking via
+`copresence.py` + resident-vs-visitor (C). *Owed:* multi-day calibration of the medium-tier /
+co-presence thresholds, and wiring the identity signals into scoring.
 
 **P5 owed slice.** The learning-vs-frozen baseline framing (time remaining) and the anomaly
 list framed by signal/severity. (Durable history + live-mirror are done.)

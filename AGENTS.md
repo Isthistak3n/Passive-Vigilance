@@ -19,8 +19,8 @@ any action on the codebase.
 
 | Node   | Hostname   | Logical Alias | Role                                                                 |
 |--------|------------|---------------|---------------------------------------------------------------------|
-| Pi 3B+ | `survkis`  | `pi3`         | Active dev + mobile node - WiFi/BT, mobile-node scoring |
-| Pi 4B+ | `chase`    | `pi4`         | Active fixed base station — WiFi/BT + ADS-B + Remote ID, fixed-mode scoring |
+| Pi 3B+ | `survkis`  | `pi3`         | Active dev + mobile node — WiFi/BT, mobile-node scoring; the **mobile recon spoke** (pulls survey taskings from chase, offloads bed-down findings — `design-recon-pair.md`) |
+| Pi 4B+ | `chase`    | `pi4`         | Active fixed base station — WiFi/BT + ADS-B + Remote ID, fixed-mode scoring; the **recon-pair survey server** (issues taskings, receives findings on :8088) |
 
 Live per-node hardware, adapters, and verified status are in **`CONTEXT.md` →
 Hardware & Adapter Map** — the authority for what is actually present on each

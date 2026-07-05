@@ -38,20 +38,25 @@ AIS reception is field-confirmed (real vessel decoded + MarineTraffic-verified);
 decode validated with real traffic. Handoffs stay clean on the settle barrier
 (`SDR_HANDOFF_USB_RESET=false`; 0 wedges). Dashboard map = direct online OSM.
 
-**Next:** P3 rolling baseline (alert-fatigue), P4 cross-session entity resolution, P5
-fixed-mode GUI framing, and the SDR-pivot multi-day validation — see the roadmap. One
-open residual: a bounded `_current_fix` oscillation when the asyncio GPS poll stalls
-(separate from the gps.py reader; self-correcting).
+**Next:** the **recon-pair pair-validation** (P8 — `chase`+`survkis`, `design-recon-pair.md`
+Part II) is now the lead two-node exercise; plus P3 rolling baseline (alert-fatigue), P4
+cross-session entity resolution, P5 fixed-mode GUI framing. One open residual: a bounded
+`_current_fix` oscillation when the asyncio GPS poll stalls (separate from the gps.py reader;
+self-correcting).
 
-**Blocking the broader vision:** multi-node coordination remains unbuilt — the key
-enabling work for the tiered base-station + spoke architecture below.
+**Recon pair (multi-node, first layer) — BUILT (PR #195):** `chase` (fixed) can now task
+`survkis` (mobile) to survey where a flagged device beds down, and receive the findings back
+(`SURVEY_ENABLED`, default off). Design + on-node validation plan: **`docs/design-recon-pair.md`**.
+The broader tiered coordination layer beyond this pipeline is still direction, not state.
 
 ---
 
-## Architectural Direction (target — base station up, multi-node pending)
+## Architectural Direction (target — base station up, recon-pair layer built)
 
-> The target architecture. `chase` as a base station is now up and running; the
-> multi-node coordination layer below is still direction, not current state.
+> The target architecture. `chase` as a base station is up and running, and the
+> FIRST multi-node layer — the fixed↔mobile reconnaissance pair (PR #195,
+> `docs/design-recon-pair.md`) — is built and entering on-node validation. The broader
+> tiered coordination below (registration, health, distributed aggregation) is still direction.
 
 **Tiered base-station + spoke model** (replaces the original single mega-node plan):
 
@@ -71,14 +76,18 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 
 **Rationale:** A single Pi cannot carry full SDR + WiFi + BT + GPS + LoRa + display simultaneously at field power budgets. The base station handles heavy RF compute (ADS-B, Drone RF); spoke nodes carry focused sensors and report back.
 
-**What's not built yet:**
-- Multi-node coordination / message passing between nodes
-- Spoke node registration and health reporting to base
-- Distributed session aggregation
+**Built (recon-pair layer, PR #195):**
+- Fixed→mobile survey **tasking** + store-and-forward **offload** (`/api/tasking`, `/api/survey`
+  on the base GUI :8088; token-gated)
+- Portable cross-node identity + **AP-association bed-down** on the mobile node
 
-**Near-term focus:** `chase` base station is up; the focus is validating fixed-node
-detection on it (the soak) before building the multi-node layer. `survkis` remains
-a development and validation platform.
+**Still not built:**
+- General spoke registration / health reporting to base (beyond the survey pipeline)
+- Distributed session aggregation
+- The WiGLE home-AP lookup for a not-located target (deliberate, opsec-gated — follow-up PR)
+
+**Near-term focus:** the **recon-pair pair-validation** (`design-recon-pair.md` Part II, Ph0–Ph4)
+on `chase`+`survkis` — the first live two-node exercise. `survkis` is the mobile recon spoke.
 
 ---
 
@@ -144,6 +153,7 @@ authority for what is actually present and working on each node.
 | Persistence scoring | ✅ Complete | ✅ (runs in orchestrator) | ✅ (fixed-mode FixedScoring) |
 | Alert engine | ✅ Complete | ⚠️ Console only (no backend configured) | ✅ Ntfy active |
 | Web GUI | ✅ Complete | ✅ Active — standalone mobile GUI (`NODE_MODE=mobile`, `GUI_PORT=8088`), Nearby proximity tab, no Leaflet | ✅ Active (`GUI_PORT=8088`) |
+| Recon pair (survey) | ✅ Built (PR #195, `design-recon-pair.md`) | Mobile spoke: pulls taskings, surveys, offloads (set `SURVEY_FIXED_URL`+`SURVEY_TOKEN`) | Fixed server: `/api/tasking`+`/api/survey` on :8088, "Task survey" + Survey tab. Both `SURVEY_ENABLED=false` until Ph0 |
 
 ---
 
@@ -171,7 +181,7 @@ ACARS) are all merged and live.
 |---------|------|-----------|-------|
 | Kismet Web UI | 2501 | 0.0.0.0 | Auth via cookie token |
 | readsb / dump1090 | 8080 | localhost | JSON aircraft feed (`/data/aircraft.json`) |
-| Main orchestrator + Web GUI | 8088 | 0.0.0.0 | `GUI_PORT=8088` on both nodes — avoids the readsb :8080 collision on chase |
+| Main orchestrator + Web GUI | 8088 | 0.0.0.0 | `GUI_PORT=8088` on both nodes — avoids the readsb :8080 collision on chase. Also serves the recon-pair `/api/tasking` + `/api/survey` endpoints (token-gated); mobile `SURVEY_FIXED_URL=http://<chase>:8088` |
 
 > **Port note:** readsb/tar1090 and the GUI both *default* to 8080, so co-locating
 > them needs the GUI moved. On `chase` this is resolved with `GUI_PORT=8088` in
