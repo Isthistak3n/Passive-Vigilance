@@ -2681,3 +2681,62 @@ def test_copresence_noop_when_linker_disabled(orch):
     so._copresence_linker = None          # disabled (CROSS_PHY_LINKING_ENABLED=false)
     so._update_copresence({"wifi-fp:a", "ble-fp:b"}, datetime.now(timezone.utc))
     assert so._person_of == {}            # no clustering when disabled
+
+
+# ---------------------------------------------------------------------------
+# Recon-pair survey matcher (design §5.5)
+# ---------------------------------------------------------------------------
+
+def test_survey_matcher_ap_association_locates_bed_down(orch):
+    """A local AP beaconing the tasked device's distinctive home network resolves the
+    bed-down in a single patrol — even if the device itself is never seen."""
+    from modules.survey_store import SurveyStore
+    from modules.wifi_fingerprint import anchored_identity_key
+    so = orch.sensor_orchestrator
+    so.survey_store = SurveyStore(":memory:")
+    so._current_fix = {"lat": 37.8, "lon": -122.42}
+    key = anchored_identity_key(777, "CASA_DEL_MAR")
+    tid = so.survey_store.enqueue_tasking(
+        key, evidence={"anchor": "CASA_DEL_MAR", "identity_key": key})
+
+    ap = {"macaddr": "de:ad:be:ef:00:01", "type": "Wi-Fi AP",
+          "beaconed_ssid": "CASA_DEL_MAR", "last_signal": -58}
+    for _ in range(3):
+        so._record_survey_hits([ap, {"macaddr": "x", "beaconed_ssid": "xfinitywifi"}])
+
+    res = so.survey_store.compute_findings(tid)
+    assert res["outcome"] == "resident"
+    assert res["wigle_candidate"] is False
+    assert res["home_ap"]["bssid"] == "de:ad:be:ef:00:01"
+    assert res["home_ap"]["ssid"] == "CASA_DEL_MAR"
+
+
+def test_survey_matcher_not_located_after_patrol(orch):
+    """A tasking patrolled past the threshold with no match reports not_located."""
+    from modules.survey_store import SurveyStore
+    from modules.wifi_fingerprint import anchored_identity_key
+    so = orch.sensor_orchestrator
+    so.survey_store = SurveyStore(":memory:")
+    so._survey_min_patrol_polls = 3
+    so._current_fix = {"lat": 37.8, "lon": -122.42}
+    key = anchored_identity_key(1, "RARE_SSID")
+    tid = so.survey_store.enqueue_tasking(
+        key, evidence={"anchor": "RARE_SSID", "identity_key": key})
+
+    for _ in range(3):
+        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
+    prepared = so._prepare_survey_findings()
+    assert prepared and prepared[0][0] == tid
+    assert prepared[0][1]["outcome"] == "not_located"
+    assert prepared[0][1]["wigle_candidate"] is True
+
+
+def test_survey_matcher_noop_on_fixed_node(orch):
+    """The matcher only records on a mobile node."""
+    from modules.survey_store import SurveyStore
+    so = orch.sensor_orchestrator
+    so.survey_store = SurveyStore(":memory:")
+    so._node_mode = "fixed"
+    tid = so.survey_store.enqueue_tasking("wifi-fp:abc", evidence={"anchor": "N"})
+    so._record_survey_hits([{"macaddr": "x", "beaconed_ssid": "N"}])
+    assert so.survey_store.observation_count(tid) == 0

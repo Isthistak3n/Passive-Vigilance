@@ -1209,6 +1209,39 @@ ssh -L 8080:localhost:8080 survkis@<pi-ip>
 
 ---
 
+## Enabling the recon pair (fixed + mobile team)
+
+A fixed node can task a mobile node to survey where a flagged device beds down and
+receive the findings back (design + validation plan: `docs/design-recon-pair.md`).
+Off by default (`SURVEY_ENABLED=false`) — zero overhead until both nodes opt in.
+
+**On the FIXED node (base station, e.g. `chase`):**
+```ini
+SURVEY_ENABLED=true
+GUI_ENABLED=true        # the survey endpoints ride the GUI server
+GUI_TOKEN=<a secret>    # REQUIRED — /api/tasking + /api/survey are token-gated
+GUI_PORT=8088
+# optional: pin the node's position so "distance from node" is stable
+# AIR_HOME_LAT=..   AIR_HOME_LON=..
+# optional: auto-enroll high-severity strong-fingerprint contacts (default off)
+# SURVEY_AUTOTASK=on
+```
+Restart; the WiFi list gains a **Task survey** button and a **Survey** tab appears.
+
+**On the MOBILE node (spoke, e.g. `survkis`):**
+```ini
+SURVEY_ENABLED=true
+NODE_MODE=mobile
+SURVEY_FIXED_URL=http://<fixed-node-host-or-ip>:8088   # e.g. http://chasingyourtail.local:8088
+SURVEY_TOKEN=<the fixed node's GUI_TOKEN>               # must match
+KISMET_ACTIVE_WINDOW_SECONDS=120                        # mobile-scoring hygiene
+```
+The mobile node pulls taskings and offloads findings whenever it can reach the fixed
+node (store-and-forward — it surveys offline and syncs at base). See the full env
+reference in `.env.example` under "Reconnaissance pair".
+
+---
+
 ## Field Hardening
 
 These settings make the platform survivable in real-world deployments where

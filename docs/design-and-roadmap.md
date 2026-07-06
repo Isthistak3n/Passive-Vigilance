@@ -446,6 +446,13 @@ fully functional (correlation falls back to callsign with no registry at all).
 *Note:* the offline DB is built from a public CSV, not tar1090's bundled `db-*` shards — those are
 zlib-compressed binary (a fragile, version-specific trie), so a clean off-node SQLite is the robust source.
 
+## 12. Reconnaissance pair — fixed tasks, mobile surveys (multi-node, §5.5 realised)
+
+The fixed↔mobile recon pair (fixed node tasks a survey → mobile node finds where a flagged device
+beds down, by AP association → findings offload back) is **built (PR #195, `SURVEY_ENABLED`, default
+off)** and realises the multi-node correlation §5.5 named. Its full design and the on-node phased
+validation plan live in a dedicated document — **see [design-recon-pair.md](design-recon-pair.md)**.
+
 ---
 
 # Part II — Roadmap
@@ -460,7 +467,9 @@ store (both modes); randomization-resistant fingerprint capture + keying for WiF
 (§6–7); contact designators (§8); the full operator GUI (durable history across all panels,
 live-mirror); the air-picture GUI + Remote ID surface; and the P7-core air persistence scorer
 with alerting reframed to *of-interest only*. Built but **not merged:** the approaching-signal
-(rising-RSSI) trigger (Phase 2.5 / P1) — owes a positive walk-test.
+(rising-RSSI) trigger (Phase 2.5 / P1) — owes a positive walk-test; and the **reconnaissance pair**
+(P8, PR #195, [design-recon-pair.md](design-recon-pair.md)) — built, now entering on-node
+pair-validation.
 
 ## What drives the sequencing now
 
@@ -533,6 +542,7 @@ the detector.
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, bounded tracks, ID-less split, Remote ID pruning + surface; 24 h retention; returning-ICAO as same identity | ✅ shipped |
 | **P7** | Aircraft of interest: orbit/loiter detection (§9) | ◑ Mostly shipped — geometry + scorer (`air_geometry.py`/`air_scoring.py`), live scoring in `_poll_adsb`, alerting reframed to of-interest only (soak #3 confirmed). *Deferred:* durable cross-day per-ICAO baseline + daily-orbiter suppression; GUI severity badge; Remote ID loiter fusion | follow-on |
+| **P8** | Reconnaissance pair — fixed tasks / mobile surveys / offload ([design-recon-pair.md](design-recon-pair.md)) | ◑ Built (PR #195, `SURVEY_ENABLED` default off): tasking + store-and-forward sync + AP-association bed-down + WiGLE-candidate flag. *Owes:* the on-node phased pair-validation (Ph0–Ph4) in design-recon-pair.md Part II | follow-on (owes pair-validation) |
 
 ### Phase detail (the open work)
 
@@ -568,25 +578,11 @@ without swallowing an intermittent returner. *Exit:* FP decays without absorbing
 returners. *Deferred:* swapping in `ConsistencyPatternPolicy`; a "graveyard" GUI panel for
 demotions (the producer ships; the consumer is later).
 
-**P4 — Cross-session entity resolution + cross-PHY.** ✅ Shipped across three phases (branch
-`feat/contact-identity-tiers`, soaking on chase before merge), all display/identity — the
-scoring key is deliberately untouched:
-- **A — contact-identity tiers + within-session return.** A device re-links across rotation at a
-  *strong* (rare distinctive SSID anchor) or *medium* (`FP_MEDIUM_MAX_DF`, looser anchor) tier;
-  the GUI collapses its rotating addresses into one row and flags a **return** after an absence
-  (`WIFI_RETURN_GAP_SECONDS`).
-- **B — cross-session returning-entity.** `EntityStore.contact_registry` remembers a contact
-  across sessions/days (visits, distinct days) and flags a **returning entity** ("seen before")
-  when it reappears in a new session — guarded so a quick restart isn't a false return
-  (`ENTITY_RETURN_MIN_GAP_SECONDS`).
-- **C — cross-PHY person linking + resident/visitor.** `copresence.py` links a person's co-present
-  **mobile** radios (Wi-Fi client + BLE; APs excluded) into one person, over-merge-safe (Jaccard +
-  transience), persisted (`contact_links`); the local APs anchor a **resident-vs-visitor** call
-  (local-network affinity / baseline membership vs. a lingering novel stranger).
-*Owed:* multi-day calibration of the medium-tier and co-presence thresholds; wiring the
-identity signals into scoring (they inform display/awareness today, not what pages). *Honest
-limit:* re-identification is only as stable as the contact key, and cross-PHY links are sparse
-where BLE capture is thin.
+**P4 — Cross-session entity resolution + cross-PHY.** ✅ Shipped (phases A–C, all display/identity;
+scoring key untouched): contact-identity tiers + within-session return (A), cross-session
+returning-entity via `EntityStore.contact_registry` (B), cross-PHY person linking via
+`copresence.py` + resident-vs-visitor (C). *Owed:* multi-day calibration of the medium-tier /
+co-presence thresholds, and wiring the identity signals into scoring.
 
 **P5 owed slice.** The learning-vs-frozen baseline framing (time remaining) and the anomaly
 list framed by signal/severity. (Durable history + live-mirror are done.)
@@ -599,8 +595,10 @@ classifier (done, display-only) → baseline + scoring + alerting → Remote ID 
 ## Deliberately deferred
 
 GPS-movement sanity check (§2) and relocation re-baseline (§2) — low value for a stationary
-base station; WiGLE resident-vs-visitor enrichment and watchboxes/origin-geofencing (§10);
-multi-node correlation (the follower-resolves-to-fixed pattern, §5.5). All genuinely later.
+base station; WiGLE resident-vs-visitor enrichment and watchboxes/origin-geofencing (§10). The
+multi-node **reconnaissance pair** (fixed tasks → mobile survey → offload, §5.5/§12) is now
+**built** (`SURVEY_ENABLED`, default off) — no longer deferred; the remaining §5.5 slice is the
+*reverse* fusion (a follower seen on the mobile node later surfacing at the fixed node).
 
 ## Standing risks
 

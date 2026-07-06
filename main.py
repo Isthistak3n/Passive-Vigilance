@@ -33,6 +33,7 @@ from modules.kismet import KismetModule
 from modules.fixed_scoring import FixedScoring
 from modules.orchestrator import SensorOrchestrator
 from modules.entity_store import EntityStore
+from modules.survey_store import SurveyStore
 from modules.persistence import PersistenceEngine
 from modules.probe_analyzer import ProbeAnalyzer
 from modules.remote_id import RemoteIDModule
@@ -53,6 +54,10 @@ _ACARS_SERVICE = os.getenv("ACARS_SERVICE", "acarsdec")
 _GUI_ENABLED = os.getenv("GUI_ENABLED", "false").lower() == "true"
 _GUI_HOST    = os.getenv("GUI_HOST", "0.0.0.0")
 _GUI_PORT    = int(os.getenv("GUI_PORT", "8080"))
+# Recon-pair survey (design §5.5): the fixed node issues survey taskings and the
+# mobile node offloads bed-down findings. Master switch, off by default so a node
+# that doesn't participate carries zero overhead (no DB, no sync task).
+_SURVEY_ENABLED = os.getenv("SURVEY_ENABLED", "false").lower() == "true"
 
 if _GUI_ENABLED:
     from gui.server import GUIServer
@@ -174,6 +179,10 @@ class PassiveVigilance:
         # Durable entity/observation store — recording runs at the poll site for
         # every NODE_MODE (orthogonal to scoring), injected into the orchestrator.
         self.entity_store = EntityStore()
+        # Recon-pair survey store — on the fixed node it holds taskings + received
+        # findings; on the mobile node it holds pulled taskings + survey observations.
+        # None (and the whole survey path inert) unless SURVEY_ENABLED.
+        self.survey_store = SurveyStore() if _SURVEY_ENABLED else None
         self.remote_id = RemoteIDModule(gps_module=self.gps)
         # Passive BLE advertisement scanner — owns hci0 (raw HCI) when enabled,
         # replacing Kismet's empty linuxbluetooth feed. Default off so non-BLE
@@ -193,6 +202,7 @@ class PassiveVigilance:
             alert_backend=self.alert_backend, rate_limiter=self.rate_limiter,
             persistence=self.persistence, probe_analyzer=self.probe_analyzer,
             entity_store=self.entity_store,
+            survey_store=self.survey_store,
             gui_server=None, remote_id=self.remote_id,
             ble_scanner=self.ble_scanner, ais=self.ais,
             acars=self.acars, aircraft_registry=self.aircraft_registry,
@@ -212,7 +222,9 @@ class PassiveVigilance:
         )
 
         if _GUI_ENABLED:
-            self.gui_server = GUIServer(host=_GUI_HOST, port=_GUI_PORT, orchestrator=self.sensor_orchestrator)
+            self.gui_server = GUIServer(host=_GUI_HOST, port=_GUI_PORT,
+                                        orchestrator=self.sensor_orchestrator,
+                                        survey_store=self.survey_store)
             self.sensor_orchestrator.gui_server = self.gui_server
 
     # Active-flag properties: read/write the shared _modules_active dict
@@ -336,6 +348,10 @@ class PassiveVigilance:
         # via ADAPTATION_POSTURE; off (the default) starts no task.
         if so._adaptation_sweep_enabled():
             tasks.append(asyncio.create_task(so._adaptation_sweep_loop(), name="adaptation-sweep"))
+        # Recon-pair store-and-forward sync (mobile side) — only when this node has a
+        # fixed-node URL configured; the loop no-ops otherwise. Off the poll hot path.
+        if self.survey_store is not None and so._survey_sync.configured:
+            tasks.append(asyncio.create_task(so._survey_sync_loop(), name="survey-sync"))
         if self._sdr_coordinator_active:
             tasks.append(asyncio.create_task(self.sdr_coordinator._coordinator_loop(), name="sdr-coordinator"))
         await self._stop.wait()

@@ -52,6 +52,9 @@
     <button class="tab-btn" data-tab="alerts">
       Alerts <span class="badge alert-badge" id="badge-alerts">0</span>
     </button>
+    <button class="tab-btn" data-tab="survey" id="tabbtn-survey" hidden>
+      Survey <span class="badge" id="badge-survey">0</span>
+    </button>
   </nav>
 
   <main>
@@ -88,6 +91,7 @@
               <th data-col="pnl" data-type="text">Known Networks</th>
               <th data-col="reconnect" data-type="text">Reconnect</th>
               <th data-col="last" data-type="time">Last</th>
+              <th class="survey-col" hidden>Survey</th>
             </tr>
           </thead>
           <tbody id="wifi-tbody"></tbody>
@@ -177,6 +181,15 @@
         <button id="alerts-clear" class="btn-sm">Clear</button>
       </div>
       <div id="alerts-feed"></div>
+    </section>
+
+    <!-- Survey tab (recon pair) — where tasked contacts bed down -->
+    <section id="tab-survey" class="tab-panel">
+      <div class="toolbar">
+        <span class="survey-help">Survey taskings and the bed-down locations the mobile node reported.</span>
+        <button id="survey-refresh" class="btn-sm">Refresh</button>
+      </div>
+      <div id="survey-list"></div>
     </section>
   </main>
 
