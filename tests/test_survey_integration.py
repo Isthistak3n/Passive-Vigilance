@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from modules.orchestrator import SensorOrchestrator
+from modules.survey_coordinator import SurveyCoordinator
 from modules.survey_store import SurveyStore
 from modules.survey_sync import SurveySync
 from modules.wifi_fingerprint import anchored_identity_key
@@ -97,7 +97,7 @@ def test_fixed_to_mobile_survey_roundtrip():
 
         # 2. The matcher: the observed device's candidate keys must include the
         #    tasked key (cross-node portability), so it is recorded as a hit.
-        candidates = SensorOrchestrator._device_candidate_keys(observed)
+        candidates = SurveyCoordinator.device_candidate_keys(observed)
         assert identity_key in candidates, "portable-key match failed across nodes"
 
         # 3. Simulate a bed-down: many sightings 60 s apart at one spot (10 min dwell).
