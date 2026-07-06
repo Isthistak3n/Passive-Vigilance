@@ -350,8 +350,8 @@ class PassiveVigilance:
             tasks.append(asyncio.create_task(so._adaptation_sweep_loop(), name="adaptation-sweep"))
         # Recon-pair store-and-forward sync (mobile side) — only when this node has a
         # fixed-node URL configured; the loop no-ops otherwise. Off the poll hot path.
-        if self.survey_store is not None and so._survey_sync.configured:
-            tasks.append(asyncio.create_task(so._survey_sync_loop(), name="survey-sync"))
+        if so.survey.sync_configured:
+            tasks.append(asyncio.create_task(so.survey.sync_loop(), name="survey-sync"))
         if self._sdr_coordinator_active:
             tasks.append(asyncio.create_task(self.sdr_coordinator._coordinator_loop(), name="sdr-coordinator"))
         await self._stop.wait()

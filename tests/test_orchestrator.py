@@ -2684,180 +2684,39 @@ def test_copresence_noop_when_linker_disabled(orch):
 
 
 # ---------------------------------------------------------------------------
-# Recon-pair survey matcher (design §5.5)
+# Survey-coordinator wiring (the seams; the logic lives in test_survey_coordinator)
 # ---------------------------------------------------------------------------
 
-def test_survey_matcher_ap_association_locates_bed_down(orch):
-    """A local AP beaconing the tasked device's distinctive home network resolves the
-    bed-down in a single patrol — even if the device itself is never seen."""
-    from modules.survey_store import SurveyStore
-    from modules.wifi_fingerprint import anchored_identity_key
+
+@pytest.mark.asyncio
+async def test_poll_kismet_feeds_survey_matcher(orch):
+    """Each Kismet poll hands the device list and the current GPS fix to the survey
+    coordinator's matcher — the mobile-side seam."""
     so = orch.sensor_orchestrator
-    so.survey_store = SurveyStore(":memory:")
-    so._current_fix = {"lat": 37.8, "lon": -122.42}
-    key = anchored_identity_key(777, "CASA_DEL_MAR")
-    tid = so.survey_store.enqueue_tasking(
-        key, evidence={"anchor": "CASA_DEL_MAR", "identity_key": key})
-
-    ap = {"macaddr": "de:ad:be:ef:00:01", "type": "Wi-Fi AP",
-          "beaconed_ssid": "CASA_DEL_MAR", "last_signal": -58}
-    for _ in range(3):
-        so._record_survey_hits([ap, {"macaddr": "x", "beaconed_ssid": "xfinitywifi"}])
-
-    res = so.survey_store.compute_findings(tid)
-    assert res["outcome"] == "resident"
-    assert res["wigle_candidate"] is False
-    assert res["home_ap"]["bssid"] == "de:ad:be:ef:00:01"
-    assert res["home_ap"]["ssid"] == "CASA_DEL_MAR"
+    so.survey.record_hits = MagicMock()
+    so._current_fix = {"lat": 51.5, "lon": -0.1}
+    devices = [{"macaddr": "aa:bb:cc:dd:ee:ff", "type": "Wi-Fi Client"}]
+    orch.kismet.poll_devices = AsyncMock(return_value=devices)
+    await so._poll_kismet()
+    so.survey.record_hits.assert_called_once_with(devices, so._current_fix)
 
 
-def test_build_survey_evidence_anchor_from_label_when_no_live_fp_anchor(orch):
-    """Regression: a surveyable WiFi contact whose live device lacks ``fp_anchor``
-    (the usual case — it only appears on a poll where the device freshly probes its
-    SSID) must still carry the anchor, sourced from the rotation-stable fingerprint
-    label. Without this the AP-association bed-down can never match (all #195 field
-    tasks shipped with anchor=None)."""
-    from modules.wifi_fingerprint import anchored_identity_key
+@pytest.mark.asyncio
+async def test_flagged_contact_carries_survey_evidence(orch):
+    """A flagged WiFi contact asks the coordinator for tasking evidence and stamps the
+    result onto the event dict (surveyable flag + evidence) — the fixed-side seam."""
     so = orch.sensor_orchestrator
-    so.survey_store = object()  # non-None: the feature is enabled
-    key = anchored_identity_key(777, "Battoman2021_nomap")
-    event = _make_detection_event(fingerprint=key, fingerprint_label="Battoman2021_nomap")
-    device = {"macaddr": "aa:bb:cc:dd:ee:ff", "probe_fingerprint": 777}  # no fp_anchor
-    ev = so._build_survey_evidence(event, device, "Battoman2021_nomap", key)
-    assert ev is not None
-    assert ev["modality"] == "wifi"
-    assert ev["anchor"] == "Battoman2021_nomap"
-    assert ev["label"] == "Battoman2021_nomap"
+    orch._kismet_active = True
+    so.entity_store.record_contact_sighting.return_value = {"known": False}
+    evidence = {"modality": "wifi", "identity_key": "wifi-fp:abc"}
+    so.survey.note_flagged_contact = MagicMock(return_value=evidence)
+    ev = _make_detection_event(alert_level="high", score=0.95, fingerprint="wifi-fp:abc")
+    orch.persistence.update.return_value = [ev]
+    orch.kismet.poll_devices = AsyncMock(return_value=[{"macaddr": ev.mac}])
+    await so._poll_kismet()
 
+    so.survey.note_flagged_contact.assert_called_once()
+    pushed = so.all_events[-1]
+    assert pushed["surveyable"] is True
+    assert pushed["survey_evidence"] == evidence
 
-def test_survey_matcher_ap_association_falls_back_to_label(orch):
-    """A tasking with no explicit anchor but a populated label still resolves the
-    bed-down — recovers tasks dispatched before the anchor was wired through."""
-    from modules.survey_store import SurveyStore
-    from modules.wifi_fingerprint import anchored_identity_key
-    so = orch.sensor_orchestrator
-    so.survey_store = SurveyStore(":memory:")
-    so._current_fix = {"lat": 37.8, "lon": -122.42}
-    key = anchored_identity_key(777, "CASA_DEL_MAR")
-    tid = so.survey_store.enqueue_tasking(
-        key, evidence={"anchor": None, "label": "CASA_DEL_MAR",
-                       "modality": "wifi", "identity_key": key})
-
-    ap = {"macaddr": "de:ad:be:ef:00:01", "type": "Wi-Fi AP",
-          "beaconed_ssid": "CASA_DEL_MAR", "last_signal": -58}
-    for _ in range(3):
-        so._record_survey_hits([ap])
-
-    res = so.survey_store.compute_findings(tid)
-    assert res["outcome"] == "resident"
-    assert res["home_ap"]["ssid"] == "CASA_DEL_MAR"
-
-
-def test_survey_evidence_ble_anchor_stays_none(orch):
-    """BLE has no beaconed home network, so its anchor must stay None even though it
-    has a label — otherwise the matcher would hunt an AP beaconing a vendor string."""
-    so = orch.sensor_orchestrator
-    so.survey_store = object()
-    event = _make_detection_event(fingerprint="ble-fp:8c5300c89623",
-                                  fingerprint_label="BLE-vendor_0x02b2-14",
-                                  device_type="BTLE")
-    device = {"macaddr": "8c:53:00:c8:96:23", "type": "BTLE"}
-    ev = so._build_survey_evidence(event, device, "BLE-vendor_0x02b2-14",
-                                   "ble-fp:8c5300c89623")
-    assert ev is not None
-    assert ev["modality"] == "ble"
-    assert ev["anchor"] is None
-
-
-def test_survey_matcher_not_located_after_patrol(orch):
-    """A tasking patrolled past the threshold with no match reports not_located."""
-    from modules.survey_store import SurveyStore
-    from modules.wifi_fingerprint import anchored_identity_key
-    so = orch.sensor_orchestrator
-    so.survey_store = SurveyStore(":memory:")
-    so._survey_min_patrol_polls = 3
-    so._current_fix = {"lat": 37.8, "lon": -122.42}
-    key = anchored_identity_key(1, "RARE_SSID")
-    tid = so.survey_store.enqueue_tasking(
-        key, evidence={"anchor": "RARE_SSID", "identity_key": key})
-
-    for _ in range(3):
-        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
-    prepared = so._prepare_survey_findings()
-    assert prepared and prepared[0][0] == tid
-    assert prepared[0][1]["outcome"] == "not_located"
-    assert prepared[0][1]["wigle_candidate"] is True
-
-
-def _survey_orch_with_task(orch, min_polls=3):
-    """A mobile orchestrator with an in-memory survey store and one open WiFi tasking."""
-    from modules.survey_store import SurveyStore
-    from modules.wifi_fingerprint import anchored_identity_key
-    so = orch.sensor_orchestrator
-    so.survey_store = SurveyStore(":memory:")
-    so._survey_min_patrol_polls = min_polls
-    so._current_fix = {"lat": 37.8, "lon": -122.42}
-    key = anchored_identity_key(1, "RARE_SSID")
-    tid = so.survey_store.enqueue_tasking(
-        key, evidence={"anchor": "RARE_SSID", "identity_key": key})
-    return so, tid
-
-
-def test_active_patrol_defers_all_task_closure(orch):
-    """During a patrol the poll quota is suspended: a task patrolled well past the
-    threshold with no match must stay open, not close as not_located (the walk 2 miss)."""
-    so, tid = _survey_orch_with_task(orch, min_polls=2)
-    so.survey_store.start_patrol()
-    for _ in range(6):  # far past the quota, still nothing matched
-        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
-    assert so._prepare_survey_findings() == []
-    assert so.survey_store.get_tasking(tid)["status"] in ("open", "surveying")
-
-
-def test_end_patrol_finalizes_open_tasks(orch):
-    """Ending a patrol closes out every still-open task as a unit, and finalizes once."""
-    so, tid = _survey_orch_with_task(orch, min_polls=99)  # quota unreachable
-    so.survey_store.start_patrol()
-    for _ in range(3):
-        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
-    assert so._prepare_survey_findings() == []  # active: nothing closes
-
-    so.survey_store.end_patrol()
-    prepared = so._prepare_survey_findings()
-    assert prepared and prepared[0][0] == tid
-    assert prepared[0][1]["outcome"] == "not_located"
-    assert so.survey_store.patrol_pending_finalize() is None  # finalized once
-
-
-def test_patrol_backstop_auto_ends_runaway_patrol(orch):
-    """A patrol left running past the backstop auto-ends and finalizes, so a forgotten
-    'end patrol' can't hold tasks open forever."""
-    so, tid = _survey_orch_with_task(orch, min_polls=99)
-    so._patrol_max_seconds = 0.0  # any elapsed time trips the backstop
-    so.survey_store.start_patrol()
-    for _ in range(2):
-        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
-    prepared = so._prepare_survey_findings()
-    assert prepared and prepared[0][0] == tid
-    assert so.survey_store.active_patrol() is None
-
-
-def test_no_patrol_keeps_legacy_quota_closure(orch):
-    """With no patrol started, the legacy poll-quota closure still applies."""
-    so, tid = _survey_orch_with_task(orch, min_polls=3)
-    for _ in range(3):
-        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
-    prepared = so._prepare_survey_findings()
-    assert prepared and prepared[0][0] == tid
-    assert prepared[0][1]["outcome"] == "not_located"
-
-
-def test_survey_matcher_noop_on_fixed_node(orch):
-    """The matcher only records on a mobile node."""
-    from modules.survey_store import SurveyStore
-    so = orch.sensor_orchestrator
-    so.survey_store = SurveyStore(":memory:")
-    so._node_mode = "fixed"
-    tid = so.survey_store.enqueue_tasking("wifi-fp:abc", evidence={"anchor": "N"})
-    so._record_survey_hits([{"macaddr": "x", "beaconed_ssid": "N"}])
-    assert so.survey_store.observation_count(tid) == 0
