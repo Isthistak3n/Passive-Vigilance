@@ -453,6 +453,17 @@ beds down, by AP association → findings offload back) is **built (PR #195, `SU
 off)** and realises the multi-node correlation §5.5 named. Its full design and the on-node phased
 validation plan live in a dedicated document — **see [design-recon-pair.md](design-recon-pair.md)**.
 
+**On-node validation (2026-07-06).** The live `chase`↔`survkis` pair cleared **Ph0** (plumbing:
+token-gated pull/push, store-and-forward round trip) and **Ph2** (not-found → WiGLE-candidate flag).
+The first two walk tests returned nothing — which turned out to be **two real bugs**, both now fixed:
+the AP-association anchor was sourced from an intermittently-present device field, so every tasking
+shipped with an empty anchor and no beaconing AP could ever match (**#196**); and a task's lifetime
+was a blind ~10-minute poll quota that expired a target before it was ever encountered on a walk —
+replaced by **operator-bounded patrols** (§10) with a mobile-GUI start/end button (**#198**). Still
+owed: a positive **Ph1** bed-down walk with both fixes deployed. The follow-on **wardrive index**
+(§11) — bank every AP heard while moving, for retroactive, target-independent resolution — is
+**designed (#197), not yet built**.
+
 ---
 
 # Part II — Roadmap
@@ -467,9 +478,10 @@ store (both modes); randomization-resistant fingerprint capture + keying for WiF
 (§6–7); contact designators (§8); the full operator GUI (durable history across all panels,
 live-mirror); the air-picture GUI + Remote ID surface; and the P7-core air persistence scorer
 with alerting reframed to *of-interest only*. Built but **not merged:** the approaching-signal
-(rising-RSSI) trigger (Phase 2.5 / P1) — owes a positive walk-test; and the **reconnaissance pair**
-(P8, PR #195, [design-recon-pair.md](design-recon-pair.md)) — built, now entering on-node
-pair-validation.
+(rising-RSSI) trigger (Phase 2.5 / P1) — owes a positive walk-test. The **reconnaissance pair**
+(P8, PR #195, [design-recon-pair.md](design-recon-pair.md)) is merged and **in on-node validation**:
+Ph0/Ph2 passed, two field bugs fixed (#196 the unwired anchor, #198 operator-bounded patrols
+replacing the poll-quota task lifetime), a positive Ph1 bed-down walk still owed.
 
 ## What drives the sequencing now
 
@@ -542,7 +554,7 @@ the detector.
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, bounded tracks, ID-less split, Remote ID pruning + surface; 24 h retention; returning-ICAO as same identity | ✅ shipped |
 | **P7** | Aircraft of interest: orbit/loiter detection (§9) | ◑ Mostly shipped — geometry + scorer (`air_geometry.py`/`air_scoring.py`), live scoring in `_poll_adsb`, alerting reframed to of-interest only (soak #3 confirmed). *Deferred:* durable cross-day per-ICAO baseline + daily-orbiter suppression; GUI severity badge; Remote ID loiter fusion | follow-on |
-| **P8** | Reconnaissance pair — fixed tasks / mobile surveys / offload ([design-recon-pair.md](design-recon-pair.md)) | ◑ Built (PR #195, `SURVEY_ENABLED` default off): tasking + store-and-forward sync + AP-association bed-down + WiGLE-candidate flag. *Owes:* the on-node phased pair-validation (Ph0–Ph4) in design-recon-pair.md Part II | follow-on (owes pair-validation) |
+| **P8** | Reconnaissance pair — fixed tasks / mobile surveys / offload ([design-recon-pair.md](design-recon-pair.md)) | ◑ Merged (PR #195, `SURVEY_ENABLED` default off): tasking + store-and-forward sync + AP-association bed-down + WiGLE-candidate flag. **On-node validation:** Ph0 (plumbing) + Ph2 (not-found flag) passed; two field bugs fixed — the anchor was never wired to the matcher (#196), and the blind poll-quota task lifetime is replaced by operator-bounded patrols (§10, #198). *Owes:* a positive Ph1 bed-down walk; the §11 wardrive index (designed #197, unbuilt) | follow-on (owes Ph1 walk) |
 
 ### Phase detail (the open work)
 
