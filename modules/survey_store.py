@@ -266,6 +266,33 @@ class SurveyStore:
             )
             """
         )
+        # Wardrive index (design §11). While a patrol runs the mobile node banks EVERY
+        # AP it hears here — independent of what's tasked — so a bed-down can be resolved
+        # by querying this index for a task's anchor SSID (retroactively, even for a
+        # device tasked after the walk). Deduped by BSSID so re-walking a street never
+        # inflates it; the row keeps the best-signal position. Bounded by a retention
+        # sweep. Node-local, gitignored, never committed (captured third-party data).
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS survey_wardrive (
+                bssid      TEXT PRIMARY KEY,
+                ssid       TEXT,
+                lat        REAL,
+                lon        REAL,
+                rssi       REAL,
+                first_seen TEXT NOT NULL,
+                last_seen  TEXT NOT NULL,
+                patrol_id  INTEGER,
+                obs_count  INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wardrive_ssid ON survey_wardrive(ssid)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wardrive_last ON survey_wardrive(last_seen)"
+        )
         self._migrate(cur)
         self._conn.commit()
 
@@ -786,6 +813,61 @@ class SurveyStore:
         return out
 
     # ------------------------------------------------------------------
+    # Wardrive index (design §11)
+    # ------------------------------------------------------------------
+
+    @_synchronized
+    def upsert_wardrive_ap(self, *, bssid: str, ssid: Optional[str],
+                           lat: Optional[float], lon: Optional[float],
+                           rssi: Optional[float], timestamp: datetime,
+                           patrol_id: Optional[int] = None) -> None:
+        """Bank one heard AP into the wardrive index, deduped by BSSID. Re-hearing the
+        same AP bumps its observation count and last-seen; its position is replaced only
+        when the new reading is stronger (best-signal fix wins), so the located point is
+        the closest pass, not the last."""
+        ts = _iso(timestamp)
+        self._conn.execute(
+            """
+            INSERT INTO survey_wardrive
+                (bssid, ssid, lat, lon, rssi, first_seen, last_seen, patrol_id, obs_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(bssid) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                obs_count = obs_count + 1,
+                ssid      = COALESCE(excluded.ssid, ssid),
+                patrol_id = COALESCE(excluded.patrol_id, patrol_id),
+                lat  = CASE WHEN excluded.rssi IS NOT NULL
+                            AND (rssi IS NULL OR excluded.rssi > rssi)
+                       THEN excluded.lat ELSE lat END,
+                lon  = CASE WHEN excluded.rssi IS NOT NULL
+                            AND (rssi IS NULL OR excluded.rssi > rssi)
+                       THEN excluded.lon ELSE lon END,
+                rssi = CASE WHEN excluded.rssi IS NOT NULL
+                            AND (rssi IS NULL OR excluded.rssi > rssi)
+                       THEN excluded.rssi ELSE rssi END
+            """,
+            (bssid, ssid, lat, lon, rssi, ts, ts, patrol_id),
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def wardrive_aps_for_ssid(self, ssid: str) -> list:
+        """Every banked AP beaconing this SSID (case-insensitive) — the retroactive
+        bed-down lookup for a task's anchor. Returns dicts with a located position."""
+        rows = self._conn.execute(
+            "SELECT bssid, ssid, lat, lon, rssi, first_seen, last_seen, obs_count "
+            "FROM survey_wardrive WHERE lower(ssid) = ?",
+            ((ssid or "").strip().lower(),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    @_synchronized
+    def wardrive_count(self) -> int:
+        """Number of distinct APs banked in the wardrive index."""
+        return int(self._conn.execute(
+            "SELECT count(*) FROM survey_wardrive").fetchone()[0])
+
+    # ------------------------------------------------------------------
     # Maintenance
     # ------------------------------------------------------------------
 
@@ -799,6 +881,22 @@ class SurveyStore:
                       - timedelta(days=self._retention_days))
         cur = self._conn.execute(
             "DELETE FROM survey_observation WHERE timestamp < ?", (cutoff,)
+        )
+        self._conn.commit()
+        return cur.rowcount
+
+    @_synchronized
+    def prune_wardrive(self, retention_days: int,
+                       now: Optional[datetime] = None) -> int:
+        """Delete wardrive APs not heard within the retention window; return rows
+        removed. No-op when retention is 0/negative (keep forever). Dedup by BSSID keeps
+        the index bounded by area, so this only sheds long-unseen ground."""
+        if retention_days <= 0:
+            return 0
+        cutoff = _iso((now or datetime.now(timezone.utc))
+                      - timedelta(days=retention_days))
+        cur = self._conn.execute(
+            "DELETE FROM survey_wardrive WHERE last_seen < ?", (cutoff,)
         )
         self._conn.commit()
         return cur.rowcount

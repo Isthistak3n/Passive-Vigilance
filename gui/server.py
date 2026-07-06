@@ -521,7 +521,12 @@ class GUIServer:
 
             if _req.method == "GET":
                 try:
-                    return jsonify(self._survey_store.patrol_status())
+                    status = self._survey_store.patrol_status()
+                    try:
+                        status["wardrive_aps"] = self._survey_store.wardrive_count()
+                    except Exception:  # pragma: no cover - defensive
+                        status["wardrive_aps"] = None
+                    return jsonify(status)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.error("api_patrol GET failed: %s", exc)
                     return jsonify({"error": "patrol read failed"}), 500

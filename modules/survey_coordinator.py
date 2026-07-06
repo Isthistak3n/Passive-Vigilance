@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import socket
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -79,6 +80,15 @@ class SurveyCoordinator:
         # forever. Generous — hours, not the ~10-min poll quota it supersedes.
         self._patrol_max_seconds = float(
             os.getenv("SURVEY_PATROL_MAX_HOURS", "12")) * 3600.0
+        # Wardrive index (design §11): while a patrol runs, bank every AP heard so a
+        # bed-down can be resolved by querying the index for a task's anchor SSID —
+        # retroactively, and even for a device tasked after the walk. Retention bounds
+        # the index (dedup by BSSID already caps it by area). _wardrive_recorded avoids
+        # re-recording the same (task, AP) as an observation each cycle.
+        self._wardrive_retention_days = int(
+            os.getenv("SURVEY_WARDRIVE_RETENTION_DAYS", "90"))
+        self._wardrive_recorded: set = set()
+        self._last_wardrive_prune = 0.0
         # Mobile-node client to the fixed node's survey endpoints. Inert (no URL)
         # unless SURVEY_FIXED_URL is set; the sync loop no-ops when not configured.
         self._survey_sync = SurveySync(
@@ -141,6 +151,14 @@ class SurveyCoordinator:
         staying silent. *fix* is the node's own current GPS fix; fully guarded."""
         if self.survey_store is None or self._node_mode != "mobile":
             return
+        now = datetime.now(timezone.utc)
+        fix = fix or {}
+        lat, lon = fix.get("lat"), fix.get("lon")
+        # Wardrive (design §11): while a patrol runs, bank every AP heard into the local
+        # index, independent of what's tasked — so the area is mapped even with an empty
+        # watchlist and a bed-down resolves retroactively. Honors the ignore list (whose
+        # devices are already filtered out of `devices` upstream in poll_devices).
+        self._bank_wardrive(devices, lat, lon, now)
         try:
             taskings = self.survey_store.open_taskings()
         except Exception as exc:
@@ -153,19 +171,9 @@ class SurveyCoordinator:
         # Distinctive home SSID (the anchor) -> task ids, for AP-association matching.
         ssid_to_tasks: dict = {}
         for t in taskings:
-            ev = t.get("evidence") or {}
-            # Fall back to the label (the anchor SSID for a strong WiFi contact) when a
-            # task carries no explicit anchor — this recovers tasks dispatched before the
-            # anchor was wired through, and never applies to BLE (no beaconed home SSID).
-            anchor = (ev.get("anchor") or "").strip()
-            if not anchor and ev.get("modality") != "ble":
-                anchor = (ev.get("label") or "").strip()
+            anchor = self._task_anchor(t)
             if anchor:
                 ssid_to_tasks.setdefault(anchor.lower(), []).append(t["task_id"])
-
-        now = datetime.now(timezone.utc)
-        fix = fix or {}
-        lat, lon = fix.get("lat"), fix.get("lon")
 
         # Patrol effort: one poll processed for every open task this cycle.
         for t in taskings:
@@ -198,6 +206,75 @@ class SurveyCoordinator:
                 self._survey_started.add(tid)
         except Exception as exc:
             logger.debug("survey observation write failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Wardrive index (design §11)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _task_anchor(tasking: dict) -> str:
+        """The tasked device's home SSID (the AP-association key). Falls back to the
+        label — which IS the anchor for a strong WiFi contact — when a task carries no
+        explicit anchor, and never applies to BLE (no beaconed home network)."""
+        ev = tasking.get("evidence") or {}
+        anchor = (ev.get("anchor") or "").strip()
+        if not anchor and ev.get("modality") != "ble":
+            anchor = (ev.get("label") or "").strip()
+        return anchor
+
+    def _bank_wardrive(self, devices: list, lat, lon, now) -> None:
+        """Bank every AP heard this poll into the wardrive index — but only while a
+        patrol runs (nothing is collected outside a patrol) and only with a GPS fix (an
+        AP with no position can't be located). APs only in v1: a record with a non-empty
+        ``beaconed_ssid`` is an AP beaconing that network."""
+        if lat is None or lon is None:
+            return
+        try:
+            patrol = self.survey_store.active_patrol()
+        except Exception as exc:
+            logger.debug("wardrive patrol check failed: %s", exc)
+            return
+        if patrol is None:
+            return
+        pid = patrol.get("patrol_id")
+        for d in devices:
+            ssid = (d.get("beaconed_ssid") or "").strip()
+            bssid = d.get("macaddr")
+            if not ssid or not bssid:
+                continue
+            rssi = d.get("last_signal")
+            rssi = None if rssi in (0, None) else rssi  # 0 = placeholder, not a reading
+            try:
+                self.survey_store.upsert_wardrive_ap(
+                    bssid=bssid, ssid=ssid, lat=lat, lon=lon, rssi=rssi,
+                    timestamp=now, patrol_id=pid)
+            except Exception as exc:
+                logger.debug("wardrive bank failed: %s", exc)
+
+    def _resolve_from_wardrive(self, taskings: list) -> None:
+        """Retroactive bed-down: for each open task, fold any banked AP that beacons its
+        anchor SSID into that task's observations — so a device tasked *after* the walk,
+        or whose home AP was banked on a poll the live matcher didn't catch, still
+        resolves. Deduped per (task, BSSID) so a cycle never re-records the same AP."""
+        now = datetime.now(timezone.utc)
+        for t in taskings:
+            anchor = self._task_anchor(t)
+            if not anchor:
+                continue
+            tid = t["task_id"]
+            try:
+                aps = self.survey_store.wardrive_aps_for_ssid(anchor)
+            except Exception as exc:
+                logger.debug("wardrive lookup failed: %s", exc)
+                continue
+            for ap in aps:
+                bssid = ap.get("bssid")
+                if not bssid or (tid, bssid) in self._wardrive_recorded:
+                    continue
+                self._record_obs(tid, now, ap.get("lat"), ap.get("lon"),
+                                 ap.get("rssi"), kind="ap", bssid=bssid,
+                                 ssid=ap.get("ssid"))
+                self._wardrive_recorded.add((tid, bssid))
 
     # ------------------------------------------------------------------
     # Fixed-node tasking (per flagged contact)
@@ -301,6 +378,10 @@ class SurveyCoordinator:
                 raise
             if self._stop_event.is_set():
                 break
+            # Retention sweep first — independent of reachability, throttled hourly — so
+            # the wardrive index and observation history stay bounded on a node that is
+            # offline for long stretches (design §11).
+            await loop.run_in_executor(None, self._maybe_prune)
             try:
                 if not await self._survey_sync.reachable():
                     continue
@@ -327,6 +408,19 @@ class SurveyCoordinator:
             except Exception as exc:
                 logger.debug("survey tasking upsert failed: %s", exc)
 
+    def _maybe_prune(self) -> None:
+        """Throttled (hourly) retention sweep of the wardrive index and the survey
+        observation history, so both stay bounded on a long-offline node. Guarded — a
+        prune failure never disturbs the sync."""
+        if time.monotonic() - self._last_wardrive_prune < 3600.0:
+            return
+        self._last_wardrive_prune = time.monotonic()
+        try:
+            self.survey_store.prune_wardrive(self._wardrive_retention_days)
+            self.survey_store.prune_observations()
+        except Exception as exc:
+            logger.debug("survey retention sweep failed: %s", exc)
+
     def _prepare_findings(self) -> list:
         """Compute ``(task_id, result)`` for every open task the mobile node has either
         located OR patrolled long enough to declare "not located" — executor-thread work
@@ -338,6 +432,10 @@ class SurveyCoordinator:
         except Exception as exc:
             logger.debug("survey open_taskings failed: %s", exc)
             return out
+        # Retroactive bed-down (design §11): fold any banked wardrive AP that beacons a
+        # task's anchor into its observations before we compute — so timing (tasked
+        # before/after the encounter) no longer decides whether a residence resolves.
+        self._resolve_from_wardrive(taskings)
         # Patrol state (design §10). An ACTIVE patrol suspends the poll-quota closure —
         # the walk is the unit of work, so nothing closes mid-patrol and a task never
         # expires before the operator finds it. Ending the patrol (pending finalize)
