@@ -1075,3 +1075,11 @@ class TestGUIServerSurveyEndpoints(unittest.TestCase):
         c = self._client()
         r = c.post("/api/patrol", headers=self._h(), json={"action": "wardrive"})
         self.assertEqual(r.status_code, 400)
+
+    def test_patrol_status_reports_wardrive_count(self):
+        from datetime import datetime, timezone
+        c = self._client()
+        self._store.upsert_wardrive_ap(bssid="aa:bb", ssid="Net", lat=1.0, lon=1.0,
+                                       rssi=-60, timestamp=datetime.now(timezone.utc))
+        body = c.get("/api/patrol", headers=self._h()).get_json()
+        self.assertEqual(body["wardrive_aps"], 1)

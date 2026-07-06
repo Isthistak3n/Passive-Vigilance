@@ -1035,6 +1035,7 @@ async function loadSurvey() {
 // a poll quota. Mobile-node control, token-gated like the tasking action.
 let patrolActive = false;
 let patrolStartedAt = null;
+let patrolWardriveAps = null;
 
 function fmtElapsed(iso) {
   const t0 = iso ? Date.parse(iso) : NaN;
@@ -1051,9 +1052,11 @@ function renderPatrol() {
   btn.removeAttribute('hidden');
   btn.textContent = patrolActive ? 'End patrol' : 'Start patrol';
   btn.classList.toggle('patrol-on', patrolActive);
+  const banked = (patrolWardriveAps != null)
+    ? ` · ${patrolWardriveAps} APs wardriven` : '';
   label.textContent = patrolActive
-    ? `● Patrol running — ${fmtElapsed(patrolStartedAt)} · tasks held open`
-    : 'No patrol running — tasks close on the poll quota';
+    ? `● Patrol running — ${fmtElapsed(patrolStartedAt)} · tasks held open${banked}`
+    : `No patrol running — tasks close on the poll quota${banked}`;
   label.classList.toggle('patrol-on', patrolActive);
 }
 
@@ -1064,6 +1067,7 @@ async function loadPatrol() {
     const s = await r.json();
     patrolActive = !!s.active;
     patrolStartedAt = s.started_at || null;
+    patrolWardriveAps = (s.wardrive_aps != null) ? s.wardrive_aps : null;
     renderPatrol();
   } catch { /* an unreachable node is the normal field state */ }
 }

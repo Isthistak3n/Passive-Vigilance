@@ -287,3 +287,45 @@ def test_start_patrol_closes_a_dangling_active_one(tmp_path):
     rows = s._conn.execute(
         "SELECT patrol_id FROM survey_patrol WHERE ended_at IS NOT NULL").fetchall()
     assert first in {r["patrol_id"] for r in rows}
+
+
+# ── Wardrive index (design §11) ──────────────────────────────────────────────
+
+def test_wardrive_upsert_keeps_best_signal_position(tmp_path):
+    """Re-hearing an AP bumps count/last-seen; the position follows the STRONGEST
+    reading (the closest pass), not the most recent."""
+    s = _store(tmp_path)
+    s.upsert_wardrive_ap(bssid="aa:bb", ssid="Home", lat=1.0, lon=1.0, rssi=-80, timestamp=T0)
+    s.upsert_wardrive_ap(bssid="aa:bb", ssid="Home", lat=2.0, lon=2.0, rssi=-50,
+                         timestamp=T0 + timedelta(minutes=1))
+    s.upsert_wardrive_ap(bssid="aa:bb", ssid="Home", lat=9.0, lon=9.0, rssi=-70,
+                         timestamp=T0 + timedelta(minutes=2))
+    ap = s.wardrive_aps_for_ssid("home")[0]  # case-insensitive
+    assert (ap["lat"], ap["lon"], ap["rssi"], ap["obs_count"]) == (2.0, 2.0, -50, 3)
+
+
+def test_wardrive_none_rssi_does_not_overwrite_a_real_fix(tmp_path):
+    s = _store(tmp_path)
+    s.upsert_wardrive_ap(bssid="aa", ssid="H", lat=2.0, lon=2.0, rssi=-50, timestamp=T0)
+    s.upsert_wardrive_ap(bssid="aa", ssid="H", lat=0.0, lon=0.0, rssi=None,
+                         timestamp=T0 + timedelta(minutes=1))
+    assert s.wardrive_aps_for_ssid("H")[0]["lat"] == 2.0
+
+
+def test_wardrive_query_and_count(tmp_path):
+    s = _store(tmp_path)
+    s.upsert_wardrive_ap(bssid="a", ssid="Net1", lat=1, lon=1, rssi=-60, timestamp=T0)
+    s.upsert_wardrive_ap(bssid="b", ssid="Net2", lat=1, lon=1, rssi=-60, timestamp=T0)
+    assert s.wardrive_count() == 2
+    assert len(s.wardrive_aps_for_ssid("net1")) == 1
+    assert s.wardrive_aps_for_ssid("nope") == []
+
+
+def test_wardrive_prune_by_last_seen(tmp_path):
+    s = _store(tmp_path)
+    s.upsert_wardrive_ap(bssid="old", ssid="X", lat=1, lon=1, rssi=-60, timestamp=T0)
+    s.upsert_wardrive_ap(bssid="new", ssid="Y", lat=1, lon=1, rssi=-60,
+                         timestamp=T0 + timedelta(days=100))
+    removed = s.prune_wardrive(retention_days=90, now=T0 + timedelta(days=101))
+    assert removed == 1 and s.wardrive_count() == 1
+    assert s.prune_wardrive(retention_days=0, now=T0 + timedelta(days=999)) == 0  # keep-forever

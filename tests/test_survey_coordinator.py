@@ -216,3 +216,66 @@ def test_sync_not_configured_without_store_or_url(monkeypatch):
     monkeypatch.delenv("SURVEY_FIXED_URL", raising=False)
     assert _coord().sync_configured is False
     assert SurveyCoordinator(None, "mobile", asyncio.Event()).sync_configured is False
+
+
+# ---------------------------------------------------------------------------
+# Wardrive index (design §11)
+# ---------------------------------------------------------------------------
+
+def test_wardrive_banks_aps_only_during_a_patrol():
+    """APs are banked while a patrol runs, and not otherwise (nothing is collected
+    outside a patrol)."""
+    co = _coord()
+    ap = {"macaddr": "aa:bb", "beaconed_ssid": "NetA", "last_signal": -60}
+    co.record_hits([ap], FIX)                       # no patrol -> nothing banked
+    assert co.survey_store.wardrive_count() == 0
+    co.survey_store.start_patrol()
+    co.record_hits([ap], FIX)                       # patrol active -> banked
+    assert co.survey_store.wardrive_count() == 1
+
+
+def test_wardrive_needs_a_gps_fix():
+    co = _coord(); co.survey_store.start_patrol()
+    co.record_hits([{"macaddr": "aa", "beaconed_ssid": "N", "last_signal": -60}], None)
+    assert co.survey_store.wardrive_count() == 0
+
+
+def test_wardrive_banks_aps_not_clients():
+    """APs only (v1): a record with no beaconed SSID is a client, not banked."""
+    co = _coord(); co.survey_store.start_patrol()
+    co.record_hits([{"macaddr": "cc", "last_signal": -60}], FIX)
+    assert co.survey_store.wardrive_count() == 0
+
+
+def test_wardrive_resolves_bed_down_for_a_device_tasked_after_the_walk():
+    """The headline §11 payoff: walk past an AP with an EMPTY watchlist, task the device
+    whose home network it beacons only afterwards, and the bed-down still resolves from
+    the banked index — timing no longer decides whether a residence is found."""
+    co = _coord()
+    co.survey_store.start_patrol()
+    ap = {"macaddr": "de:ad:be:ef", "beaconed_ssid": "CASA_DEL_MAR", "last_signal": -55}
+    co.record_hits([ap], FIX)                        # banked with nothing tasked
+    assert co.survey_store.wardrive_count() == 1
+    key = anchored_identity_key(777, "CASA_DEL_MAR")  # tasked AFTER the encounter
+    tid = co.survey_store.enqueue_tasking(
+        key, evidence={"anchor": "CASA_DEL_MAR", "identity_key": key})
+    co.survey_store.end_patrol()
+    prepared = co._prepare_findings()
+    assert prepared and prepared[0][0] == tid
+    res = prepared[0][1]
+    assert res["outcome"] == "resident"
+    assert res["home_ap"]["ssid"] == "CASA_DEL_MAR"
+    assert res["home_ap"]["bssid"] == "de:ad:be:ef"
+
+
+def test_wardrive_retroactive_resolution_dedups_per_ap():
+    """Folding a banked AP into a task's observations happens once per (task, BSSID),
+    so repeated cycles don't inflate the finding."""
+    co = _coord(); co.survey_store.start_patrol()
+    co.record_hits([{"macaddr": "de:ad", "beaconed_ssid": "CASA", "last_signal": -55}], FIX)
+    key = anchored_identity_key(1, "CASA")
+    tid = co.survey_store.enqueue_tasking(
+        key, evidence={"anchor": "CASA", "identity_key": key})
+    co._resolve_from_wardrive(co.survey_store.open_taskings())
+    co._resolve_from_wardrive(co.survey_store.open_taskings())
+    assert co.survey_store.observation_count(tid) == 1
