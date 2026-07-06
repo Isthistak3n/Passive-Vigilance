@@ -134,9 +134,71 @@ candidate *state*; the query stays manual and off until built and opsec-gated.
 
 ## 9. Next (follow-up work)
 
-- The **WiGLE query client** (§6) — opsec-gated, augments-never-gates per §10.
+- **Operator-bounded patrols (§10)** — replace the blind poll-quota task lifetime with an
+  explicit *start / end patrol* session, so a task never expires mid-walk.
+- **The wardrive index (§11)** — bank every AP heard while moving into a local SSID → location
+  index, so a bed-down can be resolved retroactively and independently of what was tasked.
+- The **WiGLE query client** (§6) — opsec-gated, augments-never-gates per `design-and-roadmap.md` §10.
 - The **reverse §5.5 fusion** — a follower first seen on the mobile node later surfacing at the
   fixed node (the mirror of this pipeline).
+
+## 10. Operator-bounded patrols — *planned, not yet built*
+
+**Why.** The Part II walk tests exposed a structural flaw independent of the anchor bug (which was
+fixed in PR #196): a survey task's lifetime is a blind poll quota. `SURVEY_MIN_PATROL_POLLS`
+(default 20) at the 30 s Kismet cadence closes a task after ~10 minutes, and permanently — a
+completed task drops out of `open_taskings`, so the mobile node stops surveying it and it never
+reopens. On walk 2 a BLE target that was physically present and scoring high was missed because its
+task had already closed ~70 minutes earlier. Raising the quota only moves the arbitrary clock; the
+real unit of work is *the operator's walk*, not a poll count.
+
+**The model.** Make the patrol an explicit, operator-bounded session in the **mobile** GUI —
+local-only, since the node is offline while patrolling, so it needs no round-trip to base:
+
+- **Start patrol** snapshots the currently-open taskings and holds them open for the duration,
+  regardless of poll count. Observations accumulate across the whole walk.
+- **End patrol** computes findings for every held task, marks them complete, and offloads to the
+  base on the next in-range sync.
+- The poll quota is demoted to a **generous backstop** — an auto-end if the operator forgets to
+  close a patrol, sized in hours not minutes — never the primary lifetime.
+
+A patrol is also the natural boundary for store-and-forward: everything banked between start and end
+belongs to one patrol, computed and pushed as a unit.
+
+## 11. The wardrive index — *planned, not yet built*
+
+**Why.** Today `_record_survey_hits` records an observation **only** when a device matches a
+*tasked* key or anchor — so anything not explicitly tasked is invisible, and walking past a device's
+home AP before it is tasked banks nothing. That couples collection to tasking and is the deeper
+reason a target encountered "at the wrong time" is lost.
+
+**The model.** A **wardrive** decouples collection from tasking: while a patrol runs, bank *every*
+AP the node hears — SSID, BSSID, and the node's GPS fix — into a local index (deduped by BSSID,
+keeping the best-signal position, bounded by a retention sweep like the entity store). Two payoffs:
+
+1. **Retroactive, target-independent resolution.** A tasking — issued *during or after* the walk —
+   resolves by querying the banked index for an AP beaconing its anchor SSID, without having to have
+   been tasked at the moment of encounter. This dissolves the §10 timing problem at the data layer.
+2. **Standalone environmental survey.** The operator can wardrive an area with *no* tasking at all
+   and still build a reusable local AP-location map — the "survey the environment even without a
+   contact to find" capability. It is also the opsec-local substitute for the deferred outbound
+   WiGLE lookup (§6): the same SSID → location answer, sourced from the node's own passive collection
+   instead of a third-party query.
+
+**Boundaries.**
+
+- **Opsec.** The index maps real, third-party networks to coordinates — it is captured data.
+  Node-local, gitignored, never committed; the same rule that already governs `data/` and the
+  ignore lists. It raises the same question as the ignore-list interaction noted in Part II: an
+  operator may want to *exclude* their own street from the wardrive.
+- **No duplication of Kismet.** Kismet already writes the WiGLE CSV at session end for the
+  end-of-session *upload* — a write-once export. The wardrive index is a different artifact: a live,
+  queryable match store the survey matcher reads during and after a patrol. We build the index, not
+  re-collect what Kismet already has.
+
+**Sequencing.** #196 (anchor) unblocks AP-association now; §10 (patrols) makes real-length walks
+work and is the smaller change; §11 (wardrive index) is the strategic upgrade and depends on the
+patrol session as its natural collection window. Build in that order.
 
 ---
 
