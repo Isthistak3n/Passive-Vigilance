@@ -1062,7 +1062,13 @@ class SensorOrchestrator:
         # Distinctive home SSID (the anchor) -> task ids, for AP-association matching.
         ssid_to_tasks: dict = {}
         for t in taskings:
-            anchor = ((t.get("evidence") or {}).get("anchor") or "").strip()
+            ev = t.get("evidence") or {}
+            # Fall back to the label (the anchor SSID for a strong WiFi contact) when a
+            # task carries no explicit anchor — this recovers tasks dispatched before the
+            # anchor was wired through, and never applies to BLE (no beaconed home SSID).
+            anchor = (ev.get("anchor") or "").strip()
+            if not anchor and ev.get("modality") != "ble":
+                anchor = (ev.get("label") or "").strip()
             if anchor:
                 ssid_to_tasks.setdefault(anchor.lower(), []).append(t["task_id"])
 
@@ -1113,6 +1119,19 @@ class SensorOrchestrator:
         if not contact_key or str(contact_key).startswith("mac:"):
             return None
         modality = "ble" if (device and device_identity.is_ble_device(device)) else "wifi"
+        # The AP-association bed-down matches on this anchor (the device's distinctive
+        # home SSID). The live device carries ``fp_anchor`` ONLY on a poll where it
+        # freshly probes that SSID, and probing is intermittent — so a task issued on
+        # any ordinary poll used to capture ``None`` and could never resolve a residence.
+        # The rotation-stable fingerprint label IS that anchor SSID for a strong WiFi
+        # contact, so source the anchor from it (falling back through the live fields).
+        # BLE has no beaconed home network, so its anchor stays None (matched by its
+        # content-portable key via direct sighting).
+        anchor = None
+        if modality == "wifi":
+            anchor = ((device or {}).get("fp_anchor")
+                      or (device or {}).get("fp_anchor_medium")
+                      or event.fingerprint_label or None)
         return {
             "modality": modality,
             "identity_key": contact_key,
@@ -1121,7 +1140,7 @@ class SensorOrchestrator:
             "device_type": event.device_type,
             # WiFi match/debug aids (None for BLE, whose key is content-portable).
             "probe_fingerprint": (device or {}).get("probe_fingerprint"),
-            "anchor": (device or {}).get("fp_anchor"),
+            "anchor": anchor,
             "label": event.fingerprint_label,
         }
 

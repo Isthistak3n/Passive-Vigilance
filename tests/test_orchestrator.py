@@ -2711,6 +2711,64 @@ def test_survey_matcher_ap_association_locates_bed_down(orch):
     assert res["home_ap"]["ssid"] == "CASA_DEL_MAR"
 
 
+def test_build_survey_evidence_anchor_from_label_when_no_live_fp_anchor(orch):
+    """Regression: a surveyable WiFi contact whose live device lacks ``fp_anchor``
+    (the usual case — it only appears on a poll where the device freshly probes its
+    SSID) must still carry the anchor, sourced from the rotation-stable fingerprint
+    label. Without this the AP-association bed-down can never match (all #195 field
+    tasks shipped with anchor=None)."""
+    from modules.wifi_fingerprint import anchored_identity_key
+    so = orch.sensor_orchestrator
+    so.survey_store = object()  # non-None: the feature is enabled
+    key = anchored_identity_key(777, "Battoman2021_nomap")
+    event = _make_detection_event(fingerprint=key, fingerprint_label="Battoman2021_nomap")
+    device = {"macaddr": "aa:bb:cc:dd:ee:ff", "probe_fingerprint": 777}  # no fp_anchor
+    ev = so._build_survey_evidence(event, device, "Battoman2021_nomap", key)
+    assert ev is not None
+    assert ev["modality"] == "wifi"
+    assert ev["anchor"] == "Battoman2021_nomap"
+    assert ev["label"] == "Battoman2021_nomap"
+
+
+def test_survey_matcher_ap_association_falls_back_to_label(orch):
+    """A tasking with no explicit anchor but a populated label still resolves the
+    bed-down — recovers tasks dispatched before the anchor was wired through."""
+    from modules.survey_store import SurveyStore
+    from modules.wifi_fingerprint import anchored_identity_key
+    so = orch.sensor_orchestrator
+    so.survey_store = SurveyStore(":memory:")
+    so._current_fix = {"lat": 37.8, "lon": -122.42}
+    key = anchored_identity_key(777, "CASA_DEL_MAR")
+    tid = so.survey_store.enqueue_tasking(
+        key, evidence={"anchor": None, "label": "CASA_DEL_MAR",
+                       "modality": "wifi", "identity_key": key})
+
+    ap = {"macaddr": "de:ad:be:ef:00:01", "type": "Wi-Fi AP",
+          "beaconed_ssid": "CASA_DEL_MAR", "last_signal": -58}
+    for _ in range(3):
+        so._record_survey_hits([ap])
+
+    res = so.survey_store.compute_findings(tid)
+    assert res["outcome"] == "resident"
+    assert res["home_ap"]["ssid"] == "CASA_DEL_MAR"
+
+
+def test_survey_evidence_ble_anchor_stays_none(orch):
+    """BLE has no beaconed home network, so its anchor must stay None even though it
+    has a label — otherwise the matcher would hunt an AP beaconing a vendor string."""
+    so = orch.sensor_orchestrator
+    so.survey_store = object()
+    event = _make_detection_event(fingerprint="ble-fp:8c5300c89623",
+                                  fingerprint_label="BLE-vendor_0x02b2-14",
+                                  device_type="BTLE")
+    device = {"macaddr": "8c:53:00:c8:96:23", "type": "BTLE"}
+    ev = so._build_survey_evidence(event, device, "BLE-vendor_0x02b2-14",
+                                   "ble-fp:8c5300c89623")
+    assert ev is not None
+    assert ev["modality"] == "ble"
+    assert ev["anchor"] is None
+
+
 def test_survey_matcher_not_located_after_patrol(orch):
     """A tasking patrolled past the threshold with no match reports not_located."""
     from modules.survey_store import SurveyStore
