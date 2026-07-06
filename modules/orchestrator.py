@@ -138,6 +138,11 @@ class SensorOrchestrator:
         self._survey_patrol_polls: dict = {}
         self._survey_min_patrol_polls = int(
             os.getenv("SURVEY_MIN_PATROL_POLLS", "20"))
+        # Operator-bounded patrol backstop (design §10): a patrol left running past this
+        # many hours is auto-ended, so a forgotten "end patrol" can't hold tasks open
+        # forever. Generous — hours, not the ~10-min poll quota it supersedes.
+        self._patrol_max_seconds = float(
+            os.getenv("SURVEY_PATROL_MAX_HOURS", "12")) * 3600.0
         # Mobile-node client to the fixed node's survey endpoints. Inert (no URL)
         # unless SURVEY_FIXED_URL is set; the sync loop no-ops when not configured.
         self._survey_sync = SurveySync(
@@ -1228,20 +1233,54 @@ class SensorOrchestrator:
         except Exception as exc:
             logger.debug("survey open_taskings failed: %s", exc)
             return out
+        # Patrol state (design §10). An ACTIVE patrol suspends the poll-quota closure —
+        # the walk is the unit of work, so nothing closes mid-patrol and a task never
+        # expires before the operator finds it. Ending the patrol (pending finalize)
+        # closes every still-open task as a batch. A runaway patrol is auto-ended by a
+        # generous backstop. With no patrol at all, the legacy quota behavior stands.
+        patrol = pending = None
+        try:
+            patrol = self.survey_store.active_patrol()
+            if patrol is not None and self._patrol_backstop_exceeded(patrol):
+                self.survey_store.end_patrol()
+                patrol = None
+            if patrol is None:
+                pending = self.survey_store.patrol_pending_finalize()
+        except Exception as exc:
+            logger.debug("survey patrol state read failed: %s", exc)
+        if patrol is not None:
+            return out  # patrol active — defer all closure to end-of-patrol
         for t in taskings:
             tid = t["task_id"]
             try:
-                has_obs = self.survey_store.observation_count(tid) > 0
-                patrolled = (self._survey_patrol_polls.get(tid, 0)
-                             >= self._survey_min_patrol_polls)
-                if not (has_obs or patrolled):
-                    continue  # still surveying — don't report yet
+                if pending is None:
+                    # Legacy (no patrol): close once located or patrolled out.
+                    has_obs = self.survey_store.observation_count(tid) > 0
+                    patrolled = (self._survey_patrol_polls.get(tid, 0)
+                                 >= self._survey_min_patrol_polls)
+                    if not (has_obs or patrolled):
+                        continue  # still surveying — don't report yet
+                # Finalize mode (patrol just ended) closes every open task as a unit.
                 result = self.survey_store.compute_findings(
                     tid, survey_node=self._survey_node)
                 out.append((tid, result))
             except Exception as exc:
                 logger.debug("survey compute_findings failed for %s: %s", tid, exc)
+        if pending is not None:
+            try:
+                self.survey_store.mark_patrol_finalized(pending["patrol_id"])
+            except Exception as exc:
+                logger.debug("mark_patrol_finalized failed: %s", exc)
         return out
+
+    def _patrol_backstop_exceeded(self, patrol: dict) -> bool:
+        """A patrol running longer than SURVEY_PATROL_MAX_HOURS is auto-ended so a
+        forgotten "end patrol" can't hold tasks open indefinitely."""
+        try:
+            started = datetime.fromisoformat(patrol.get("started_at"))
+        except (TypeError, ValueError):
+            return False
+        return (datetime.now(timezone.utc) - started).total_seconds() >= self._patrol_max_seconds
 
     def _note_wifi_return(self, identity_key: str, now: datetime) -> tuple:
         '''Track per-contact last-seen so a device that left the area and came back is

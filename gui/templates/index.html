@@ -189,6 +189,11 @@
         <span class="survey-help">Survey taskings and the bed-down locations the mobile node reported.</span>
         <button id="survey-refresh" class="btn-sm">Refresh</button>
       </div>
+      <!-- Operator-bounded patrol (design §10): hold tasks open for the whole walk. -->
+      <div id="patrol-bar" class="patrol-bar">
+        <button id="patrol-toggle" class="btn-patrol" hidden>Start patrol</button>
+        <span id="patrol-state" class="patrol-state"></span>
+      </div>
       <div id="survey-list"></div>
     </section>
   </main>

@@ -252,6 +252,20 @@ class SurveyStore:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_finding_task ON survey_finding(task_id, rank)"
         )
+        # Operator-bounded patrols (design §10). One row per walk. A patrol is ACTIVE
+        # while ended_at IS NULL — during it the poll-quota task closure is suspended so
+        # a task never expires mid-walk. Ending a patrol (ended_at set, finalized=0) is
+        # the signal for the sync loop to finalize every still-open task as a unit.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS survey_patrol (
+                patrol_id  INTEGER PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                ended_at   TEXT,
+                finalized  INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
         self._migrate(cur)
         self._conn.commit()
 
@@ -403,6 +417,70 @@ class SurveyStore:
             except (ValueError, TypeError):
                 d["evidence"] = None
         return d
+
+    # ------------------------------------------------------------------
+    # Patrols (mobile side, design §10)
+    # ------------------------------------------------------------------
+
+    @_synchronized
+    def start_patrol(self, now: Optional[datetime] = None) -> int:
+        """Begin an operator-bounded patrol. Ends any dangling active patrol first (a
+        prior walk the operator never closed), so there is at most one active patrol."""
+        ts = _iso(now or datetime.now(timezone.utc))
+        cur = self._conn.cursor()
+        cur.execute("UPDATE survey_patrol SET ended_at = ? WHERE ended_at IS NULL", (ts,))
+        cur.execute("INSERT INTO survey_patrol (started_at) VALUES (?)", (ts,))
+        self._conn.commit()
+        return int(cur.lastrowid)
+
+    @_synchronized
+    def end_patrol(self, now: Optional[datetime] = None) -> bool:
+        """End the active patrol. Returns True if one was active (so the caller knows a
+        finalize pass is due)."""
+        ts = _iso(now or datetime.now(timezone.utc))
+        cur = self._conn.cursor()
+        cur.execute("UPDATE survey_patrol SET ended_at = ? WHERE ended_at IS NULL", (ts,))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    @_synchronized
+    def active_patrol(self) -> Optional[dict]:
+        """The currently-running patrol (ended_at IS NULL), or None."""
+        row = self._conn.execute(
+            "SELECT * FROM survey_patrol WHERE ended_at IS NULL "
+            "ORDER BY patrol_id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    @_synchronized
+    def patrol_pending_finalize(self) -> Optional[dict]:
+        """A patrol that has ended but whose open tasks have not yet been finalized —
+        the sync loop's cue to close out the walk as a unit."""
+        row = self._conn.execute(
+            "SELECT * FROM survey_patrol WHERE ended_at IS NOT NULL AND finalized = 0 "
+            "ORDER BY patrol_id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    @_synchronized
+    def mark_patrol_finalized(self, patrol_id: int) -> None:
+        self._conn.execute(
+            "UPDATE survey_patrol SET finalized = 1 WHERE patrol_id = ?", (patrol_id,)
+        )
+        self._conn.commit()
+
+    @_synchronized
+    def patrol_status(self) -> dict:
+        """Compact state for the mobile GUI: whether a patrol is active and since when."""
+        row = self._conn.execute(
+            "SELECT * FROM survey_patrol ORDER BY patrol_id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return {"active": False, "patrol_id": None,
+                    "started_at": None, "ended_at": None}
+        d = dict(row)
+        return {"active": d["ended_at"] is None, "patrol_id": d["patrol_id"],
+                "started_at": d["started_at"], "ended_at": d["ended_at"]}
 
     # ------------------------------------------------------------------
     # Observations (mobile side)

@@ -501,6 +501,50 @@ class GUIServer:
                                        "outcome": result.get("outcome")})
             return jsonify({"ingested": True, "task_id": task_id})
 
+        @app.route("/api/patrol", methods=["GET", "POST"])
+        def api_patrol():
+            """Operator-bounded patrol control for the mobile node (design §10).
+
+            GET reports whether a patrol is currently active. POST {"action":
+            "start"|"end"} begins or ends one — starting suspends the poll-quota task
+            closure (the walk is the unit of work); ending finalizes every open task.
+            Token-gated like the other survey control actions.
+            """
+            from flask import request as _req
+
+            if not gui_token:
+                return jsonify({
+                    "error": "survey endpoints require GUI_TOKEN to be configured",
+                }), 403
+            if self._survey_store is None:
+                return jsonify({"error": "survey feature not enabled on this node"}), 404
+
+            if _req.method == "GET":
+                try:
+                    return jsonify(self._survey_store.patrol_status())
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error("api_patrol GET failed: %s", exc)
+                    return jsonify({"error": "patrol read failed"}), 500
+
+            data = _req.get_json(silent=True) or {}
+            action = str(data.get("action", "")).strip().lower()
+            try:
+                if action == "start":
+                    pid = self._survey_store.start_patrol()
+                    logger.info("Survey patrol started (id=%s)", pid)
+                    self.push_event("survey", {"kind": "patrol", "active": True,
+                                               "patrol_id": pid})
+                    return jsonify({"active": True, "patrol_id": pid})
+                if action == "end":
+                    was_active = self._survey_store.end_patrol()
+                    logger.info("Survey patrol ended (was_active=%s)", was_active)
+                    self.push_event("survey", {"kind": "patrol", "active": False})
+                    return jsonify({"active": False, "was_active": was_active})
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error("api_patrol POST failed: %s", exc)
+                return jsonify({"error": "patrol write failed"}), 500
+            return jsonify({"error": "action must be 'start' or 'end'"}), 400
+
         @app.route("/api/remote_id")
         def api_remote_id():
             # Remote ID is an air contact, so it serves the live per-UAS current-sky

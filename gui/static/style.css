@@ -617,3 +617,30 @@ tr.visitor-row { background: rgba(248, 81, 73, 0.06); }
 .survey-locality.distant { color: #58a6ff; }
 .survey-seen { margin-top: 6px; }
 .survey-seen summary { color: #8b949e; cursor: pointer; font-size: 13px; }
+
+/* Operator-bounded patrol control (design §10) */
+.patrol-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 12px;
+  flex-wrap: wrap;
+}
+.btn-patrol {
+  padding: 8px 16px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #c9d1d9;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.btn-patrol:hover { border-color: #58a6ff; color: #58a6ff; }
+.btn-patrol.patrol-on {
+  color: #f85149;
+  border-color: #f85149;
+  background: #3a1a1a;
+}
+.patrol-state { color: #6e7681; font-size: 0.9rem; }
+.patrol-state.patrol-on { color: #3fb950; }
