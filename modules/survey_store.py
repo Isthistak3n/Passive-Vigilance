@@ -26,7 +26,6 @@ import logging
 import os
 import sqlite3
 import threading
-import time
 import uuid
 from collections import Counter
 from datetime import datetime, timedelta, timezone, tzinfo
