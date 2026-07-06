@@ -2789,6 +2789,69 @@ def test_survey_matcher_not_located_after_patrol(orch):
     assert prepared[0][1]["wigle_candidate"] is True
 
 
+def _survey_orch_with_task(orch, min_polls=3):
+    """A mobile orchestrator with an in-memory survey store and one open WiFi tasking."""
+    from modules.survey_store import SurveyStore
+    from modules.wifi_fingerprint import anchored_identity_key
+    so = orch.sensor_orchestrator
+    so.survey_store = SurveyStore(":memory:")
+    so._survey_min_patrol_polls = min_polls
+    so._current_fix = {"lat": 37.8, "lon": -122.42}
+    key = anchored_identity_key(1, "RARE_SSID")
+    tid = so.survey_store.enqueue_tasking(
+        key, evidence={"anchor": "RARE_SSID", "identity_key": key})
+    return so, tid
+
+
+def test_active_patrol_defers_all_task_closure(orch):
+    """During a patrol the poll quota is suspended: a task patrolled well past the
+    threshold with no match must stay open, not close as not_located (the walk 2 miss)."""
+    so, tid = _survey_orch_with_task(orch, min_polls=2)
+    so.survey_store.start_patrol()
+    for _ in range(6):  # far past the quota, still nothing matched
+        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
+    assert so._prepare_survey_findings() == []
+    assert so.survey_store.get_tasking(tid)["status"] in ("open", "surveying")
+
+
+def test_end_patrol_finalizes_open_tasks(orch):
+    """Ending a patrol closes out every still-open task as a unit, and finalizes once."""
+    so, tid = _survey_orch_with_task(orch, min_polls=99)  # quota unreachable
+    so.survey_store.start_patrol()
+    for _ in range(3):
+        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
+    assert so._prepare_survey_findings() == []  # active: nothing closes
+
+    so.survey_store.end_patrol()
+    prepared = so._prepare_survey_findings()
+    assert prepared and prepared[0][0] == tid
+    assert prepared[0][1]["outcome"] == "not_located"
+    assert so.survey_store.patrol_pending_finalize() is None  # finalized once
+
+
+def test_patrol_backstop_auto_ends_runaway_patrol(orch):
+    """A patrol left running past the backstop auto-ends and finalizes, so a forgotten
+    'end patrol' can't hold tasks open forever."""
+    so, tid = _survey_orch_with_task(orch, min_polls=99)
+    so._patrol_max_seconds = 0.0  # any elapsed time trips the backstop
+    so.survey_store.start_patrol()
+    for _ in range(2):
+        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
+    prepared = so._prepare_survey_findings()
+    assert prepared and prepared[0][0] == tid
+    assert so.survey_store.active_patrol() is None
+
+
+def test_no_patrol_keeps_legacy_quota_closure(orch):
+    """With no patrol started, the legacy poll-quota closure still applies."""
+    so, tid = _survey_orch_with_task(orch, min_polls=3)
+    for _ in range(3):
+        so._record_survey_hits([{"macaddr": "z", "beaconed_ssid": "attwifi"}])
+    prepared = so._prepare_survey_findings()
+    assert prepared and prepared[0][0] == tid
+    assert prepared[0][1]["outcome"] == "not_located"
+
+
 def test_survey_matcher_noop_on_fixed_node(orch):
     """The matcher only records on a mobile node."""
     from modules.survey_store import SurveyStore

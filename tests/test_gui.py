@@ -1046,3 +1046,32 @@ class TestGUIServerSurveyEndpoints(unittest.TestCase):
         c = gui.app.test_client()
         self.assertEqual(c.get("/api/tasking", headers=self._h()).status_code, 404)
         self.assertEqual(c.get("/api/survey", headers=self._h()).status_code, 404)
+        self.assertEqual(c.get("/api/patrol", headers=self._h()).status_code, 404)
+
+    # ---- /api/patrol (design §10) ----
+
+    def test_patrol_requires_auth(self):
+        c = self._client()
+        self.assertEqual(c.get("/api/patrol").status_code, 401)
+
+    def test_patrol_refused_without_token_configured(self):
+        c = self._client(token="")
+        self.assertEqual(c.post("/api/patrol", json={"action": "start"}).status_code, 403)
+
+    def test_patrol_start_then_end(self):
+        c = self._client()
+        self.assertFalse(c.get("/api/patrol", headers=self._h()).get_json()["active"])
+        r = c.post("/api/patrol", headers=self._h(), json={"action": "start"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.get_json()["active"])
+        self.assertTrue(c.get("/api/patrol", headers=self._h()).get_json()["active"])
+        r = c.post("/api/patrol", headers=self._h(), json={"action": "end"})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.get_json()["active"])
+        self.assertTrue(r.get_json()["was_active"])
+        self.assertFalse(c.get("/api/patrol", headers=self._h()).get_json()["active"])
+
+    def test_patrol_invalid_action_400(self):
+        c = self._client()
+        r = c.post("/api/patrol", headers=self._h(), json={"action": "wardrive"})
+        self.assertEqual(r.status_code, 400)

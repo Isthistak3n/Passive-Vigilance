@@ -245,3 +245,45 @@ def test_cross_thread_read_is_safe(tmp_path):
 
 def _iso(dt):
     return dt.astimezone(timezone.utc).isoformat()
+
+
+# ── Operator-bounded patrols (design §10) ────────────────────────────────────
+
+def test_patrol_start_end_lifecycle(tmp_path):
+    s = _store(tmp_path)
+    assert s.patrol_status()["active"] is False
+    assert s.active_patrol() is None
+
+    pid = s.start_patrol(now=T0)
+    assert pid
+    assert s.active_patrol()["patrol_id"] == pid
+    st = s.patrol_status()
+    assert st["active"] is True and st["patrol_id"] == pid
+    assert s.patrol_pending_finalize() is None  # active, not pending
+
+    assert s.end_patrol(now=T0 + timedelta(minutes=30)) is True
+    assert s.active_patrol() is None
+    assert s.patrol_status()["active"] is False
+    pend = s.patrol_pending_finalize()
+    assert pend and pend["patrol_id"] == pid
+
+    s.mark_patrol_finalized(pid)
+    assert s.patrol_pending_finalize() is None
+
+
+def test_end_patrol_returns_false_when_none_active(tmp_path):
+    s = _store(tmp_path)
+    assert s.end_patrol(now=T0) is False
+
+
+def test_start_patrol_closes_a_dangling_active_one(tmp_path):
+    """A second start ends the prior unclosed patrol, so at most one is ever active."""
+    s = _store(tmp_path)
+    first = s.start_patrol(now=T0)
+    second = s.start_patrol(now=T0 + timedelta(hours=1))
+    assert second != first
+    assert s.active_patrol()["patrol_id"] == second
+    # The first is now ended and pending finalize.
+    rows = s._conn.execute(
+        "SELECT patrol_id FROM survey_patrol WHERE ended_at IS NOT NULL").fetchall()
+    assert first in {r["patrol_id"] for r in rows}

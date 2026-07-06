@@ -774,8 +774,9 @@ function connectSSE() {
       setBadge('badge-alerts', state.alerts.length);
       renderAlerts();
     } else if (type === 'survey') {
-      // A tasking was issued or findings were offloaded — refetch the survey view.
+      // A tasking was issued, findings offloaded, or a patrol toggled — refetch.
       if (surveyEnabled) loadSurvey();
+      if (data && data.kind === 'patrol') loadPatrol();
     }
   };
 
@@ -796,8 +797,8 @@ connectSSE();
 // Cheap full re-seed; markers are rebuilt idempotently (see seedFromRest).
 setInterval(seedFromRest, 15000);
 
-// Refresh the survey view on the same cadence (only once the feature is live).
-setInterval(() => { if (surveyEnabled) loadSurvey(); }, 15000);
+// Refresh the survey view + patrol state on the same cadence (once the feature is live).
+setInterval(() => { if (surveyEnabled) { loadSurvey(); loadPatrol(); } }, 15000);
 
 // Re-render the aircraft panel on a timer so recency decay applies (and stale
 // contacts expire) even during quiet periods with no new SSE pushes — e.g. while
@@ -1022,11 +1023,72 @@ async function loadSurvey() {
       document.getElementById('tabbtn-survey')?.removeAttribute('hidden');
       document.querySelector('.survey-col')?.removeAttribute('hidden');
       renderWifi();
+      loadPatrol();
     }
     renderSurvey();
     return true;
   } catch { return surveyEnabled; }
 }
+
+// ── Operator-bounded patrol (design §10) ─────────────────────────────────────
+// Start/end a patrol so tasks stay open for the whole walk instead of expiring on
+// a poll quota. Mobile-node control, token-gated like the tasking action.
+let patrolActive = false;
+let patrolStartedAt = null;
+
+function fmtElapsed(iso) {
+  const t0 = iso ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t0)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - t0) / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function renderPatrol() {
+  const btn = document.getElementById('patrol-toggle');
+  const label = document.getElementById('patrol-state');
+  if (!btn || !label) return;
+  btn.removeAttribute('hidden');
+  btn.textContent = patrolActive ? 'End patrol' : 'Start patrol';
+  btn.classList.toggle('patrol-on', patrolActive);
+  label.textContent = patrolActive
+    ? `● Patrol running — ${fmtElapsed(patrolStartedAt)} · tasks held open`
+    : 'No patrol running — tasks close on the poll quota';
+  label.classList.toggle('patrol-on', patrolActive);
+}
+
+async function loadPatrol() {
+  try {
+    const r = await fetch(surveyUrl('/api/patrol'));
+    if (!r.ok) return;  // feature off / no token
+    const s = await r.json();
+    patrolActive = !!s.active;
+    patrolStartedAt = s.started_at || null;
+    renderPatrol();
+  } catch { /* an unreachable node is the normal field state */ }
+}
+
+async function togglePatrol() {
+  const action = patrolActive ? 'end' : 'start';
+  if (action === 'end'
+      && !confirm('End the patrol? This finalizes every open tasking.')) return;
+  try {
+    const r = await fetch(surveyUrl('/api/patrol'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    if (r.ok) { await loadPatrol(); loadSurvey(); }
+    else {
+      const e = await r.json().catch(() => ({}));
+      alert(`Patrol ${action} failed: ${e.error || r.status}`);
+    }
+  } catch { alert('Could not reach the node to change the patrol.'); }
+}
+
+document.getElementById('patrol-toggle')?.addEventListener('click', togglePatrol);
+// Keep the running-elapsed label ticking without hammering the endpoint.
+setInterval(() => { if (patrolActive) renderPatrol(); }, 30000);
 
 document.getElementById('survey-refresh')?.addEventListener('click', loadSurvey);
 
