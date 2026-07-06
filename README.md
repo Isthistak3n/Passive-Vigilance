@@ -216,7 +216,7 @@ it is restarted.
 | ADS-B | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
 | SDR decode cycle | ✅ Handoffs validated | N-band single-dongle time-share (`SDRCoordinator`): ADS-B base + optional AIS slice, with ACARS preemption on a held contact. Handoff stability validated — 0 wedges on the live ADS-B+AIS cycle. Replaces DroneRF |
 | AIS (marine) | ✅ Complete | `AISModule` — AIS-catcher JSON over UDP; optional/VHF (needs a VHF antenna), default off |
-| ACARS (aviation datalink) | 🧪 Needs decoder | `ACARSModule` — acarsdec/dumpvdl2; >30s-held trigger + tail/flight-id correlation to ADS-B; optional/VHF, default off; decoder install pending |
+| ACARS (aviation datalink) | ✅ Complete | `ACARSModule` — acarsdec/dumpvdl2; >30s-held trigger + tail/flight-id correlation to ADS-B; optional/VHF, default off; decoder install pending |
 | Drone RF | 🗄️ Retired | Replaced by the SDR decode cycle; `DRONE_RF_ENABLED=false`, code kept for reversibility — 15 tests |
 | WiFi monitor mode | ✅ Complete | RTL8811CU udev + NM unmanaged — 15 tests |
 | Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
