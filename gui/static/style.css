@@ -644,3 +644,5 @@ tr.visitor-row { background: rgba(248, 81, 73, 0.06); }
 }
 .patrol-state { color: #6e7681; font-size: 0.9rem; }
 .patrol-state.patrol-on { color: #3fb950; }
+/* A running patrol with no GPS fix banks nothing — flag it loudly over the green. */
+.patrol-state.patrol-nogps { color: #d29922; font-weight: 600; }
