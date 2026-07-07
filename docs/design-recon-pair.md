@@ -128,17 +128,19 @@ candidate *state*; the query stays manual and off until built and opsec-gated.
 |---|---|
 | `modules/survey_store.py` (`SurveyStore`) | SQLite, both nodes: taskings, observations, findings; thread-safe; guarded |
 | `modules/survey_sync.py` (`SurveySync`) | mobile `aiohttp` client: `pull_taskings` / `push_findings` / `reachable`; fails soft |
-| `gui/server.py` | `GET/POST /api/tasking`, `POST /api/survey` (token-gated) + distance annotation |
-| `modules/orchestrator.py` | `_record_survey_hits` (matcher + AP association), `_survey_sync_loop`, `_maybe_autotask` |
-| `gui/static/app.js`, `gui/templates/index.html` | "Task survey" button + the Survey tab |
+| `gui/server.py` | `GET/POST /api/tasking`, `POST /api/survey`, `GET/POST /api/patrol` (token-gated) + distance annotation |
+| `modules/survey_coordinator.py` (`SurveyCoordinator`) | the survey logic, lifted out of the orchestrator (#200): the mobile matcher + AP association (`record_hits`), the wardrive index (`_bank_wardrive`), the fixed-node auto-task, and the store-and-forward `sync_loop`; owns the `SurveyStore`/`SurveySync` |
+| `gui/static/app.js`, `gui/templates/index.html` | fixed node: "Task survey" button + the Survey tab + patrol control |
+| `gui/static/mobile.js`, `gui/templates/mobile.html` | mobile node: the Survey tab + patrol start/end control (map-less, #204) |
 
 ## 9. Next (follow-up work)
 
 - **Operator-bounded patrols (§10)** — ✅ *shipped (#198)*: an explicit *start / end patrol* session
   replaces the blind poll-quota task lifetime, so a task never expires mid-walk.
-- **The wardrive index (§11)** — *next*: the patrol also wardrives — bank every AP heard while moving
-  into a local SSID → location index (honoring the ignore list), so a bed-down resolves retroactively
-  and independently of what was tasked, and a patrol with no tasking still maps the area.
+- **The wardrive index (§11)** — ✅ *shipped (#202)*: the patrol also wardrives — every AP heard while
+  moving is banked into a local SSID → location index (honoring the ignore list), so a bed-down
+  resolves retroactively and independently of what was tasked, and a patrol with no tasking still maps
+  the area. A patrol running without a GPS fix banks nothing and now warns the operator (#204).
 - The **WiGLE query client** (§6) — opsec-gated, augments-never-gates per `design-and-roadmap.md` §10.
 - The **reverse §5.5 fusion** — a follower first seen on the mobile node later surfacing at the
   fixed node (the mirror of this pipeline).

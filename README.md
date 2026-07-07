@@ -3,7 +3,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-849%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-915%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.7.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -41,6 +41,12 @@ with any device or network.**
   sensor that learns the location's normal RF "pattern of life," then flags
   devices that deviate from it — new devices that appear and linger (see
   [Detection modes](#detection-modes))
+- **Reconnaissance pair (fixed + mobile team)** — a fixed base node tasks a
+  roaming mobile node to find where a flagged device *beds down*: on a patrol the
+  mobile node maps the local access points it hears, then matches a target's home
+  network to a location and reports the finding back. A target whose home network
+  is never found locally is flagged as a WiGLE lookup candidate. Optional
+  (`SURVEY_ENABLED`, default off)
 - **Aircraft awareness** — track aircraft overhead with full registration,
   operator, and origin data via ADS-B and adsb.lol enrichment; an aircraft held
   in view triggers an **ACARS** datalink decode window, correlated back to the
@@ -232,10 +238,11 @@ it is restarted.
 | Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
 | KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
 | WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
-| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle, contact designators, current-sky aircraft + Remote ID tabs, durable detection/alert history across refresh & restart — 63 tests |
+| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle, contact designators, current-sky aircraft + Remote ID tabs, durable detection/alert history across refresh & restart. A separate map-less **mobile** template with a Survey tab and patrol controls is served when `NODE_MODE=mobile` |
+| Reconnaissance pair | ✅ Validating | Fixed node tasks a survey → mobile node beds a target down by home-AP association → findings offload back (`SURVEY_ENABLED`, default off). Operator-bounded patrols hold a target open for a whole walk; a patrol banks every AP it hears into a **wardrive index** for retroactive, target-independent resolution. On-node plumbing + not-found flagging validated; a positive bed-down walk is the remaining gate |
 | Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown, watchdog, current-sky indexes + bounded tracks — 87 tests |
 
-**849 tests passing** across all modules.
+**915 tests passing** across all modules.
 
 ---
 
@@ -334,6 +341,9 @@ Passive-Vigilance/
 │   ├── fixed_scoring.py              # FixedScoring — fixed-node baseline-deviation (novelty + off-schedule) scoring
 │   ├── baseline_store.py             # BaselineStore — durable SQLite baseline; crash-safe learning window; hour-mask + RSSI stats
 │   ├── entity_store.py               # EntityStore — durable SQLite (probe evidence, fingerprint, entities, observation history)
+│   ├── survey_store.py               # SurveyStore — durable SQLite for recon-pair taskings, mobile observations, wardrive index, bed-down findings
+│   ├── survey_sync.py                # SurveySync — mobile-node client to the fixed node's survey endpoints (store-and-forward)
+│   ├── survey_coordinator.py         # SurveyCoordinator — recon-pair logic: mobile matcher, fixed-node tasking, patrol-aware sync
 │   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
 │   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
 │   ├── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
@@ -341,9 +351,11 @@ Passive-Vigilance/
 │   ├── __init__.py                   # Empty package marker
 │   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*; mode toggle (/api/mode)
 │   ├── templates/
-│   │   └── index.html                # Dark-theme SPA; 5 tabs (incl. Remote ID); Leaflet map; SSE client
+│   │   ├── index.html                # Fixed-node SPA; tabs (incl. Remote ID, Survey); Leaflet map; SSE client
+│   │   └── mobile.html               # Map-less mobile-node SPA; Nearby + Survey/patrol tabs (served when NODE_MODE=mobile)
 │   └── static/
-│       ├── app.js                    # SSE client; Leaflet markers; table rendering; tab switching
+│       ├── app.js                    # Fixed-node SSE client; Leaflet markers; table rendering; tab switching
+│       ├── mobile.js                 # Mobile-node SSE client; proximity feed; patrol controls
 │       └── style.css                 # Dark theme; KML-matched alert colors; touch-friendly
 ├── tests/
 │   ├── test_gps.py                   # 12 tests — GPSModule + quality filter
