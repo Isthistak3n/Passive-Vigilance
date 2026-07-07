@@ -89,6 +89,10 @@ class SurveyCoordinator:
             os.getenv("SURVEY_WARDRIVE_RETENTION_DAYS", "90"))
         self._wardrive_recorded: set = set()
         self._last_wardrive_prune = 0.0
+        # Edge-triggered guard so a patrol running without a GPS fix logs ONE warning
+        # (not one per poll) — banking silently drops every AP when the node has no
+        # position, and an operator mid-walk needs to know. Reset once a fix returns.
+        self._wardrive_no_gps_warned = False
         # Mobile-node client to the fixed node's survey endpoints. Inert (no URL)
         # unless SURVEY_FIXED_URL is set; the sync loop no-ops when not configured.
         self._survey_sync = SurveySync(
@@ -227,8 +231,6 @@ class SurveyCoordinator:
         patrol runs (nothing is collected outside a patrol) and only with a GPS fix (an
         AP with no position can't be located). APs only in v1: a record with a non-empty
         ``beaconed_ssid`` is an AP beaconing that network."""
-        if lat is None or lon is None:
-            return
         try:
             patrol = self.survey_store.active_patrol()
         except Exception as exc:
@@ -236,6 +238,19 @@ class SurveyCoordinator:
             return
         if patrol is None:
             return
+        if lat is None or lon is None:
+            # A patrol IS running but the node has no GPS fix, so every AP heard this
+            # poll is unlocatable and dropped. Silently banking zero APs for a whole
+            # walk is the trap (design issue), so warn once — edge-triggered to avoid
+            # a per-poll log flood — until a fix returns.
+            if not self._wardrive_no_gps_warned:
+                logger.warning(
+                    "Wardrive: a patrol is running but there is no GPS fix — APs "
+                    "heard are NOT being banked. Acquire a fix (clear sky view) to "
+                    "map the area.")
+                self._wardrive_no_gps_warned = True
+            return
+        self._wardrive_no_gps_warned = False  # fix restored — re-arm the warning
         pid = patrol.get("patrol_id")
         for d in devices:
             ssid = (d.get("beaconed_ssid") or "").strip()

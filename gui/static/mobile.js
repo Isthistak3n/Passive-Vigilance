@@ -11,7 +11,20 @@ const state = {
   ais:      [],   // deduplicated by MMSI
   alerts:   [],
   nearby:   [],   // live "what's around me" feed, deduplicated by MAC
+  survey:   [],   // recon-pair taskings (each with its bed-down findings)
 };
+
+// Whether the node currently has a GPS fix — mirrored from /api/status so the
+// patrol bar can warn that a running patrol with no fix banks zero APs (design §11).
+let gpsHasFix = false;
+
+// ── Recon-pair survey/patrol state (design §5.5 / §10) ───────────────────────
+// Declared up top because pollStatus() (which runs on load) reads surveyEnabled.
+// surveyEnabled flips true only once /api/survey answers (SURVEY_ENABLED + token).
+let surveyEnabled = false;
+let patrolActive = false;
+let patrolStartedAt = null;
+let patrolWardriveAps = null;
 
 // ── Tab switching ────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -273,6 +286,8 @@ async function pollStatus() {
       document.getElementById('session-id').textContent = d.session_id;
     }
     if (d.sensor_health) applyHealth(d.sensor_health, d.modules_active, d.gps_fix);
+    gpsHasFix = !!d.gps_fix;
+    if (surveyEnabled) renderPatrol();  // reflect a fix gained/lost on the patrol bar
     renderBaseline(d.scoring);
   } catch { /* network error — ignore */ }
 }
@@ -407,6 +422,10 @@ function connectSSE() {
       const idx = state.nearby.findIndex(e => e.mac === data.mac);
       if (idx >= 0) state.nearby[idx] = data; else state.nearby.push(data);
       renderNearby();
+    } else if (type === 'survey') {
+      // A tasking was issued, findings offloaded, or a patrol toggled — refetch.
+      if (surveyEnabled) loadSurvey();
+      if (data && data.kind === 'patrol') loadPatrol();
     }
   };
 
@@ -467,3 +486,175 @@ function renderBaseline(scoring) {
     detail.textContent = `${scoring.total_devices_tracked ?? 0} devices tracked`;
   }
 }
+
+// ── Recon-pair survey + patrol (design §5.5 / §10) ───────────────────────────
+// The fixed node issues taskings; this mobile node runs the patrol and shows where
+// each tasked contact bed down. No map here (the mobile GUI is map-less), so this is
+// the list view plus the Start/End patrol control. Token-gated like /api/mode: the
+// dashboard carries ?token=<GUI_TOKEN>, reused for the control POST. Inert until
+// /api/survey answers (SURVEY_ENABLED + a GUI_TOKEN on this node).
+function surveyUrl(path) {
+  return MODE_TOKEN ? `${path}?token=${encodeURIComponent(MODE_TOKEN)}` : path;
+}
+
+function fmtDist(m) {
+  if (m == null) return '';
+  return m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`;
+}
+
+function fmtDwell(secs) {
+  secs = Math.max(0, Math.floor(secs || 0));
+  const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${secs}s`;
+}
+
+function fmtElapsed(iso) {
+  const t0 = iso ? Date.parse(iso) : NaN;
+  if (Number.isNaN(t0)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - t0) / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+const _SURVEY_OUTCOME = {
+  resident:     { label: 'RESIDENT', cls: 'survey-out-resident', hint: 'Home AP found in the local area' },
+  seen:         { label: 'SEEN — HOME ELSEWHERE', cls: 'survey-out-seen', hint: 'Device seen locally but its home network was not — a WiGLE candidate' },
+  not_located:  { label: 'NOT LOCATED', cls: 'survey-out-absent', hint: 'Not found in the local wardrive — a WiGLE candidate' },
+};
+
+function renderSurvey() {
+  const list = document.getElementById('survey-list');
+  if (!list) return;
+  setBadge('badge-survey', state.survey.length);
+  if (!state.survey.length) {
+    list.innerHTML = '<p class="survey-empty">No survey taskings yet. The fixed node dispatches targets here; start a patrol to map the area meanwhile.</p>';
+    return;
+  }
+  list.innerHTML = state.survey.map(t => {
+    const statusCls = `survey-status-${(t.status || 'open')}`;
+    const out = _SURVEY_OUTCOME[t.outcome] || null;
+    const ap = t.home_ap;
+    let headline;
+    if (ap) {
+      const where = ap.lat != null
+        ? `<code>${(+ap.lat).toFixed(5)}, ${(+ap.lon).toFixed(5)}</code>` : '—';
+      const dist = ap.distance_m != null
+        ? ` <span class="survey-locality ${ap.locality || ''}">${fmtDist(ap.distance_m)} from node · ${ap.locality || ''}</span>` : '';
+      headline = `<div class="survey-bed">🏠 <b>Beds down at</b> ${esc(ap.ssid || 'home AP')}
+        ${ap.bssid ? `<code class="bssid">${esc(ap.bssid)}</code>` : ''} — ${where}${dist}</div>`;
+    } else if (t.outcome === 'not_located' || t.outcome === 'seen') {
+      headline = `<div class="survey-bed survey-wigle">🛰️ Home AP not found in the local wardrive —
+        <b>WiGLE candidate</b> <span class="survey-note">(look up its home networks; the query is a separate, deliberate step)</span></div>`;
+    } else {
+      headline = '<div class="survey-bed survey-pending">Surveying — no bed-down located yet.</div>';
+    }
+    const clusters = t.clusters || [];
+    const rows = clusters.map(f => `
+      <tr>
+        <td><code>${f.cluster_lat != null ? (+f.cluster_lat).toFixed(5) : '—'}, ${f.cluster_lon != null ? (+f.cluster_lon).toFixed(5) : '—'}</code></td>
+        <td>${f.distance_m != null ? fmtDist(f.distance_m) : '—'}</td>
+        <td>${fmtDwell(f.dwell_seconds)}</td>
+        <td>${f.visit_count || 0}</td>
+        <td>${f.distinct_nights || 0}${f.is_overnight ? ' 🌙' : ''}</td>
+        <td>${f.max_rssi != null ? f.max_rssi : '—'}</td>
+      </tr>`).join('');
+    const seenTable = clusters.length ? `
+      <details class="survey-seen"><summary>Also seen at ${clusters.length} spot(s)</summary>
+        <table class="survey-table">
+          <thead><tr><th>Location</th><th>Dist</th><th>Dwell</th><th>Visits</th><th>Nights</th><th>RSSI</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </details>` : '';
+    return `
+      <div class="survey-card">
+        <div class="survey-card-head">
+          <span class="survey-target">${esc(t.designator || t.identity_key || 'target')}</span>
+          <span class="survey-status ${statusCls}">${esc(t.status || 'open')}</span>
+          ${out ? `<span class="survey-outcome ${out.cls}" title="${out.hint}">${out.label}</span>` : ''}
+          <span class="survey-reason">${esc(t.reason || '')}</span>
+        </div>
+        ${headline}
+        ${seenTable}
+      </div>`;
+  }).join('');
+}
+
+async function loadSurvey() {
+  try {
+    const r = await fetch(surveyUrl('/api/survey'));
+    if (!r.ok) return surveyEnabled;
+    const data = await r.json();
+    state.survey = Array.isArray(data) ? data : [];
+    if (!surveyEnabled) {
+      // First successful answer — reveal the tab and start tracking the patrol.
+      surveyEnabled = true;
+      document.getElementById('tabbtn-survey')?.removeAttribute('hidden');
+      loadPatrol();
+    }
+    renderSurvey();
+    return surveyEnabled;
+  } catch { return surveyEnabled; }
+}
+
+function renderPatrol() {
+  const btn = document.getElementById('patrol-toggle');
+  const label = document.getElementById('patrol-state');
+  if (!btn || !label) return;
+  btn.removeAttribute('hidden');
+  btn.textContent = patrolActive ? 'End patrol' : 'Start patrol';
+  btn.classList.toggle('patrol-on', patrolActive);
+  const banked = (patrolWardriveAps != null)
+    ? ` · ${patrolWardriveAps} APs wardriven` : '';
+  // A patrol with no GPS fix banks zero APs (design §11) — call it out in the field
+  // so the operator isn't left wondering why the count never moves.
+  const noGps = (patrolActive && !gpsHasFix)
+    ? ' · ⚠ NO GPS FIX — not banking APs' : '';
+  label.textContent = patrolActive
+    ? `● Patrol running — ${fmtElapsed(patrolStartedAt)} · tasks held open${banked}${noGps}`
+    : `No patrol running — tasks close on the poll quota${banked}`;
+  label.classList.toggle('patrol-on', patrolActive);
+  label.classList.toggle('patrol-nogps', !!noGps);
+}
+
+async function loadPatrol() {
+  try {
+    const r = await fetch(surveyUrl('/api/patrol'));
+    if (!r.ok) return;  // feature off / no token
+    const s = await r.json();
+    patrolActive = !!s.active;
+    patrolStartedAt = s.started_at || null;
+    patrolWardriveAps = (s.wardrive_aps != null) ? s.wardrive_aps : null;
+    renderPatrol();
+  } catch { /* an unreachable node is the normal field state */ }
+}
+
+async function togglePatrol() {
+  const action = patrolActive ? 'end' : 'start';
+  if (action === 'end'
+      && !confirm('End the patrol? This finalizes every open tasking.')) return;
+  try {
+    const r = await fetch(surveyUrl('/api/patrol'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action }),
+    });
+    if (r.ok) { await loadPatrol(); loadSurvey(); }
+    else {
+      const e = await r.json().catch(() => ({}));
+      alert(`Patrol ${action} failed: ${e.error || r.status}`);
+    }
+  } catch { alert('Could not reach the node to change the patrol.'); }
+}
+
+document.getElementById('patrol-toggle')?.addEventListener('click', togglePatrol);
+document.getElementById('survey-refresh')?.addEventListener('click', loadSurvey);
+
+// Keep the running-elapsed label ticking without hammering the endpoint.
+setInterval(() => { if (patrolActive) renderPatrol(); }, 30000);
+// Refresh survey + patrol on the same slow cadence once the feature is live.
+setInterval(() => { if (surveyEnabled) { loadSurvey(); loadPatrol(); } }, 15000);
+
+// Probe once on load; if survey is enabled this reveals the tab, else it stays inert.
+loadSurvey();

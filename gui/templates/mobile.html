@@ -50,6 +50,9 @@
     <button class="tab-btn" data-tab="alerts">
       Alerts <span class="badge alert-badge" id="badge-alerts">0</span>
     </button>
+    <button class="tab-btn" data-tab="survey" id="tabbtn-survey" hidden>
+      Survey <span class="badge" id="badge-survey">0</span>
+    </button>
   </nav>
 
   <main>
@@ -143,6 +146,22 @@
         <button id="alerts-clear" class="btn-sm">Clear</button>
       </div>
       <div id="alerts-feed"></div>
+    </section>
+
+    <!-- Survey tab (recon pair) — the mobile operator's patrol control + findings.
+         Taskings originate on the fixed node; here we run the patrol and show where
+         each tasked contact bed down. Revealed only once /api/survey answers. -->
+    <section id="tab-survey" class="tab-panel">
+      <div class="toolbar">
+        <span class="survey-help">Run a patrol to map the area; taskings and the bed-down locations you found appear below.</span>
+        <button id="survey-refresh" class="btn-sm">Refresh</button>
+      </div>
+      <!-- Operator-bounded patrol (design §10): hold tasks open for the whole walk. -->
+      <div id="patrol-bar" class="patrol-bar">
+        <button id="patrol-toggle" class="btn-patrol" hidden>Start patrol</button>
+        <span id="patrol-state" class="patrol-state"></span>
+      </div>
+      <div id="survey-list"></div>
     </section>
   </main>
 

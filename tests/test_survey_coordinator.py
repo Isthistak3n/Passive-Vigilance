@@ -240,6 +240,38 @@ def test_wardrive_needs_a_gps_fix():
     assert co.survey_store.wardrive_count() == 0
 
 
+def test_wardrive_warns_once_when_patrol_runs_without_gps(caplog):
+    """A patrol running with no GPS fix warns the operator exactly once (edge-
+    triggered), and re-arms after a fix returns so a later loss warns again."""
+    import logging
+    co = _coord(); co.survey_store.start_patrol()
+    ap = {"macaddr": "aa", "beaconed_ssid": "N", "last_signal": -60}
+
+    with caplog.at_level(logging.WARNING):
+        co.record_hits([ap], None)
+        co.record_hits([ap], None)  # still no fix -> must NOT warn again
+    warnings = [r for r in caplog.records if "no GPS fix" in r.getMessage()]
+    assert len(warnings) == 1
+    assert co.survey_store.wardrive_count() == 0
+
+    # A fix returns (bank succeeds), then is lost again -> the warning re-arms.
+    co.record_hits([ap], FIX)
+    assert co.survey_store.wardrive_count() == 1
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        co.record_hits([ap], None)
+    assert any("no GPS fix" in r.getMessage() for r in caplog.records)
+
+
+def test_wardrive_no_gps_warning_stays_silent_without_a_patrol(caplog):
+    """No patrol -> nothing is collected, so a missing GPS fix must not warn."""
+    import logging
+    co = _coord()  # no patrol started
+    with caplog.at_level(logging.WARNING):
+        co.record_hits([{"macaddr": "aa", "beaconed_ssid": "N"}], None)
+    assert not any("no GPS fix" in r.getMessage() for r in caplog.records)
+
+
 def test_wardrive_banks_aps_not_clients():
     """APs only (v1): a record with no beaconed SSID is a client, not banked."""
     co = _coord(); co.survey_store.start_patrol()
