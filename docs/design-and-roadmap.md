@@ -459,10 +459,13 @@ The first two walk tests returned nothing — which turned out to be **two real 
 the AP-association anchor was sourced from an intermittently-present device field, so every tasking
 shipped with an empty anchor and no beaconing AP could ever match (**#196**); and a task's lifetime
 was a blind ~10-minute poll quota that expired a target before it was ever encountered on a walk —
-replaced by **operator-bounded patrols** (§10) with a mobile-GUI start/end button (**#198**). Still
-owed: a positive **Ph1** bed-down walk with both fixes deployed. The follow-on **wardrive index**
-(§11) — bank every AP heard while moving, for retroactive, target-independent resolution — is
-**designed (#197), not yet built**.
+replaced by **operator-bounded patrols** (§10). The follow-on **wardrive index** (§11) — bank every
+AP heard while moving, for retroactive, target-independent resolution — is now **built (#202)**, the
+survey logic was lifted out of the orchestrator into its own `SurveyCoordinator` (#200), and the
+patrol start/end control now ships on the **mobile** dashboard the mobile node actually serves (the
+§10 button first landed only on the fixed template, #198 → ported in #204). A patrol running without
+a GPS fix now warns the operator rather than silently banking nothing. Still owed: a positive **Ph1**
+bed-down walk with all of this deployed.
 
 ---
 
@@ -480,8 +483,9 @@ live-mirror); the air-picture GUI + Remote ID surface; and the P7-core air persi
 with alerting reframed to *of-interest only*. Built but **not merged:** the approaching-signal
 (rising-RSSI) trigger (Phase 2.5 / P1) — owes a positive walk-test. The **reconnaissance pair**
 (P8, PR #195, [design-recon-pair.md](design-recon-pair.md)) is merged and **in on-node validation**:
-Ph0/Ph2 passed, two field bugs fixed (#196 the unwired anchor, #198 operator-bounded patrols
-replacing the poll-quota task lifetime), a positive Ph1 bed-down walk still owed.
+Ph0/Ph2 passed, and the field fixes have all shipped (#196 the unwired anchor, #198 operator-bounded
+patrols, #202 the wardrive index, #200 the `SurveyCoordinator` extraction, #204 the mobile-dashboard
+patrol controls + no-GPS warning); a positive Ph1 bed-down walk is the one remaining gate.
 
 ## What drives the sequencing now
 
@@ -554,7 +558,7 @@ the detector.
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, bounded tracks, ID-less split, Remote ID pruning + surface; 24 h retention; returning-ICAO as same identity | ✅ shipped |
 | **P7** | Aircraft of interest: orbit/loiter detection (§9) | ◑ Mostly shipped — geometry + scorer (`air_geometry.py`/`air_scoring.py`), live scoring in `_poll_adsb`, alerting reframed to of-interest only (soak #3 confirmed). *Deferred:* durable cross-day per-ICAO baseline + daily-orbiter suppression; GUI severity badge; Remote ID loiter fusion | follow-on |
-| **P8** | Reconnaissance pair — fixed tasks / mobile surveys / offload ([design-recon-pair.md](design-recon-pair.md)) | ◑ Merged (PR #195, `SURVEY_ENABLED` default off): tasking + store-and-forward sync + AP-association bed-down + WiGLE-candidate flag. **On-node validation:** Ph0 (plumbing) + Ph2 (not-found flag) passed; two field bugs fixed — the anchor was never wired to the matcher (#196), and the blind poll-quota task lifetime is replaced by operator-bounded patrols (§10, #198). *Owes:* a positive Ph1 bed-down walk; the §11 wardrive index (designed #197, unbuilt) | follow-on (owes Ph1 walk) |
+| **P8** | Reconnaissance pair — fixed tasks / mobile surveys / offload ([design-recon-pair.md](design-recon-pair.md)) | ◑ Merged (PR #195, `SURVEY_ENABLED` default off): tasking + store-and-forward sync + AP-association bed-down + WiGLE-candidate flag. **On-node validation:** Ph0 (plumbing) + Ph2 (not-found flag) passed; field fixes shipped — the anchor is now wired to the matcher (#196), the blind poll-quota task lifetime is replaced by operator-bounded patrols (§10, #198), the §11 wardrive index is built (#202), the logic is extracted into `SurveyCoordinator` (#200), and the patrol controls + a no-GPS warning ship on the mobile dashboard (#204). *Owes:* a positive Ph1 bed-down walk | follow-on (owes Ph1 walk) |
 
 ### Phase detail (the open work)
 

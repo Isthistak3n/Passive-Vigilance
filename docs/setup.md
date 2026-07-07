@@ -1232,13 +1232,23 @@ Restart; the WiFi list gains a **Task survey** button and a **Survey** tab appea
 ```ini
 SURVEY_ENABLED=true
 NODE_MODE=mobile
+GUI_ENABLED=true          # serve this node's own dashboard (Survey tab + patrol controls)
+GUI_TOKEN=<a secret>      # THIS node's token — unlocks its OWN /api/patrol + Survey tab
 SURVEY_FIXED_URL=http://<fixed-node-host-or-ip>:8088   # e.g. http://chasingyourtail.local:8088
-SURVEY_TOKEN=<the fixed node's GUI_TOKEN>               # must match
+SURVEY_TOKEN=<the fixed node's GUI_TOKEN>               # the FIXED node's token, for sync
 KISMET_ACTIVE_WINDOW_SECONDS=120                        # mobile-scoring hygiene
 ```
+Note the two tokens are different: `GUI_TOKEN` is this node's own password and is
+what unlocks its local patrol/survey controls, while `SURVEY_TOKEN` is the *fixed*
+node's token that this node uses to sync. A mobile node needs both.
+
 The mobile node pulls taskings and offloads findings whenever it can reach the fixed
-node (store-and-forward — it surveys offline and syncs at base). See the full env
-reference in `.env.example` under "Reconnaissance pair".
+node (store-and-forward — it surveys offline and syncs at base). Its dashboard gains a
+**Survey** tab with a **Start/End patrol** button: start a patrol before a walk or
+drive to hold each target open for the whole route and to map every access point you
+pass into the wardrive index. Get a GPS fix first — a patrol with no fix banks nothing
+and the patrol bar will warn you. See the full env reference in `.env.example` under
+"Reconnaissance pair".
 
 ---
 

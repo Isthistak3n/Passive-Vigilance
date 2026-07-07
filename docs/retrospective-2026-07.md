@@ -1,9 +1,9 @@
 # Passive Vigilance — A Retrospective (April → July 2026)
 
 **Purpose:** the story behind the code — how Passive Vigilance went from a bare
-Raspberry Pi to a seven-sensor counter-surveillance platform across **159 merged
-PRs in ~11 weeks** (#1, 2026-04-13 → #172, 2026-07-01), what kept breaking, and
-what we learned. This is the narrative companion to the empirical record in
+Raspberry Pi to a seven-sensor counter-surveillance platform — and then a two-node
+hunting team — across **~12 weeks** (#1, 2026-04-13 → #204, 2026-07-06), what kept
+breaking, and what we learned. This is the narrative companion to the empirical record in
 [field-findings-2026-06.md](field-findings-2026-06.md) and
 [field-test-2026-06.md](field-test-2026-06.md), and the forward plan in
 [design-and-roadmap.md](design-and-roadmap.md). Configuration and hardware facts
@@ -23,6 +23,7 @@ live in `CLAUDE.md` / `CONTEXT.md` and are cross-referenced, not repeated.
 | VI — Identity | mid Jun | #88 #104–#112 #114 #117 #122 | Defeating MAC randomization by fingerprint |
 | VII — Operable + proven | mid–late Jun | #113 #121 #126 #130 #136 #137 #138 #141 #143 #146 #149 #156 | Durable GUI + the multi-day soaks |
 | VIII — The SDR pivot | late Jun → Jul 1 | #157 #158 #160 #161 #165 #168 #169–#172 | Retire DroneRF; AIS/ADS-B/ACARS; bring-up |
+| IX — The recon pair | Jul 4–6 | #194 #195 #198 #200 #202 #203 #204 | Two nodes hunt as a team; patrols + the wardrive index |
 
 ---
 
@@ -209,6 +210,30 @@ validated with **zero wedges** on the handoff, the settle barrier carrying it
 cleanly. ACARS is parked pending a reception check. A small field kit (a token-gated
 shutdown button + hotspot auto-join) was staged for a higher-traffic road trip.
 
+## Act IX — The reconnaissance pair (#194–#204)
+
+The multi-node idea that had sat in the design as "what's next" finally shipped: a
+fixed base node can hand a flagged device to a roaming mobile node and ask it to
+find where that device **beds down**. The mobile operator runs a **patrol** — a
+bounded walk or drive that holds each target open for the whole route instead of
+letting it time out on a poll quota — and along the way the node banks every access
+point it hears into a **wardrive index** (#202), so a target's home network can be
+matched to a location retroactively and even for a device tasked *after* the walk. A
+target whose home network is never found locally is flagged as a WiGLE lookup
+candidate rather than left silent.
+
+The weekend was as much about honesty as features. A live `survkis` bring-up
+surfaced that the patrol controls had only ever landed on the fixed Leaflet
+dashboard — the very template a mobile node never serves — so the mobile operator
+had no way to start a patrol; the controls and a Survey tab were ported onto the
+mobile template they belonged on (#204). A patrol run without a GPS fix had been
+silently banking nothing; it now warns the operator. The survey logic was lifted out
+of the poll loop into its own `SurveyCoordinator` (#200), the WiFi alert cooldown was
+re-keyed onto the contact fingerprint so a rotating address can't dodge it (#194),
+and a cross-file test-isolation flake was killed so the dashboard and survey suites
+pass together (#203). What it still owes is the same thing it owed on Friday: a
+positive bed-down walk on the live pair.
+
 ---
 
 ## The villains that ran the whole length
@@ -241,12 +266,14 @@ shutdown button + hotspot auto-join) was staged for a higher-traffic road trip.
 
 ## By the numbers
 
-- **159 merged PRs** across **~11 weeks** (#1 → #172).
-- Roughly **eight arcs**: foundation, coherence, field reality, the detection brain,
-  the crash-loop wars, identity, operability + soak validation, and the SDR pivot.
+- **159 merged PRs** across **~11 weeks** (#1 → #172), plus the reconnaissance-pair
+  arc through **#204** (early July).
+- Roughly **nine arcs**: foundation, coherence, field reality, the detection brain,
+  the crash-loop wars, identity, operability + soak validation, the SDR pivot, and
+  the reconnaissance pair.
 - **Three multi-day soaks** as the validation gate; soak #3 cleared it at ~42 h
   with bounded memory and 0 dropped alerts.
-- **762 passing tests** at v0.7.0-alpha.
+- **762 passing tests** at v0.7.0-alpha, **915** after the recon-pair arc.
 - **Seven live sensors**: GPS, WiFi, BLE, ADS-B, AIS, Remote ID, and the SDR
   coordinator that time-shares the radio.
 
@@ -276,22 +303,27 @@ shutdown button + hotspot auto-join) was staged for a higher-traffic road trip.
 | SDR pivot → AIS/ADS-B/ACARS cycle | #158 / #160 |
 | Kismet boot-readiness retry | #169 |
 | Honest sensor-health reporting | #170 |
+| Reconnaissance pair (fixed tasks → mobile bed-down → offload) | #195 |
+| Operator-bounded patrols | #198 |
+| Wardrive index (retroactive bed-down) | #202 |
+| Mobile-dashboard patrol controls + Survey tab | #204 |
 
 ## Where it stands (v0.7.0-alpha)
 
 From a bare Pi to a **seven-sensor, GPS-stamped, baseline-learning
-counter-surveillance platform**: WiFi + BLE with randomization-resistant identity
-and contact designators, an ADS-B/AIS air-and-sea picture with of-interest scoring,
-FAA Remote ID, a durable operator dashboard, pluggable alerting, and GIS/KML/WiGLE
-output — behind **762 passing tests** and three multi-day soaks.
+counter-surveillance platform** that now **hunts as a two-node team**: WiFi + BLE
+with randomization-resistant identity and contact designators, an ADS-B/AIS
+air-and-sea picture with of-interest scoring, FAA Remote ID, a durable operator
+dashboard, pluggable alerting, the fixed↔mobile reconnaissance pair, and
+GIS/KML/WiGLE output — behind **915 passing tests** and three multi-day soaks.
 
 ## What's next
 
-The chapters practically write themselves: confirm AIS reception from a real
-vantage point; decide the ACARS decoder (acarsdec vs. dumpvdl2) once VHF viability
-is proven; finish the detection-quality calibration owed by P2/P3; and the identity
-depth that raises what alerts *mean* — cross-session returning-entity resolution
-(P4) and cross-PHY WiFi↔BLE fusion. See
-[design-and-roadmap.md](design-and-roadmap.md) for the full forward plan.
+The recon pair's remaining gate is a positive **Ph1 bed-down walk** on the live
+`chase`↔`survkis` pair — the one thing the feature still owes. Beyond it: finish the
+detection-quality calibration owed by P2/P3, and the identity depth that raises what
+alerts *mean* — cross-session returning-entity resolution (P4) and cross-PHY
+WiFi↔BLE fusion. See [design-and-roadmap.md](design-and-roadmap.md) for the full
+forward plan.
 
 *Written 2026-07-01, at #172.*

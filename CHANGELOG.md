@@ -9,6 +9,16 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ### What's better now
 
+- **Two nodes can now hunt as a team.** A fixed base node can hand a flagged device
+  to a roaming mobile node and ask it to find where that device *beds down*. The
+  mobile operator starts a **patrol**, walks or drives the area, and the node maps
+  every access point it hears into a local index; when a target's home network turns
+  up, its location is reported back to the base node as the bed-down. A target whose
+  home network is never found locally is flagged as a candidate for a WiGLE lookup
+  instead. The patrol holds each target open for the whole walk (rather than timing
+  out mid-route), and a patrol run without a GPS fix now warns the operator instead
+  of silently mapping nothing. The mobile node drives all of this from its own
+  dashboard. The whole feature is optional and off by default (`SURVEY_ENABLED`).
 - **A randomized device that leaves and comes back is recognised as the same
   contact.** Modern phones rotate their address constantly, so a returning device
   used to reappear as a brand-new contact. Now a device is identified by *what it
