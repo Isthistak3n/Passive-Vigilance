@@ -48,6 +48,15 @@ _POS_DECIMAL_RE = re.compile(
 _POS_DEGMIN_RE = re.compile(
     r"(?P<lath>[NS])(?P<latd>\d{2})(?P<latm>\d{2}\.\d+)(?P<lonh>[EW])(?P<lond>\d{3})(?P<lonm>\d{2}\.\d+)"
 )
+# AOC position-report encoding: implied-decimal degrees with NO decimal point, e.g.
+# "POSN21207W157466" = 21.207 N, 157.466 W (lat DD + 3 fractional digits, lon DDD + 3).
+# NOT degree-minutes — verified against real reports ("POSA1N21318W157701" → 157.701,
+# which as minutes would be an impossible 70.1'). An optional 2-char report subtype may
+# sit between POS and the hemisphere. Anchored on "POS" so it can't fire on stray digits.
+_POS_ACARS_RE = re.compile(
+    r"POS(?:[A-Z0-9]{2})?(?P<lath>[NS])(?P<latd>\d{2})(?P<latf>\d{3})"
+    r"(?P<lonh>[EW])(?P<lond>\d{3})(?P<lonf>\d{3})"
+)
 
 
 def _first_str(*sources) -> Optional[str]:
@@ -100,7 +109,172 @@ def _extract_position(acars: dict, outer: dict, text: Optional[str]):
                 1 if m.group("lonh") == "E" else -1)
             if abs(lat) <= 90 and abs(lon) <= 180:
                 return lat, lon
+        m = _POS_ACARS_RE.search(text)
+        if m:
+            lat = (int(m.group("latd")) + int(m.group("latf")) / 1000.0) * (
+                1 if m.group("lath") == "N" else -1)
+            lon = (int(m.group("lond")) + int(m.group("lonf")) / 1000.0) * (
+                1 if m.group("lonh") == "E" else -1)
+            if abs(lat) <= 90 and abs(lon) <= 180:
+                return lat, lon
     return None, None
+
+
+# ---------------------------------------------------------------------------
+# Human-friendly classification (categorize + extract known fields)
+# ---------------------------------------------------------------------------
+#
+# ACARS content is only partly standardized — much of the free text on the common
+# labels (H1/37/5Z) is airline-proprietary and undocumented. We do NOT try to decode
+# that; instead we (1) name the ARINC label where we can, (2) sort the message into a
+# human category from reliable signals, and (3) surface the pieces we CAN parse
+# (position, route, flight, OOOI times) as labeled fields. Anything we can't place
+# stays "Free text / other" with the raw text shown verbatim — no fake decoding.
+
+# ARINC-620 downlink labels we can name with reasonable confidence. The label is a
+# secondary hint; the category below does the real grouping. Unknown labels fall back
+# to a generic descriptor rather than a guess.
+_LABEL_NAMES = {
+    "H1": "Message / airline data",
+    "5Z": "Airline-defined downlink",
+    "37": "Airline-defined downlink",
+    "SA": "Media advisory (link setup)",
+    "SQ": "Squitter / positioning",
+    "SB": "Departure/arrival (OOOI)",
+    "Q0": "Link test",
+    "_d": "Link management",
+    "_j": "Link management",
+    "10": "Airline downlink",
+    "80": "Airline downlink",
+    "B9": "ATS report",
+}
+
+CATEGORY_POSITION = "Position report"
+CATEGORY_PERFORMANCE = "Performance / engine"
+CATEGORY_OOOI = "Flight progress (OOOI)"
+CATEGORY_ROUTE = "Route / dispatch"
+CATEGORY_LINK = "Link management"
+CATEGORY_FREE = "Free text / other"
+
+# Labels that are pure link/media management (no user-facing content).
+_LINK_LABELS = {"_d", "_j", "sa", "q0", "sm", "sv"}
+# Engine / performance report markers seen in the free text (e.g. an "APM" report or
+# an ACMF snapshot). Word-boundaried so they don't fire on noise.
+_PERF_RE = re.compile(r"\b(APM|ACMF|PERF|ENGINE|FUEL FLOW)\b", re.I)
+# OOOI (Out/Off/On/In) event paired with a clock time; we require two or more pairs so
+# an incidental "ON"/"IN" in free text can't be mistaken for a flight-progress report.
+_OOOI_PAIR_RE = re.compile(r"\b(OUT|OFF|ON|IN)\s*(\d{4})\b", re.I)
+
+
+def _fmt_pos(lat, lon) -> str:
+    """A position as a compact hemisphere string, e.g. 'N21.207, W157.466'."""
+    return (f"{'N' if lat >= 0 else 'S'}{abs(lat):.3f}, "
+            f"{'E' if lon >= 0 else 'W'}{abs(lon):.3f}")
+
+
+# Token shapes inside a comma-delimited AOC position report.
+_HHMMSS_RE = re.compile(r"^\d{6}$")               # a clock time HHMMSS
+_WPT_RE = re.compile(r"^[A-Z][A-Z0-9]{1,7}$")     # a named fix / waypoint
+_LEVEL_RE = re.compile(r"^\d{2,3}$")              # a flight level (hundreds of feet)
+
+
+def _hhmmss(t: str) -> str:
+    return f"{t[0:2]}:{t[2:4]}:{t[4:6]}"
+
+
+def _position_report_fields(text: str) -> list:
+    """Break out the common AOC position report beyond the raw fix:
+    ``POS<coords>,<fix>,<time>,<level>,<next fix>,<ETA>,<following fix>,…``.
+
+    Positional but DEFENSIVE — each field is emitted only if its token matches the
+    expected shape, so a report in a different airline dialect degrades to just the
+    position instead of mislabeling. The trailing airline-specific fields (fuel/wind/
+    checksum) are intentionally left in the raw text, not guessed at.
+    """
+    m = _POS_ACARS_RE.search(text)
+    if not m:
+        return []
+    toks = [t.strip() for t in text[m.end():].split(",")]
+    while toks and toks[0] == "":            # drop the empty right after the coords
+        toks.pop(0)
+    fields = []
+    if len(toks) >= 2 and _WPT_RE.match(toks[0]) and _HHMMSS_RE.match(toks[1]):
+        fields.append({"name": "Over", "value": f"{toks[0]} at {_hhmmss(toks[1])}"})
+        if len(toks) >= 3 and _LEVEL_RE.match(toks[2]):
+            fields.append({"name": "Flight level", "value": f"FL{int(toks[2]):03d}"})
+        if len(toks) >= 5 and _WPT_RE.match(toks[3]) and _HHMMSS_RE.match(toks[4]):
+            fields.append({"name": "Next", "value": f"{toks[3]} · ETA {_hhmmss(toks[4])}"})
+        if len(toks) >= 6 and _WPT_RE.match(toks[5]):
+            fields.append({"name": "Then", "value": toks[5]})
+    return fields
+
+
+def classify(label, text, flight, origin, destination, lat, lon):
+    """Sort a parsed message into a human category and pull the fields we can parse.
+
+    Returns ``(category, fields)`` where ``fields`` is an ordered list of
+    ``{"name", "value"}`` dicts safe to display. Signals are checked strongest-first;
+    proprietary payloads with no reliable signal land in ``Free text / other``.
+    """
+    label_l = (label or "").strip().lower()
+    txt = text or ""
+
+    # Fields we can extract regardless of category, most identifying first.
+    fields = []
+    if flight:
+        fields.append({"name": "Flight", "value": flight})
+    if origin and destination:
+        fields.append({"name": "Route", "value": f"{origin}→{destination}"})
+    if lat is not None and lon is not None:
+        fields.append({"name": "Position", "value": _fmt_pos(lat, lon)})
+
+    oooi_pairs = _OOOI_PAIR_RE.findall(txt)
+
+    # Category — strongest, least-ambiguous signal wins.
+    if lat is not None and lon is not None:
+        category = CATEGORY_POSITION
+        # A textbook AOC position report also carries a fix/time/level/next-fix
+        # sequence — break out the pieces we can identify reliably.
+        fields.extend(_position_report_fields(txt))
+    elif _PERF_RE.search(txt):
+        category = CATEGORY_PERFORMANCE
+    elif len(oooi_pairs) >= 2 or label_l == "sb":
+        category = CATEGORY_OOOI
+        for event, clock in oooi_pairs:
+            fields.append({"name": event.upper(),
+                           "value": f"{clock[:2]}:{clock[2:]}"})
+    elif origin and destination:
+        category = CATEGORY_ROUTE
+    elif label_l in _LINK_LABELS or not txt.strip():
+        category = CATEGORY_LINK
+    else:
+        category = CATEGORY_FREE
+    return category, fields
+
+
+def reclassify(rec: dict) -> dict:
+    """Backfill category / label_name / fields (and a compact-format position) onto a
+    stored ACARS record that predates classification, derived from its own raw fields.
+
+    Returns a shallow copy so the caller's cached/stored dict is never mutated.
+    Idempotent: a record already carrying a category is returned unchanged. Used at GUI
+    serve time so historical messages show the same breakout as freshly-decoded ones.
+    """
+    if not isinstance(rec, dict) or rec.get("category"):
+        return rec
+    text = rec.get("text")
+    lat, lon = rec.get("lat"), rec.get("lon")
+    if lat is None or lon is None:
+        lat, lon = _extract_position(rec, {}, text)
+    label = rec.get("label")
+    category, fields = classify(label, text, rec.get("flight_id"),
+                                rec.get("origin"), rec.get("destination"), lat, lon)
+    out = dict(rec)
+    out["lat"], out["lon"] = lat, lon
+    out["category"] = category
+    out["label_name"] = _LABEL_NAMES.get(label, "Airline / other") if label else None
+    out["fields"] = fields
+    return out
 
 
 class _ACARSDatagramProtocol(asyncio.DatagramProtocol):
@@ -193,10 +367,17 @@ class ACARSModule:
         origin = _first_str((acars, _ORIGIN_KEYS), (msg, _ORIGIN_KEYS))
         destination = _first_str((acars, _DEST_KEYS), (msg, _DEST_KEYS))
         lat, lon = _extract_position(acars, msg, text)
+        # Human-friendly breakout: category + extracted fields + a named label. These
+        # ride through correlation onto event["acars"] and /api/acars unchanged, so the
+        # GUI can display the pieces without re-parsing the raw text.
+        category, fields = classify(label, text, flight, origin, destination, lat, lon)
         return {
             "tail": tail,
             "flight_id": flight,
             "label": label,
+            "label_name": _LABEL_NAMES.get(label, "Airline / other") if label else None,
+            "category": category,
+            "fields": fields,
             "text": text,
             "origin": origin,
             "destination": destination,

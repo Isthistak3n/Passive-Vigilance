@@ -136,6 +136,81 @@ function acarsSummary(latest, e) {
   return parts.join('  |  ');
 }
 
+// ── ACARS message breakout (Aircraft tab ✉ badge → detail modal) ─────────────
+// Each correlated message (server-classified: category + fields + label name) is
+// shown as a card broken into pieces, raw text kept in a collapsible block. A modal
+// keyed by ICAO, read from state.aircraft, so it survives the table's live re-render.
+let acarsModalIcao = null;
+
+const ACARS_CAT_ICON = {
+  'Position report': '📍', 'Performance / engine': '📈',
+  'Flight progress (OOOI)': '🛫', 'Route / dispatch': '🗺️',
+  'Link management': '🔗', 'Free text / other': '✉',
+};
+
+function acarsCardHtml(msg) {
+  const cat = msg.category || 'Free text / other';
+  const icon = ACARS_CAT_ICON[cat] || '✉';
+  const labelBit = msg.label
+    ? `<span class="acars-label" title="ARINC label">${esc(msg.label)}${msg.label_name ? ' · ' + esc(msg.label_name) : ''}</span>`
+    : '';
+  const fields = Array.isArray(msg.fields) ? msg.fields : [];
+  const fieldRows = fields.map(f =>
+    `<div class="acars-field"><span class="acars-fk">${esc(f.name)}</span><span class="acars-fv">${esc(String(f.value))}</span></div>`
+  ).join('');
+  const raw = msg.text
+    ? `<details class="acars-raw"><summary>Raw message</summary><pre>${esc(msg.text)}</pre></details>`
+    : '<div class="acars-raw-none">no message text — link/handshake only</div>';
+  return `
+    <div class="acars-card">
+      <div class="acars-card-head">
+        <span class="acars-cat">${icon} ${esc(cat)}</span>
+        ${labelBit}
+        <span class="acars-time">${fmtTime(msg.timestamp)}</span>
+      </div>
+      ${fieldRows ? `<div class="acars-fields">${fieldRows}</div>` : ''}
+      ${raw}
+    </div>`;
+}
+
+function renderAcarsDetail(icao) {
+  const body = document.getElementById('acars-modal-body');
+  const title = document.getElementById('acars-modal-title');
+  if (!body) return;
+  const e = state.aircraft.find(a => a.icao === icao);
+  const msgs = e && Array.isArray(e.acars) ? e.acars : [];
+  const who = e ? (e.callsign || e.registration || e.icao || icao) : icao;
+  if (title) title.textContent = `ACARS — ${who} (${msgs.length})`;
+  body.innerHTML = msgs.length
+    ? msgs.slice().reverse().map(acarsCardHtml).join('')   // newest first
+    : '<p class="acars-empty">No ACARS messages for this aircraft.</p>';
+}
+
+function openAcarsModal(icao) {
+  acarsModalIcao = icao;
+  renderAcarsDetail(icao);
+  const m = document.getElementById('acars-modal');
+  if (m) m.hidden = false;
+}
+function closeAcarsModal() {
+  acarsModalIcao = null;
+  const m = document.getElementById('acars-modal');
+  if (m) m.hidden = true;
+}
+
+// Event delegation — the aircraft tbody is re-rendered as innerHTML on every update.
+document.getElementById('aircraft-tbody')?.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('.acars-badge');
+  if (btn) openAcarsModal(btn.dataset.icao);
+});
+document.getElementById('acars-modal-close')?.addEventListener('click', closeAcarsModal);
+document.getElementById('acars-modal')?.addEventListener('click', (ev) => {
+  if (ev.target.id === 'acars-modal') closeAcarsModal();   // click the backdrop to dismiss
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && acarsModalIcao !== null) closeAcarsModal();
+});
+
 // A device's rotation-stable identity: its strong fingerprint if it has one,
 // else its MAC. Rows sharing an identity are one logical device.
 function wifiIdentity(e) {
@@ -439,7 +514,7 @@ const tables = {
         ? ` <span class="acars-route">${esc(r.route)}</span>`
         : (r.acars_flight ? ` <span class="acars-route">${esc(r.acars_flight)}</span>` : '');
       const acars = r.acars > 0
-        ? `<span class="acars-badge" title="${esc(r.acars_text)}">✉ ${r.acars}</span>${acarsExtra}`
+        ? `<button class="acars-badge" data-icao="${esc(r.icao)}" title="${esc(r.acars_text)}\n(click to break out each message)">✉ ${r.acars}</button>${acarsExtra}`
         : '—';
       return `
     <tr class="${r.returning ? 'returning-row' : ''}">
@@ -754,6 +829,9 @@ function connectSSE() {
       if (idx >= 0) state.aircraft[idx] = data; else state.aircraft.push(data);
       setBadge('badge-aircraft', state.aircraft.length);
       renderAircraft();   // rebuilds the table and the map markers from state
+      // Keep an open ACARS breakout live if it's this aircraft (a new message may
+      // have arrived while the operator has the panel up).
+      if (acarsModalIcao && data.icao === acarsModalIcao) renderAcarsDetail(acarsModalIcao);
     } else if (type === 'ais') {
       // Deduplicate by MMSI — a vessel re-reports position/static periodically.
       const idx = state.ais.findIndex(e => e.mmsi === data.mmsi);
