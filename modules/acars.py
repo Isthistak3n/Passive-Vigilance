@@ -103,6 +103,98 @@ def _extract_position(acars: dict, outer: dict, text: Optional[str]):
     return None, None
 
 
+# ---------------------------------------------------------------------------
+# Human-friendly classification (categorize + extract known fields)
+# ---------------------------------------------------------------------------
+#
+# ACARS content is only partly standardized — much of the free text on the common
+# labels (H1/37/5Z) is airline-proprietary and undocumented. We do NOT try to decode
+# that; instead we (1) name the ARINC label where we can, (2) sort the message into a
+# human category from reliable signals, and (3) surface the pieces we CAN parse
+# (position, route, flight, OOOI times) as labeled fields. Anything we can't place
+# stays "Free text / other" with the raw text shown verbatim — no fake decoding.
+
+# ARINC-620 downlink labels we can name with reasonable confidence. The label is a
+# secondary hint; the category below does the real grouping. Unknown labels fall back
+# to a generic descriptor rather than a guess.
+_LABEL_NAMES = {
+    "H1": "Message / airline data",
+    "5Z": "Airline-defined downlink",
+    "37": "Airline-defined downlink",
+    "SA": "Media advisory (link setup)",
+    "SQ": "Squitter / positioning",
+    "SB": "Departure/arrival (OOOI)",
+    "Q0": "Link test",
+    "_d": "Link management",
+    "_j": "Link management",
+    "10": "Airline downlink",
+    "80": "Airline downlink",
+    "B9": "ATS report",
+}
+
+CATEGORY_POSITION = "Position report"
+CATEGORY_PERFORMANCE = "Performance / engine"
+CATEGORY_OOOI = "Flight progress (OOOI)"
+CATEGORY_ROUTE = "Route / dispatch"
+CATEGORY_LINK = "Link management"
+CATEGORY_FREE = "Free text / other"
+
+# Labels that are pure link/media management (no user-facing content).
+_LINK_LABELS = {"_d", "_j", "sa", "q0", "sm", "sv"}
+# Engine / performance report markers seen in the free text (e.g. an "APM" report or
+# an ACMF snapshot). Word-boundaried so they don't fire on noise.
+_PERF_RE = re.compile(r"\b(APM|ACMF|PERF|ENGINE|FUEL FLOW)\b", re.I)
+# OOOI (Out/Off/On/In) event paired with a clock time; we require two or more pairs so
+# an incidental "ON"/"IN" in free text can't be mistaken for a flight-progress report.
+_OOOI_PAIR_RE = re.compile(r"\b(OUT|OFF|ON|IN)\s*(\d{4})\b", re.I)
+
+
+def _fmt_pos(lat, lon) -> str:
+    """A position as a compact hemisphere string, e.g. 'N21.207, W157.466'."""
+    return (f"{'N' if lat >= 0 else 'S'}{abs(lat):.3f}, "
+            f"{'E' if lon >= 0 else 'W'}{abs(lon):.3f}")
+
+
+def classify(label, text, flight, origin, destination, lat, lon):
+    """Sort a parsed message into a human category and pull the fields we can parse.
+
+    Returns ``(category, fields)`` where ``fields`` is an ordered list of
+    ``{"name", "value"}`` dicts safe to display. Signals are checked strongest-first;
+    proprietary payloads with no reliable signal land in ``Free text / other``.
+    """
+    label_l = (label or "").strip().lower()
+    txt = text or ""
+
+    # Fields we can extract regardless of category, most identifying first.
+    fields = []
+    if flight:
+        fields.append({"name": "Flight", "value": flight})
+    if origin and destination:
+        fields.append({"name": "Route", "value": f"{origin}→{destination}"})
+    if lat is not None and lon is not None:
+        fields.append({"name": "Position", "value": _fmt_pos(lat, lon)})
+
+    oooi_pairs = _OOOI_PAIR_RE.findall(txt)
+
+    # Category — strongest, least-ambiguous signal wins.
+    if lat is not None and lon is not None:
+        category = CATEGORY_POSITION
+    elif _PERF_RE.search(txt):
+        category = CATEGORY_PERFORMANCE
+    elif len(oooi_pairs) >= 2 or label_l == "sb":
+        category = CATEGORY_OOOI
+        for event, clock in oooi_pairs:
+            fields.append({"name": event.upper(),
+                           "value": f"{clock[:2]}:{clock[2:]}"})
+    elif origin and destination:
+        category = CATEGORY_ROUTE
+    elif label_l in _LINK_LABELS or not txt.strip():
+        category = CATEGORY_LINK
+    else:
+        category = CATEGORY_FREE
+    return category, fields
+
+
 class _ACARSDatagramProtocol(asyncio.DatagramProtocol):
     def __init__(self, on_line) -> None:
         self._on_line = on_line
@@ -193,10 +285,17 @@ class ACARSModule:
         origin = _first_str((acars, _ORIGIN_KEYS), (msg, _ORIGIN_KEYS))
         destination = _first_str((acars, _DEST_KEYS), (msg, _DEST_KEYS))
         lat, lon = _extract_position(acars, msg, text)
+        # Human-friendly breakout: category + extracted fields + a named label. These
+        # ride through correlation onto event["acars"] and /api/acars unchanged, so the
+        # GUI can display the pieces without re-parsing the raw text.
+        category, fields = classify(label, text, flight, origin, destination, lat, lon)
         return {
             "tail": tail,
             "flight_id": flight,
             "label": label,
+            "label_name": _LABEL_NAMES.get(label, "Airline / other") if label else None,
+            "category": category,
+            "fields": fields,
             "text": text,
             "origin": origin,
             "destination": destination,

@@ -172,19 +172,104 @@ main {
 /* ACARS message-count badge in the Aircraft tab (hover shows the latest message). */
 .acars-badge {
   display: inline-block;
-  padding: 0 6px;
+  padding: 1px 7px;
+  border: 1px solid rgba(31, 111, 235, 0.5);
   border-radius: 8px;
   background: rgba(31, 111, 235, 0.2);
   color: #79c0ff;
   font-size: 0.85em;
-  cursor: help;
+  font-family: inherit;
+  cursor: pointer;
 }
+.acars-badge:hover { background: rgba(31, 111, 235, 0.4); color: #cbe6ff; }
 
 /* ACARS-derived route / flight shown inline next to the message badge. */
 .acars-route {
   color: #8b949e;
   font-size: 0.85em;
 }
+
+/* ── ACARS detail modal (✉ badge → per-aircraft message breakout) ────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(1, 4, 9, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  width: min(680px, 100%);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid #30363d;
+  font-weight: 600;
+  color: #e6edf3;
+}
+.modal-close {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.modal-close:hover { color: #f85149; }
+.modal-body { padding: 12px 16px; overflow-y: auto; }
+
+.acars-card {
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  background: #0f141b;
+}
+.acars-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.acars-cat { font-weight: 600; color: #e6edf3; }
+.acars-label { color: #8b949e; font-size: 0.82em; }
+.acars-time { margin-left: auto; color: #6e7681; font-size: 0.82em; }
+.acars-fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 3px 12px;
+  margin-bottom: 6px;
+}
+.acars-fk { color: #79c0ff; font-size: 0.85em; }
+.acars-fv { color: #e6edf3; font-size: 0.9em; word-break: break-word; }
+.acars-raw > summary { color: #8b949e; font-size: 0.82em; cursor: pointer; }
+.acars-raw pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: #010409;
+  border-radius: 6px;
+  color: #adbac7;
+  font-size: 0.8em;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.acars-raw-none { color: #6e7681; font-size: 0.82em; font-style: italic; }
+.acars-empty { color: #6e7681; font-style: italic; }
 
 /* ── Toolbar ─────────────────────────────────────────────── */
 .toolbar {

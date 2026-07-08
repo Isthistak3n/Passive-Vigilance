@@ -198,6 +198,19 @@
     </section>
   </main>
 
+  <!-- ACARS detail overlay: opened by clicking a plane's ✉ badge on the Aircraft tab.
+       A modal (not an inline row) because the aircraft table re-renders on every
+       update, which would collapse an inline expansion. -->
+  <div id="acars-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="acars-modal-title">
+      <div class="modal-head">
+        <span id="acars-modal-title">ACARS messages</span>
+        <button id="acars-modal-close" class="modal-close" aria-label="Close">✕</button>
+      </div>
+      <div id="acars-modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
   <script src="/static/leaflet/leaflet.js"></script>
   <script src="/static/app.js"></script>
 </body>
