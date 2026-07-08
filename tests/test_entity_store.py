@@ -339,6 +339,75 @@ def test_storage_stats_reports_footprint(tmp_path):
     s.close()
 
 
+# ---------------------------------------------------------------------------
+# Off-loop writer (experimental, default off) — keep the poll write off the loop
+# ---------------------------------------------------------------------------
+
+
+def test_async_writer_persists_polls(tmp_path):
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, async_writes=True)
+    assert s._async_writes is True
+    for i in range(12):
+        s.record_poll([_device()], now=T0 + timedelta(minutes=i))
+    s.flush()                                          # wait for the writer to drain
+    assert s.count("observations") == 12               # main conn sees committed rows
+    s.close()
+
+
+def test_async_close_drains_and_persists_across_reopen(tmp_path):
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, async_writes=True)
+    for i in range(7):
+        s.record_poll([_device()], now=T0 + timedelta(minutes=i))
+    s.close()                                          # must flush the queue on the way out
+    reopened = EntityStore(db)                         # sync
+    assert reopened.count("observations") == 7
+    reopened.close()
+
+
+def test_async_disabled_for_memory_db():
+    # A second connection to ":memory:" is a different database, so async is a no-op
+    # there and falls back to synchronous writes.
+    s = EntityStore(":memory:", async_writes=True)
+    assert s._async_writes is False
+    s.record_poll([_device()])
+    assert s.count("observations") == 1
+    s.close()
+
+
+def test_async_full_queue_drops_without_blocking(tmp_path):
+    import threading
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, async_writes=True, write_queue_max=1)
+    gate = threading.Event()
+    original = s._write_poll
+
+    def slow(*args, **kwargs):
+        gate.wait(2)                                   # hold the writer so the queue backs up
+        return original(*args, **kwargs)
+
+    s._write_poll = slow
+    # First item is taken by the (now blocked) writer, the next fills the max-1
+    # queue, and the rest must be dropped — record_poll never raises or blocks.
+    for i in range(50):
+        s.record_poll([_device()], now=T0 + timedelta(seconds=i))
+    assert s._write_drops > 0
+    gate.set()
+    s.flush()
+    s.close()
+
+
+def test_sync_is_the_default(tmp_path):
+    # Guard the default: without opting in, writes stay synchronous (no writer thread).
+    s = EntityStore(str(tmp_path / "entities.db"))
+    assert s._async_writes is False
+    assert s._writer_thread is None
+    s.record_poll([_device()])
+    assert s.count("observations") == 1                # persisted inline, no flush needed
+    s.close()
+
+
 def test_observation_position_null_without_fix():
     s = _store()
     s.record_poll([_device()], gps_fix=None, now=T0)

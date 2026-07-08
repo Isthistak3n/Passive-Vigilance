@@ -229,7 +229,12 @@ Re-run the monitor mode commands after any NM restart.
   a busy SD writer and the WAL grows unbounded otherwise). `close()` also truncates the
   WAL so a large one can't persist to the next start. `storage_stats()` feeds the health
   banner, which WARNs before the size is fatal. Guarded — a store failure never affects
-  capture or detection.
+  capture or detection. **Off-loop writer** (`ENTITY_ASYNC_WRITES`, EXPERIMENTAL default
+  off, file DB only): when on, `record_poll` enqueues to a dedicated writer thread with its
+  own connection so a slow SD commit can't block the poll loop; reads stay on the main
+  connection (WAL), a full queue drops the poll rather than blocking capture, and `close()`
+  drains it. `_active_conn()` picks the writer vs main connection per thread — sync mode is
+  the unchanged default path. Needs on-node validation before it's trusted.
 - **P4 identity (display/identity only — never changes scoring), on branch
   `feat/contact-identity-tiers`:** the DISPLAY contact identity is separate from the
   scoring key. `device_identity.contact_identity()` returns a *strong* (rare distinctive

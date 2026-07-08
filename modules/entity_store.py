@@ -17,7 +17,9 @@ design (history); it is bounded by a time-based retention window — see
 
 import logging
 import os
+import queue
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,6 +53,17 @@ _DEFAULT_MAX_OBS_ROWS = int(os.getenv("ENTITY_OBSERVATION_MAX_ROWS", "4000000"))
 # into the DB, and resets the WAL file to zero. 0 disables. Read once at construction.
 _DEFAULT_WAL_CHECKPOINT_S = int(os.getenv("ENTITY_WAL_CHECKPOINT_SECONDS", "300"))
 
+# Off-loop writer (experimental, default OFF). When enabled, record_poll enqueues the
+# poll to a dedicated writer thread with its OWN connection instead of writing on the
+# caller's (asyncio) thread — so even a multi-second SD fsync can't block the poll loop
+# past the watchdog. Reads stay on the main connection (WAL lets them proceed without
+# the writer's lock). Only meaningful for a file DB; ignored for ":memory:" (a second
+# connection there is a separate database). Bounded queue: under sustained backpressure
+# a poll's observations are dropped rather than blocking capture.
+_DEFAULT_ASYNC_WRITES = os.getenv("ENTITY_ASYNC_WRITES", "false").strip().lower() in (
+    "1", "true", "yes", "on")
+_DEFAULT_WRITE_QUEUE_MAX = int(os.getenv("ENTITY_WRITE_QUEUE_MAX", "240"))
+
 # AP-beacon capture + network-affinity recording. Pure capture (no scoring effect),
 # default on; set false to skip the beacon_evidence / network_affinity writes.
 _BEACON_CAPTURE_ENABLED = os.getenv("BEACON_CAPTURE_ENABLED", "true").strip().lower() != "false"
@@ -81,7 +94,9 @@ class EntityStore:
                  prune_batch_rows: Optional[int] = None,
                  prune_time_budget_s: Optional[float] = None,
                  max_observation_rows: Optional[int] = None,
-                 wal_checkpoint_s: Optional[int] = None) -> None:
+                 wal_checkpoint_s: Optional[int] = None,
+                 async_writes: Optional[bool] = None,
+                 write_queue_max: Optional[int] = None) -> None:
         self._db_path = db_path or _DEFAULT_ENTITY_DB_PATH
         self._retention_days = (
             _DEFAULT_RETENTION_DAYS if retention_days is None else retention_days
@@ -110,10 +125,23 @@ class EntityStore:
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path)
         self._conn.row_factory = sqlite3.Row
-        self._apply_pragmas()
+        self._apply_pragmas(self._conn)
         self._create_schema()
 
-    def _apply_pragmas(self) -> None:
+        # Off-loop writer (default off; file DBs only). Its own connection is created
+        # on the writer thread so SQLite's per-thread ownership holds.
+        want_async = _DEFAULT_ASYNC_WRITES if async_writes is None else async_writes
+        self._async_writes = bool(want_async) and self._db_path != ":memory:"
+        self._write_queue_max = max(1, int(
+            _DEFAULT_WRITE_QUEUE_MAX if write_queue_max is None else write_queue_max))
+        self._writer_thread: Optional[threading.Thread] = None
+        self._writer_conn: Optional[sqlite3.Connection] = None
+        self._write_q: "Optional[queue.Queue]" = None
+        self._write_drops = 0
+        if self._async_writes:
+            self._start_writer()
+
+    def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
         """Tune the connection for an always-on writer on slow storage.
 
         WAL + synchronous=NORMAL cut the per-commit fsync stall on the Pi's SD
@@ -132,9 +160,69 @@ class EntityStore:
             "PRAGMA busy_timeout=5000",
         ):
             try:
-                self._conn.execute(pragma)
+                conn.execute(pragma)
             except sqlite3.Error as exc:  # pragma: no cover - defensive
                 logger.debug("EntityStore pragma failed (%s): %s", pragma, exc)
+
+    # ------------------------------------------------------------------
+    # Off-loop writer (experimental; default off)
+    # ------------------------------------------------------------------
+
+    def _active_conn(self) -> sqlite3.Connection:
+        """The connection the write path should use: the writer thread's own
+        connection when a poll is being drained on it, else the main connection
+        (sync mode, and all main-thread reads). In sync mode this is always the
+        main connection, so the default path is byte-for-byte unchanged."""
+        if (self._async_writes
+                and threading.current_thread() is self._writer_thread
+                and self._writer_conn is not None):
+            return self._writer_conn
+        return self._conn
+
+    def _start_writer(self) -> None:
+        self._write_q = queue.Queue(maxsize=self._write_queue_max)
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop, name="entity-writer", daemon=True)
+        self._writer_thread.start()
+
+    def _writer_loop(self) -> None:
+        """Drain queued polls on a dedicated connection until the sentinel. Its own
+        connection is created here so it is owned by this thread; a write failure is
+        swallowed (capture must never be affected by the store). Every item is
+        task_done'd even if the connection failed to open, so ``flush`` can't hang."""
+        conn = None
+        try:
+            conn = sqlite3.connect(self._db_path)
+            conn.row_factory = sqlite3.Row
+            self._apply_pragmas(conn)
+            self._writer_conn = conn
+        except sqlite3.Error as exc:  # pragma: no cover - defensive
+            logger.error("EntityStore writer connection failed — async writes "
+                         "will be dropped: %s", exc)
+        while True:
+            item = self._write_q.get()
+            try:
+                if item is None:  # shutdown sentinel
+                    break
+                if conn is not None:
+                    devices, gps_fix, now = item
+                    self._write_poll(devices, gps_fix=gps_fix, now=now)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("EntityStore async write failed: %s", exc)
+            finally:
+                self._write_q.task_done()
+        if conn is not None:
+            try:
+                self.checkpoint_wal()  # truncate this connection's WAL before exit
+                conn.close()
+            except sqlite3.Error as exc:  # pragma: no cover - defensive
+                logger.debug("EntityStore writer close error: %s", exc)
+
+    def flush(self) -> None:
+        """Block until the writer has drained the queue. A no-op in sync mode;
+        used by tests and by shutdown to make queued writes durable."""
+        if self._async_writes and self._write_q is not None:
+            self._write_q.join()
 
     # ------------------------------------------------------------------
     # Schema
@@ -310,10 +398,32 @@ class EntityStore:
 
     def record_poll(self, devices: list, *, gps_fix: Optional[dict] = None,
                     now: Optional[datetime] = None) -> None:
-        """Persist one poll cycle: per device, upsert probe evidence / fingerprint /
-        entity and insert one observation row. The node's own GPS fix is the
-        position for every device this poll (a fixed/mobile node reports its own
-        location); all four position fields are null when there is no fix."""
+        """Persist one poll cycle. In sync mode (default) the write happens inline;
+        with the off-loop writer enabled it is handed to the writer thread so a slow
+        SD commit can't block the caller's (asyncio) loop. A full queue drops the
+        poll rather than blocking capture — history is lossy under stress by design."""
+        if not self._async_writes:
+            self._write_poll(devices, gps_fix=gps_fix, now=now)
+            return
+        now = now or datetime.now(timezone.utc)
+        try:
+            # Snapshot the list so the caller can reuse it; device dicts are treated
+            # as read-only downstream, so a shallow copy is enough.
+            self._write_q.put_nowait((list(devices), gps_fix, now))
+        except queue.Full:
+            self._write_drops += 1
+            if self._write_drops % 100 == 1:
+                logger.warning(
+                    "EntityStore write queue full — dropping poll (%d dropped total); "
+                    "the writer isn't keeping up with storage", self._write_drops)
+
+    def _write_poll(self, devices: list, *, gps_fix: Optional[dict] = None,
+                    now: Optional[datetime] = None) -> None:
+        """Do the actual per-poll DB work: per device, upsert probe evidence /
+        fingerprint / entity and insert one observation row. Runs on the caller's
+        thread (sync mode) or the writer thread (async); ``_active_conn`` picks the
+        matching connection. The node's own GPS fix is the position for every device
+        this poll; all four position fields are null when there is no fix."""
         now = now or datetime.now(timezone.utc)
         ts = _iso(now)
         if gps_fix:
@@ -322,7 +432,8 @@ class EntityStore:
         else:
             lat = lon = pos_source = pos_confidence = None
 
-        cur = self._conn.cursor()
+        conn = self._active_conn()
+        cur = conn.cursor()
 
         # First pass: record beaconing APs and collect the SSIDs being beaconed
         # locally THIS poll, so a client's probe for one of them counts as a network
@@ -418,7 +529,7 @@ class EntityStore:
                  device.get("last_signal")),
             )
 
-        self._conn.commit()
+        conn.commit()
         self._maybe_prune(now)
         self._maybe_checkpoint(now)
 
@@ -496,7 +607,7 @@ class EntityStore:
 
         # Size-based: delete the oldest rows beyond the newest _max_obs_rows.
         if self._max_obs_rows > 0 and time.monotonic() < deadline:
-            top = self._conn.execute(
+            top = self._active_conn().execute(
                 "SELECT MAX(rowid) FROM observations").fetchone()[0]
             if top is not None:
                 floor_rowid = top - self._max_obs_rows
@@ -520,12 +631,13 @@ class EntityStore:
         budget is checked *after* each batch, so a sweep always makes at least one
         batch of progress even when it starts already over budget."""
         total = 0
+        conn = self._active_conn()
         while True:
-            cur = self._conn.execute(
+            cur = conn.execute(
                 f"DELETE FROM observations WHERE rowid IN ({select_sql})",
                 (*params, self._prune_batch_rows),
             )
-            self._conn.commit()
+            conn.commit()
             n = cur.rowcount or 0
             total += n
             if n < self._prune_batch_rows:
@@ -546,7 +658,7 @@ class EntityStore:
         Guarded and bounded: on a healthy cadence the WAL is small, so this is
         cheap; a checkpoint failure must never disturb capture."""
         try:
-            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            self._active_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
         except sqlite3.Error as exc:  # pragma: no cover - defensive
             logger.debug("EntityStore wal_checkpoint failed: %s", exc)
 
@@ -592,10 +704,11 @@ class EntityStore:
         unless the database file was created with auto_vacuum enabled (see
         _apply_pragmas); bounded so it can never become its own stall."""
         try:
+            conn = self._active_conn()
             # fetchall() matters: the pragma frees pages as the statement is
             # stepped, so an un-drained cursor reclaims nothing.
-            self._conn.execute("PRAGMA incremental_vacuum(2000)").fetchall()
-            self._conn.commit()
+            conn.execute("PRAGMA incremental_vacuum(2000)").fetchall()
+            conn.commit()
         except sqlite3.Error as exc:  # pragma: no cover - defensive
             logger.debug("EntityStore incremental_vacuum failed: %s", exc)
 
@@ -822,6 +935,15 @@ class EntityStore:
         ).fetchone()
 
     def close(self) -> None:
+        # Drain and stop the writer thread first (async mode) so queued polls are
+        # durable and its connection is checkpointed + closed on its own thread.
+        if self._async_writes and self._writer_thread is not None:
+            try:
+                self.flush()
+                self._write_q.put(None)          # shutdown sentinel
+                self._writer_thread.join(timeout=10)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("EntityStore writer shutdown error: %s", exc)
         # Truncate the WAL on the way out so a large one can't persist to the next
         # start, where replaying it stalls the first open (the 2026-07 failure).
         self.checkpoint_wal()
