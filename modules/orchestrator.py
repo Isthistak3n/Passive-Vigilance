@@ -2282,7 +2282,31 @@ class SensorOrchestrator:
         logger.info("SDR:       %s | Mode: %s | Owner: %s", sdr_status, self.sdr_mode.value, self.sdr_coordinator.current_owner)
         logger.info("Alerts:    %s | Sent: %d | Rate-limited: %d | Dropped: %d", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"], self._stats["alerts_dropped"])
         logger.info("Events:    %d persistent | %d aircraft-sightings | %d drone | %d remote_id", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"], self._stats["remote_id_detections"])
+        self._log_entity_store_footprint()
         logger.info(sep)
+
+    def _log_entity_store_footprint(self) -> None:
+        '''Report the entity-store on-disk footprint, and WARN before it becomes a
+        problem. An oversized DB or un-truncated WAL on the SD card stalls the poll
+        loop past the watchdog (2026-07); surfacing it here catches the drift while
+        it is still just a log line, not a crash-loop. Fully guarded.'''
+        if self.entity_store is None or not hasattr(self.entity_store, "storage_stats"):
+            return
+        try:
+            st = self.entity_store.storage_stats()
+            db_mb, wal_mb = st["db_bytes"] / 1e6, st["wal_bytes"] / 1e6
+            line = ("EntityDB:  %.0f MB db | %.0f MB wal | ~%d obs rows"
+                    % (db_mb, wal_mb, st["observation_rows"]))
+            # Thresholds are deliberately well below the point where the SD stall bit:
+            # a >250 MB WAL means checkpoints aren't keeping up, a >4 GB DB means the
+            # row cap isn't holding — either warrants a look before it's fatal.
+            if wal_mb > 250 or db_mb > 4000:
+                logger.warning("%s — approaching the size that stalled the loop; "
+                               "check ENTITY_OBSERVATION_MAX_ROWS / WAL checkpointing", line)
+            else:
+                logger.info(line)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("entity-store footprint read failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Reconnection
