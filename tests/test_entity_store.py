@@ -266,6 +266,79 @@ def test_observation_timestamp_index_created():
     s.close()
 
 
+# ---------------------------------------------------------------------------
+# Row cap — a size ceiling independent of the age window (the 2026-07 balloon)
+# ---------------------------------------------------------------------------
+
+
+def test_row_cap_prunes_oldest_beyond_ceiling():
+    # Age retention off, cap on: only the newest N observations survive, so a busy
+    # node plateaus instead of growing for the whole (multi-week) age window.
+    s = EntityStore(":memory:", retention_days=0, max_observation_rows=5,
+                    prune_interval_s=10 ** 9)
+    _poll(s, [_device()], 20)
+    assert s.count("observations") == 20               # nothing swept mid-run
+    s.prune_observations(now=T0 + timedelta(hours=1))
+    assert s.count("observations") == 5                # oldest 15 dropped, newest 5 kept
+    s.close()
+
+
+def test_row_cap_disabled_keeps_everything():
+    s = EntityStore(":memory:", retention_days=0, max_observation_rows=0,
+                    prune_interval_s=10 ** 9)
+    _poll(s, [_device()], 12)
+    s.prune_observations(now=T0 + timedelta(hours=1))
+    assert s.count("observations") == 12
+    s.close()
+
+
+def test_row_cap_enforced_even_when_age_prune_removes_nothing():
+    # The failure mode: age window huge, so age-prune is a no-op, but the cap must
+    # still hold the line. Auto-sweep fires from the 2nd poll (interval 0).
+    s = EntityStore(":memory:", retention_days=3650, max_observation_rows=4,
+                    prune_interval_s=0)
+    _poll(s, [_device()], 10)
+    assert s.count("observations") <= 4
+    s.close()
+
+
+# ---------------------------------------------------------------------------
+# WAL bounding — the un-truncated WAL that stalled every open
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_truncates_the_wal_file(tmp_path):
+    import os
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, wal_checkpoint_s=0)            # manual checkpoint only
+    _poll(s, [_device(probe_ssids=["Net"])], 50)
+    wal = db + "-wal"
+    assert os.path.exists(wal) and os.path.getsize(wal) > 0
+    s.checkpoint_wal()
+    assert os.path.getsize(wal) == 0                   # TRUNCATE reset it to zero
+    s.close()
+
+
+def test_close_truncates_wal_so_next_open_is_clean(tmp_path):
+    import os
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, wal_checkpoint_s=0)
+    _poll(s, [_device()], 30)
+    s.close()
+    # Last connection closed after a checkpoint: SQLite removes the -wal sidecar.
+    assert not os.path.exists(db + "-wal") or os.path.getsize(db + "-wal") == 0
+
+
+def test_storage_stats_reports_footprint(tmp_path):
+    db = str(tmp_path / "entities.db")
+    s = EntityStore(db, wal_checkpoint_s=0)
+    _poll(s, [_device()], 8)
+    st = s.storage_stats()
+    assert st["db_bytes"] > 0
+    assert st["observation_rows"] == 8                 # rowid span, exact for append-only
+    s.close()
+
+
 def test_observation_position_null_without_fix():
     s = _store()
     s.record_poll([_device()], gps_fix=None, now=T0)

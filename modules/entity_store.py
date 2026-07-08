@@ -35,6 +35,22 @@ _DEFAULT_ENTITY_DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / 
 _DEFAULT_RETENTION_DAYS = int(os.getenv("ENTITY_OBSERVATION_RETENTION_DAYS", "30"))
 _DEFAULT_PRUNE_INTERVAL_S = int(os.getenv("ENTITY_PRUNE_INTERVAL_SECONDS", "3600"))
 
+# Hard ceiling on the observations table, independent of the age window. The
+# age-only retention above deletes nothing until a row is older than the window,
+# so on a busy node the file grows unchecked for the whole window first — that is
+# how entities.db reached 7.6 GB on an SD card and stalled the poll loop past the
+# systemd watchdog (2026-07). The row cap gives a real, near-term plateau: once
+# the table exceeds it, the oldest rows are pruned regardless of age. 0 disables
+# the cap (age-only). Read once at construction.
+_DEFAULT_MAX_OBS_ROWS = int(os.getenv("ENTITY_OBSERVATION_MAX_ROWS", "4000000"))
+
+# WAL-truncation cadence. WAL mode only auto-checkpoints in PASSIVE mode, which a
+# high-rate writer on slow storage perpetually starves — the WAL then grows without
+# bound (it reached ~1 GB alongside the 7.6 GB DB, and replaying it stalled every
+# open). A periodic TRUNCATE checkpoint takes the write lock, folds the WAL back
+# into the DB, and resets the WAL file to zero. 0 disables. Read once at construction.
+_DEFAULT_WAL_CHECKPOINT_S = int(os.getenv("ENTITY_WAL_CHECKPOINT_SECONDS", "300"))
+
 # AP-beacon capture + network-affinity recording. Pure capture (no scoring effect),
 # default on; set false to skip the beacon_evidence / network_affinity writes.
 _BEACON_CAPTURE_ENABLED = os.getenv("BEACON_CAPTURE_ENABLED", "true").strip().lower() != "false"
@@ -63,7 +79,9 @@ class EntityStore:
                  retention_days: Optional[int] = None,
                  prune_interval_s: Optional[int] = None,
                  prune_batch_rows: Optional[int] = None,
-                 prune_time_budget_s: Optional[float] = None) -> None:
+                 prune_time_budget_s: Optional[float] = None,
+                 max_observation_rows: Optional[int] = None,
+                 wal_checkpoint_s: Optional[int] = None) -> None:
         self._db_path = db_path or _DEFAULT_ENTITY_DB_PATH
         self._retention_days = (
             _DEFAULT_RETENTION_DAYS if retention_days is None else retention_days
@@ -71,6 +89,13 @@ class EntityStore:
         self._prune_interval_s = (
             _DEFAULT_PRUNE_INTERVAL_S if prune_interval_s is None else prune_interval_s
         )
+        self._max_obs_rows = max(0, int(
+            _DEFAULT_MAX_OBS_ROWS if max_observation_rows is None else max_observation_rows
+        ))
+        self._wal_checkpoint_s = max(0, int(
+            _DEFAULT_WAL_CHECKPOINT_S if wal_checkpoint_s is None else wal_checkpoint_s
+        ))
+        self._last_wal_checkpoint: Optional[datetime] = None
         # Retention-sweep bounds: rows per DELETE statement and wall-clock budget
         # per sweep. The sweep runs on the asyncio poll thread, so one sweep must
         # never be allowed to hold the loop for minutes (see prune_observations).
@@ -395,6 +420,7 @@ class EntityStore:
 
         self._conn.commit()
         self._maybe_prune(now)
+        self._maybe_checkpoint(now)
 
     def _upsert_beacon(self, cur, bssid: str, ssid: str, device: dict, ts: str) -> None:
         """Upsert one beaconing AP + advertised SSID, folding its RSSI into a running
@@ -431,52 +457,135 @@ class EntityStore:
     # ------------------------------------------------------------------
 
     def prune_observations(self, now: Optional[datetime] = None) -> int:
-        """Delete observation rows older than the retention window, in bounded
-        batches, and return the number removed this sweep.
+        """Delete observation rows past the retention window OR beyond the row
+        cap, in bounded batches, and return the number removed this sweep.
 
-        A retention of 0 or fewer days disables pruning (keeps history
-        forever). Timestamps are uniform UTC ISO strings, so a string
-        comparison against the cutoff is correct.
+        Two independent limits, both enforced here so neither can let the table
+        run away:
 
-        The delete is batched (``ENTITY_PRUNE_BATCH_ROWS`` per statement)
-        under a wall-clock budget (``ENTITY_PRUNE_TIME_BUDGET_S``), committed
-        per batch, because this runs on the asyncio poll thread: one unbounded
-        DELETE over a large backlog held the loop past systemd's watchdog and
+        * **Age** (``ENTITY_OBSERVATION_RETENTION_DAYS``, 0 = keep forever) —
+          rows older than the window. Timestamps are uniform UTC ISO strings, so
+          a string comparison against the cutoff is correct.
+        * **Size** (``ENTITY_OBSERVATION_MAX_ROWS``, 0 = uncapped) — the oldest
+          rows beyond the newest N. The age limit alone deletes nothing until a
+          row crosses the window, so on a busy node the file grows unchecked for
+          the whole window first; the cap gives a near-term plateau. Cheap to
+          target: observation rowids are monotonic (append-only insert), so the
+          newest N are ``rowid > MAX(rowid) - N`` with no COUNT scan.
+
+        The delete is batched (``ENTITY_PRUNE_BATCH_ROWS`` per statement) under a
+        shared wall-clock budget (``ENTITY_PRUNE_TIME_BUDGET_S``), committed per
+        batch, because this runs on the asyncio poll thread: one unbounded DELETE
+        over a large backlog held the loop past systemd's watchdog and
         crash-looped the node (2026-06, ~28M-row table) — and, as a single
         transaction, it rolled back on every kill, so no restart ever made
         progress. Batching caps the stall, and per-batch commits make each
-        sweep's progress durable; a backlog larger than one budget drains
-        across successive sweeps.
+        sweep's progress durable; a backlog larger than one budget drains across
+        successive sweeps.
         """
-        if self._retention_days <= 0:
-            return 0
         now = now or datetime.now(timezone.utc)
-        cutoff = _iso(now - timedelta(days=self._retention_days))
         deadline = time.monotonic() + self._prune_budget_s
+        total = 0
+
+        # Age-based: delete rows older than the retention window.
+        if self._retention_days > 0:
+            cutoff = _iso(now - timedelta(days=self._retention_days))
+            total += self._delete_batched(
+                "SELECT rowid FROM observations WHERE timestamp < ? LIMIT ?",
+                (cutoff,), deadline, reason="age")
+
+        # Size-based: delete the oldest rows beyond the newest _max_obs_rows.
+        if self._max_obs_rows > 0 and time.monotonic() < deadline:
+            top = self._conn.execute(
+                "SELECT MAX(rowid) FROM observations").fetchone()[0]
+            if top is not None:
+                floor_rowid = top - self._max_obs_rows
+                if floor_rowid > 0:
+                    total += self._delete_batched(
+                        "SELECT rowid FROM observations WHERE rowid <= ? LIMIT ?",
+                        (floor_rowid,), deadline, reason="cap")
+
+        if total:
+            self._reclaim_pages()
+            logger.info(
+                "EntityStore pruned %d observation(s) (retention=%dd, cap=%s rows)",
+                total, self._retention_days, self._max_obs_rows or "off")
+        return total
+
+    def _delete_batched(self, select_sql: str, params: tuple,
+                        deadline: float, *, reason: str) -> int:
+        """Delete the rows a SELECT picks, in ``_prune_batch_rows`` batches under a
+        shared time budget. ``select_sql`` must end in ``LIMIT ?`` — the batch size
+        is appended. Committed per batch so progress survives a mid-sweep kill. The
+        budget is checked *after* each batch, so a sweep always makes at least one
+        batch of progress even when it starts already over budget."""
         total = 0
         while True:
             cur = self._conn.execute(
-                "DELETE FROM observations WHERE rowid IN ("
-                "SELECT rowid FROM observations WHERE timestamp < ? LIMIT ?)",
-                (cutoff, self._prune_batch_rows),
+                f"DELETE FROM observations WHERE rowid IN ({select_sql})",
+                (*params, self._prune_batch_rows),
             )
             self._conn.commit()
             n = cur.rowcount or 0
             total += n
             if n < self._prune_batch_rows:
-                break  # backlog cleared
+                break  # backlog for this limit cleared
             if time.monotonic() >= deadline:
                 logger.info(
-                    "EntityStore prune: time budget (%.1fs) hit after %d row(s) "
-                    "— remaining backlog resumes next sweep",
-                    self._prune_budget_s, total,
-                )
+                    "EntityStore prune: time budget (%.1fs) hit during %s sweep "
+                    "after %d row(s) — remaining backlog resumes next sweep",
+                    self._prune_budget_s, reason, total)
                 break
-        if total:
-            self._reclaim_pages()
-            logger.info("EntityStore pruned %d observation(s) older than %d day(s)",
-                        total, self._retention_days)
         return total
+
+    def checkpoint_wal(self) -> None:
+        """Fold the WAL back into the DB and truncate it to zero. WAL mode only
+        auto-checkpoints in PASSIVE mode, which a busy writer on slow storage
+        starves indefinitely, letting the WAL grow without bound (~1 GB observed,
+        stalling every open). TRUNCATE takes the write lock and resets the file.
+        Guarded and bounded: on a healthy cadence the WAL is small, so this is
+        cheap; a checkpoint failure must never disturb capture."""
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        except sqlite3.Error as exc:  # pragma: no cover - defensive
+            logger.debug("EntityStore wal_checkpoint failed: %s", exc)
+
+    def _maybe_checkpoint(self, now: datetime) -> None:
+        """TRUNCATE-checkpoint the WAL at most once per checkpoint interval. Like
+        the prune sweep, the first eligible run is deferred one interval so it
+        never lands in the busy startup window."""
+        if self._wal_checkpoint_s <= 0:
+            return
+        if self._last_wal_checkpoint is None:
+            self._last_wal_checkpoint = now
+            return
+        if (now - self._last_wal_checkpoint).total_seconds() < self._wal_checkpoint_s:
+            return
+        self._last_wal_checkpoint = now
+        self.checkpoint_wal()
+
+    def storage_stats(self) -> dict:
+        """Cheap on-disk footprint for the health banner / a size guard: DB and
+        WAL bytes, plus an O(1) observation-row estimate (rowid span — exact for
+        an append-only table, an over-estimate only if rowids were ever reused).
+        All best-effort; a failure yields zeros rather than raising."""
+        stats = {"db_bytes": 0, "wal_bytes": 0, "observation_rows": 0}
+        try:
+            if self._db_path != ":memory:":
+                stats["db_bytes"] = os.path.getsize(self._db_path)
+                wal = self._db_path + "-wal"
+                if os.path.exists(wal):
+                    stats["wal_bytes"] = os.path.getsize(wal)
+        except OSError:  # pragma: no cover - defensive
+            pass
+        try:
+            row = self._conn.execute(
+                "SELECT MIN(rowid), MAX(rowid) FROM observations").fetchone()
+            if row and row[0] is not None:
+                stats["observation_rows"] = row[1] - row[0] + 1
+        except sqlite3.Error:  # pragma: no cover - defensive
+            pass
+        return stats
 
     def _reclaim_pages(self) -> None:
         """Hand a bounded number of freed pages back to the filesystem. A no-op
@@ -713,6 +822,9 @@ class EntityStore:
         ).fetchone()
 
     def close(self) -> None:
+        # Truncate the WAL on the way out so a large one can't persist to the next
+        # start, where replaying it stalls the first open (the 2026-07 failure).
+        self.checkpoint_wal()
         try:
             self._conn.close()
         except Exception as exc:  # pragma: no cover - defensive

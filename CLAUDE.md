@@ -217,11 +217,19 @@ Re-run the monitor mode commands after any NM restart.
 - **EntityStore** (`modules/entity_store.py`): durable SQLite. Written via
   `record_poll()` at the **poll site** in `SensorOrchestrator._poll_kismet`, so it
   records for **both** node modes (orthogonal to scoring). Per-device rows are real
-  upserts (flat for a stable device set); only `observations` grows by design and is
-  bounded by a **batched, WAL-backed** retention sweep (`ENTITY_OBSERVATION_RETENTION_DAYS`
-  default 30; 0 = keep forever; swept at most every `ENTITY_PRUNE_INTERVAL_SECONDS`
-  default 3600 — batched so a big backlog can't block the loop past the watchdog).
-  Guarded — a store failure never affects capture or detection.
+  upserts (flat for a stable device set); only `observations` grows by design. It is
+  bounded three ways so it can't reach the multi-GB size that stalls SQLite on the SD
+  card and crash-loops the node (the 2026-07 failure): a **batched** age sweep
+  (`ENTITY_OBSERVATION_RETENTION_DAYS` default 30, 0 = forever; every
+  `ENTITY_PRUNE_INTERVAL_SECONDS` default 3600) **plus a hard row cap**
+  (`ENTITY_OBSERVATION_MAX_ROWS` default 4M) that prunes the oldest rows regardless of
+  age — the age window alone deletes nothing for its whole span, so the cap is what
+  gives a near-term plateau — **plus a periodic WAL TRUNCATE checkpoint**
+  (`ENTITY_WAL_CHECKPOINT_SECONDS` default 300; PASSIVE auto-checkpoint gets starved on
+  a busy SD writer and the WAL grows unbounded otherwise). `close()` also truncates the
+  WAL so a large one can't persist to the next start. `storage_stats()` feeds the health
+  banner, which WARNs before the size is fatal. Guarded — a store failure never affects
+  capture or detection.
 - **P4 identity (display/identity only — never changes scoring), on branch
   `feat/contact-identity-tiers`:** the DISPLAY contact identity is separate from the
   scoring key. `device_identity.contact_identity()` returns a *strong* (rare distinctive
