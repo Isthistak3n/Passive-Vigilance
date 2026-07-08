@@ -210,6 +210,7 @@ __marimo__/
 
 # Passive-Vigilance project-specific
 data/ignore_lists/*.json
+data/oui/          # Wireshark manuf OUI database (~2 MB; bootstrap via scripts/fetch_oui.sh)
 data/
 logs/
 *.kismet
