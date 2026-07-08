@@ -631,6 +631,14 @@ class PassiveVigilance:
                 self.aircraft_registry.close()
             except Exception as exc:
                 logger.debug("aircraft registry close error: %s", exc)
+        if self.entity_store is not None:
+            try:
+                # Drains the off-loop writer (if enabled) and truncates the WAL, so
+                # queued observations are durable and no large WAL persists to the
+                # next start (where replaying it stalls the first open).
+                self.entity_store.close()
+            except Exception as exc:
+                logger.debug("entity store close error: %s", exc)
         if self.ble_scanner is not None:
             try:
                 await self.ble_scanner.close()
