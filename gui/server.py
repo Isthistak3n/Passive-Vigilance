@@ -20,10 +20,28 @@ from collections import deque
 from pathlib import Path
 from typing import Optional
 
+from modules.acars import reclassify as _reclassify_acars
+
 logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent
 _MAX_RECENT = 200
+
+
+def _reclassify_aircraft_acars(records: list) -> list:
+    """Return aircraft records with each embedded ACARS message re-classified, so
+    history parsed before the classifier still shows the human breakout. Copies rather
+    than mutating the live cache; fully guarded so a bad record can't fail the endpoint."""
+    out = []
+    for r in records:
+        try:
+            msgs = r.get("acars")
+            if isinstance(msgs, list) and msgs:
+                r = {**r, "acars": [_reclassify_acars(m) for m in msgs]}
+        except Exception:  # pragma: no cover - defensive
+            pass
+        out.append(r)
+    return out
 
 # Survey locality bands (metres from the FIXED node's reference position): within
 # IMMEDIATE = essentially where the node already sees it (not new); within
@@ -301,15 +319,15 @@ class GUIServer:
                     logger.debug("current_aircraft() failed: %s", exc)
             if hist is None:
                 if live:
-                    return jsonify(live)
+                    return jsonify(_reclassify_aircraft_acars(live))
                 with self._data_lock:
-                    return jsonify(list(self._recent_aircraft))
+                    return jsonify(_reclassify_aircraft_acars(list(self._recent_aircraft)))
             merged = {r["icao"]: r for r in hist if r.get("icao")}
             for r in live:                 # live record is fresher for a present plane
                 ic = r.get("icao")
                 if ic:
                     merged[ic] = r
-            return jsonify(list(merged.values()))
+            return jsonify(_reclassify_aircraft_acars(list(merged.values())))
 
         @app.route("/api/drone")
         def api_drone():
@@ -331,12 +349,13 @@ class GUIServer:
 
         @app.route("/api/acars")
         def api_acars():
-            # Disk-backed history (P5); discrete decoded messages, no dedup.
+            # Disk-backed history (P5); discrete decoded messages, no dedup. Re-classify
+            # so records decoded before the classifier show the same human breakout.
             hist = self._history("acars.jsonl", _HISTORY_LIMIT)
             if hist is not None:
-                return jsonify(hist)
+                return jsonify([_reclassify_acars(m) for m in hist])
             with self._data_lock:
-                return jsonify(list(self._recent_acars))
+                return jsonify([_reclassify_acars(m) for m in self._recent_acars])
 
         @app.route("/api/alerts")
         def api_alerts():

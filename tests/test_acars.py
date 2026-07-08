@@ -184,3 +184,62 @@ def test_incidental_on_in_not_misread_as_oooi():
 def test_label_name_known_and_fallback():
     assert _parsed(tail="N1", label="H1", text="x")["label_name"] == "Message / airline data"
     assert _parsed(tail="N1", label="ZZ", text="x")["label_name"] == "Airline / other"
+
+
+# ---------------------------------------------------------------------------
+# AOC position-report breakout (compact implied-decimal position + fix/time/level)
+# ---------------------------------------------------------------------------
+
+def test_compact_position_report_parses_and_breaks_out():
+    d = _parsed(tail="N57869", flight="UA0638", label="H1",
+                text="POSN21207W157466,CKH,073636,80,ALANA,074034,YEPGU,"
+                     "P14,06727,133,/TS073636,0707262BDD")
+    assert d["category"] == "Position report"
+    # implied-decimal degrees, NOT degree-minutes
+    assert abs(d["lat"] - 21.207) < 1e-6 and abs(d["lon"] + 157.466) < 1e-6
+    names = {f["name"]: f["value"] for f in d["fields"]}
+    assert names["Position"] == "N21.207, W157.466"
+    assert names["Over"] == "CKH at 07:36:36"
+    assert names["Flight level"] == "FL080"
+    assert names["Next"] == "ALANA · ETA 07:40:34"
+    assert names["Then"] == "YEPGU"
+    assert d["text"].startswith("POSN21207W157466")   # raw still intact
+
+
+def test_compact_position_with_subtype_prefix():
+    # "POSA1N..." — a 2-char report subtype sits before the hemisphere; and 157.701
+    # must read as decimal degrees (as minutes it would be an impossible 70.1').
+    d = _parsed(tail="N1", flight="AA0115", label="H1",
+                text="POSA1N21318W157701,GRITL  ,214315, 96,SELIC  ,215025,,10.43")
+    assert d["category"] == "Position report"
+    assert abs(d["lon"] + 157.701) < 1e-6
+    names = {f["name"]: f["value"] for f in d["fields"]}
+    assert names["Over"] == "GRITL at 21:43:15"
+    assert names["Flight level"] == "FL096"
+    assert names["Next"] == "SELIC · ETA 21:50:25"
+    assert "Then" not in names                          # trailing empty → degrades cleanly
+
+
+def test_compact_position_requires_pos_anchor():
+    # A bare digit run without the POS prefix must NOT be read as a position.
+    d = _parsed(tail="N2", label="H1", text="SEQ N21207W157466 COUNTER")
+    assert d["lat"] is None and d["category"] != "Position report"
+
+
+def test_reclassify_backfills_old_record_without_mutating_it():
+    from modules.acars import reclassify
+    # An old stored record: raw text + null position, no category (pre-classifier).
+    old = {"tail": "N1", "flight_id": "UA0638", "label": "H1", "lat": None, "lon": None,
+           "text": "POSN21207W157466,CKH,073636,80,ALANA,074034,YEPGU,P14"}
+    new = reclassify(old)
+    assert new["category"] == "Position report"
+    assert abs(new["lat"] - 21.207) < 1e-6
+    names = {f["name"]: f["value"] for f in new["fields"]}
+    assert names["Over"] == "CKH at 07:36:36" and names["Flight level"] == "FL080"
+    assert old.get("category") is None and old["lat"] is None   # original untouched
+
+
+def test_reclassify_is_idempotent():
+    from modules.acars import reclassify
+    rec = {"label": "H1", "text": "hello", "category": "Free text / other", "fields": []}
+    assert reclassify(rec) is rec                    # already classified → unchanged
