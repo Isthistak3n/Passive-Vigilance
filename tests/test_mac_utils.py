@@ -1,6 +1,7 @@
 """Unit tests for modules/mac_utils.py."""
 
 import unittest
+from unittest.mock import patch
 
 import modules.mac_utils  # noqa: F401 — ensure module importable
 
@@ -70,14 +71,31 @@ class TestNormalizeMac(unittest.TestCase):
 
 
 class TestGetRandomizationVendorHint(unittest.TestCase):
+    """Tests the branching contract of get_randomization_vendor_hint() itself:
+    randomized -> "Unknown" always; static -> delegates to get_manufacturer().
 
-    def test_returns_empty_for_static_mac(self):
-        self.assertEqual(get_randomization_vendor_hint(STATIC_MAC), "")
+    The static-MAC case is tested via a mocked get_manufacturer() rather than
+    relying on the real OUI database's absence/presence — data/oui/manuf is an
+    optional, separately-downloaded file (scripts/fetch_oui.sh); whether a given
+    prefix resolves depends on ambient machine state, not on this function's own
+    logic. See tests/test_oui_database.py for OUIDatabase's own lookup behavior.
+    """
 
-    def test_returns_nonempty_for_randomized_mac(self):
-        hint = get_randomization_vendor_hint(RAND_MAC_1)
-        self.assertIsInstance(hint, str)
-        self.assertGreater(len(hint), 0)
+    def test_static_mac_returns_whatever_get_manufacturer_resolves(self):
+        with patch("modules.mac_utils.get_manufacturer", return_value="Acme") as m:
+            self.assertEqual(get_randomization_vendor_hint(STATIC_MAC), "Acme")
+            m.assert_called_once_with(STATIC_MAC)
+
+    def test_static_mac_returns_empty_when_oui_database_has_no_match(self):
+        with patch("modules.mac_utils.get_manufacturer", return_value=""):
+            self.assertEqual(get_randomization_vendor_hint(STATIC_MAC), "")
+
+    def test_returns_unknown_for_randomized_mac_regardless_of_oui(self):
+        # Randomized MACs short-circuit to "Unknown" without consulting the OUI
+        # database at all — their OUI is meaningless by definition.
+        with patch("modules.mac_utils.get_manufacturer") as m:
+            self.assertEqual(get_randomization_vendor_hint(RAND_MAC_1), "Unknown")
+            m.assert_not_called()
 
 
 class TestGroupByFingerprint(unittest.TestCase):
