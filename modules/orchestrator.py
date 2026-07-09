@@ -19,7 +19,7 @@ from typing import Optional
 
 from modules import air_geometry, air_scoring, contact_designator, device_identity
 from modules.copresence import CoPresenceLinker
-from modules.mac_utils import get_mac_type, is_randomized_mac, normalize_mac
+from modules.mac_utils import get_manufacturer, get_mac_type, is_randomized_mac, normalize_mac
 from modules.sdr_manager import SDRMode
 from modules.survey_coordinator import SurveyCoordinator
 from modules.wifi_fingerprint import compute_pnl_fingerprint
@@ -847,6 +847,12 @@ class SensorOrchestrator:
         buffer is drained and merged into the device list in :meth:`_poll_kismet`.
         Carries the advert fields the unified fingerprint consumes (the BLE side
         of :mod:`modules.fixed_scoring`), plus a real RSSI as ``last_signal``.
+
+        BLE never goes through Kismet, so unlike WiFi it has no other manufacturer
+        source at all — the offline OUI lookup (:func:`get_manufacturer`) is it.
+        Most BLE addresses are randomized (locally administered), so this is
+        usually empty; it only resolves for a device advertising a real,
+        vendor-assigned static address.
         '''
         try:
             mac = normalize_mac(advert.address)
@@ -855,7 +861,7 @@ class SensorOrchestrator:
                 "type": "BTLE",
                 "phyname": "BTLE",
                 "name": advert.local_name or "",
-                "manuf": "",
+                "manuf": get_manufacturer(mac),
                 "last_signal": advert.rssi,
                 "mac_type": get_mac_type(mac),
                 "is_randomized": is_randomized_mac(mac),
