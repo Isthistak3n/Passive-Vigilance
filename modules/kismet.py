@@ -14,7 +14,7 @@ from typing import Optional
 import aiohttp
 from dotenv import load_dotenv
 
-from modules.mac_utils import get_mac_type, is_randomized_mac
+from modules.mac_utils import get_mac_type, is_randomized_mac, get_manufacturer
 
 load_dotenv()
 
@@ -255,11 +255,18 @@ class KismetModule:
 
             dev_type = entry.get("kismet.device.base.type", "")
             is_ap = _is_access_point(dev_type)
+            # Kismet's own vendor value wins when present (it may carry enrichment
+            # the OUI file lacks); fall back to our offline OUI lookup only when
+            # Kismet has nothing useful ("" or "Unknown"). Never overwrite a real value.
+            kismet_manuf = entry.get("kismet.device.base.manuf", "")
+            manufacturer = (kismet_manuf
+                            if kismet_manuf and kismet_manuf != "Unknown"
+                            else get_manufacturer(mac))
             record = {
                 "macaddr":      mac,
                 "type":         dev_type,
                 "name":         ssid,
-                "manuf":        entry.get("kismet.device.base.manuf", ""),
+                "manuf":        manufacturer,
                 "phyname":      entry.get("kismet.device.base.phyname", ""),
                 "first_time":   entry.get("kismet.device.base.first_time", 0),
                 "last_time":    last_time,
