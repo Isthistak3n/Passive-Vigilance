@@ -12,10 +12,14 @@ After=network.target
 # at that device index and let it run continuously instead.
 Type=simple
 # Decode VDL2 and emit JSON over UDP to the ACARSModule's localhost listener (:5555).
-# --rtlsdr 0 = the shared dongle; the channels cluster around the US VDL2 common
-# signalling channel 136.975 MHz, all inside one ~2 MHz tuner window. Tune --gain and
-# the channel list to your region/antenna.
-ExecStart=/usr/local/bin/dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5555 --rtlsdr 0 --gain 40 136650000 136725000 136775000 136975000
+# --rtlsdr 0 = the shared dongle. Single channel: the US VDL2 common signalling
+# channel 136.975 MHz. A single frequency puts the busiest channel dead-center in the
+# tuner passband — with a spanned channel list dumpvdl2 centers between them and
+# 136.975 lands at the weak passband edge. On this fixed inland site the decode
+# windows are short (aircraft visible <1 min), so max sensitivity on the one channel
+# most likely to carry a burst beats broader-but-weaker coverage. Add back
+# 136.650/136.725/136.775 at a higher-traffic site. Tune --gain to your antenna.
+ExecStart=/usr/local/bin/dumpvdl2 --output decoded:json:udp:address=127.0.0.1,port=5555 --rtlsdr 0 --gain 40 136975000
 Restart=no
 Nice=5
 
