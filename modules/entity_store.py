@@ -33,36 +33,15 @@ _DEFAULT_ENTITY_DB_PATH = str(Path(__file__).resolve().parent.parent / "data" / 
 
 # Observation history retention. Generous by default so cross-session entity
 # resolution has plenty to work with; set the days to 0 (or negative) to keep
-# history forever. Both are read once at construction.
-_DEFAULT_RETENTION_DAYS = int(os.getenv("ENTITY_OBSERVATION_RETENTION_DAYS", "30"))
-_DEFAULT_PRUNE_INTERVAL_S = int(os.getenv("ENTITY_PRUNE_INTERVAL_SECONDS", "3600"))
-
-# Hard ceiling on the observations table, independent of the age window. The
-# age-only retention above deletes nothing until a row is older than the window,
-# so on a busy node the file grows unchecked for the whole window first — that is
-# how entities.db reached 7.6 GB on an SD card and stalled the poll loop past the
-# systemd watchdog (2026-07). The row cap gives a real, near-term plateau: once
-# the table exceeds it, the oldest rows are pruned regardless of age. 0 disables
-# the cap (age-only). Read once at construction.
-_DEFAULT_MAX_OBS_ROWS = int(os.getenv("ENTITY_OBSERVATION_MAX_ROWS", "4000000"))
-
-# WAL-truncation cadence. WAL mode only auto-checkpoints in PASSIVE mode, which a
-# high-rate writer on slow storage perpetually starves — the WAL then grows without
-# bound (it reached ~1 GB alongside the 7.6 GB DB, and replaying it stalled every
-# open). A periodic TRUNCATE checkpoint takes the write lock, folds the WAL back
-# into the DB, and resets the WAL file to zero. 0 disables. Read once at construction.
-_DEFAULT_WAL_CHECKPOINT_S = int(os.getenv("ENTITY_WAL_CHECKPOINT_SECONDS", "300"))
-
-# Off-loop writer (experimental, default OFF). When enabled, record_poll enqueues the
-# poll to a dedicated writer thread with its OWN connection instead of writing on the
-# caller's (asyncio) thread — so even a multi-second SD fsync can't block the poll loop
-# past the watchdog. Reads stay on the main connection (WAL lets them proceed without
-# the writer's lock). Only meaningful for a file DB; ignored for ":memory:" (a second
-# connection there is a separate database). Bounded queue: under sustained backpressure
-# a poll's observations are dropped rather than blocking capture.
-_DEFAULT_ASYNC_WRITES = os.getenv("ENTITY_ASYNC_WRITES", "false").strip().lower() in (
-    "1", "true", "yes", "on")
-_DEFAULT_WRITE_QUEUE_MAX = int(os.getenv("ENTITY_WRITE_QUEUE_MAX", "240"))
+# history forever.
+#
+# NOTE: these env-derived defaults are read inside __init__, not as module-level
+# constants — a module-level `os.getenv()` is baked in once at *import* time, so its
+# value depends on whatever happened to already be in os.environ at that moment
+# (e.g. another test module's import-time `load_dotenv()` racing this one during
+# pytest collection). Reading at construction time instead makes every default here
+# consistent with the rest of the codebase's env-handling convention (see GPS_MIN_
+# QUALITY / GPS_MAX_HDOP in gps.py) and immune to import-order-dependent env leakage.
 
 # AP-beacon capture + network-affinity recording. Pure capture (no scoring effect),
 # default on; set false to skip the beacon_evidence / network_affinity writes.
@@ -98,17 +77,34 @@ class EntityStore:
                  async_writes: Optional[bool] = None,
                  write_queue_max: Optional[int] = None) -> None:
         self._db_path = db_path or _DEFAULT_ENTITY_DB_PATH
-        self._retention_days = (
-            _DEFAULT_RETENTION_DAYS if retention_days is None else retention_days
+        self._retention_days = int(
+            os.getenv("ENTITY_OBSERVATION_RETENTION_DAYS", "30")
+            if retention_days is None else retention_days
         )
-        self._prune_interval_s = (
-            _DEFAULT_PRUNE_INTERVAL_S if prune_interval_s is None else prune_interval_s
+        self._prune_interval_s = int(
+            os.getenv("ENTITY_PRUNE_INTERVAL_SECONDS", "3600")
+            if prune_interval_s is None else prune_interval_s
         )
+        # Hard ceiling on the observations table, independent of the age window. The
+        # age-only retention above deletes nothing until a row is older than the
+        # window, so on a busy node the file grows unchecked for the whole window
+        # first — that is how entities.db reached 7.6 GB on an SD card and stalled
+        # the poll loop past the systemd watchdog (2026-07). The row cap gives a
+        # real, near-term plateau: once the table exceeds it, the oldest rows are
+        # pruned regardless of age. 0 disables the cap (age-only).
         self._max_obs_rows = max(0, int(
-            _DEFAULT_MAX_OBS_ROWS if max_observation_rows is None else max_observation_rows
+            os.getenv("ENTITY_OBSERVATION_MAX_ROWS", "4000000")
+            if max_observation_rows is None else max_observation_rows
         ))
+        # WAL-truncation cadence. WAL mode only auto-checkpoints in PASSIVE mode,
+        # which a high-rate writer on slow storage perpetually starves — the WAL
+        # then grows without bound (it reached ~1 GB alongside the 7.6 GB DB, and
+        # replaying it stalled every open). A periodic TRUNCATE checkpoint takes
+        # the write lock, folds the WAL back into the DB, and resets the WAL file
+        # to zero. 0 disables.
         self._wal_checkpoint_s = max(0, int(
-            _DEFAULT_WAL_CHECKPOINT_S if wal_checkpoint_s is None else wal_checkpoint_s
+            os.getenv("ENTITY_WAL_CHECKPOINT_SECONDS", "300")
+            if wal_checkpoint_s is None else wal_checkpoint_s
         ))
         self._last_wal_checkpoint: Optional[datetime] = None
         # Retention-sweep bounds: rows per DELETE statement and wall-clock budget
@@ -128,12 +124,25 @@ class EntityStore:
         self._apply_pragmas(self._conn)
         self._create_schema()
 
-        # Off-loop writer (default off; file DBs only). Its own connection is created
-        # on the writer thread so SQLite's per-thread ownership holds.
-        want_async = _DEFAULT_ASYNC_WRITES if async_writes is None else async_writes
+        # Off-loop writer (experimental, default OFF). When enabled, record_poll
+        # enqueues the poll to a dedicated writer thread with its OWN connection
+        # instead of writing on the caller's (asyncio) thread — so even a multi-
+        # second SD fsync can't block the poll loop past the watchdog. Reads stay
+        # on the main connection (WAL lets them proceed without the writer's
+        # lock). Only meaningful for a file DB; ignored for ":memory:" (a second
+        # connection there is a separate database). Bounded queue: under sustained
+        # backpressure a poll's observations are dropped rather than blocking
+        # capture. Its own connection is created on the writer thread so SQLite's
+        # per-thread ownership holds.
+        if async_writes is None:
+            want_async = os.getenv("ENTITY_ASYNC_WRITES", "false").strip().lower() in (
+                "1", "true", "yes", "on")
+        else:
+            want_async = async_writes
         self._async_writes = bool(want_async) and self._db_path != ":memory:"
         self._write_queue_max = max(1, int(
-            _DEFAULT_WRITE_QUEUE_MAX if write_queue_max is None else write_queue_max))
+            os.getenv("ENTITY_WRITE_QUEUE_MAX", "240")
+            if write_queue_max is None else write_queue_max))
         self._writer_thread: Optional[threading.Thread] = None
         self._writer_conn: Optional[sqlite3.Connection] = None
         self._write_q: "Optional[queue.Queue]" = None
