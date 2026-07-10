@@ -71,6 +71,34 @@ def _label(device: dict, ssids: list[str], name: str) -> str:
     return device.get("type") or "Wi-Fi"
 
 
+# WPS attribute keys that carry stable per-AP identity, most→least discriminating.
+# A serial number is (meant to be) device-unique; model/manufacturer narrow the
+# make. device_name is often user-set ("Roku Ultra - Bru-NT5") and a strong label,
+# but it can be renamed, so it anchors the label rather than the identity hash.
+_WPS_IDENTITY_KEYS = ("serial", "model_number", "model", "manuf")
+
+
+def compute_ap_wps_fingerprint(wps: dict) -> str:
+    """Stable ``wps-fp:`` identity for a beaconing AP built from its WPS device
+    attributes (manufacturer / model / model number / serial), or ``""`` when the AP
+    advertises no usable WPS identity.
+
+    APs don't randomize their MAC, so this isn't randomization resistance — it is a
+    *hardware* identity: it survives an AP changing its BSSID or SSID, and it tells
+    two APs that share one SSID apart (the basis for spotting an evil-twin AP that
+    clones an SSID but is a different physical device). Requires at least a serial or
+    a model so a bare manufacturer (every "Technicolor" AP) can't fuse distinct APs —
+    the same over-merge guard the client fingerprints use."""
+    if not isinstance(wps, dict):
+        return ""
+    parts = {k: str(wps.get(k, "")).strip() for k in _WPS_IDENTITY_KEYS}
+    # Need a real discriminator beyond the manufacturer alone.
+    if not (parts["serial"] or parts["model_number"] or parts["model"]):
+        return ""
+    canonical = "|".join(f"{k}:{parts[k]}" for k in _WPS_IDENTITY_KEYS)
+    return "wps-fp:" + hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
+
+
 def anchored_identity_key(probe_fp, anchor: str) -> str:
     """The ``wifi-fp:`` key for an IE-set hash anchored on a probed SSID.
 

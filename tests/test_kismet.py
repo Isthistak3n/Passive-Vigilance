@@ -265,10 +265,14 @@ def _rec(ssid):
             "dot11.probedssid.first_time": 1700000000, "dot11.probedssid.last_time": 1700000060}
 
 
-def _ap_device(ssid="HomeWiFi", channel="6", mac="ff:ee:dd:cc:bb:aa"):
+def _ap_device(ssid="HomeWiFi", channel="6", mac="ff:ee:dd:cc:bb:aa", wps=None):
     """A beaconing AP. Kismet carries the beaconed SSID in base.name (the nested
-    advertisedssid.ssid field returns a placeholder, confirmed against the live API)."""
-    return {
+    advertisedssid.ssid field returns a placeholder, confirmed against the live API).
+
+    ``wps`` is an optional dict of WPS leaf-short names (manuf/model/model_number/
+    serial/device_name) -> value, embedded in an advertised-SSID record the way the
+    live daemon returns them (leaf keys dot11.advertisedssid.wps_*)."""
+    dev = {
         "kismet.device.base.macaddr": mac,
         "kismet.device.base.type": "Wi-Fi AP",
         "kismet.device.base.name": ssid,
@@ -279,6 +283,17 @@ def _ap_device(ssid="HomeWiFi", channel="6", mac="ff:ee:dd:cc:bb:aa"):
         "kismet.common.signal.last_signal": -42,
         "kismet.device.base.channel": channel,
     }
+    if wps is not None:
+        leaf = {"manuf": "dot11.advertisedssid.wps_manuf",
+                "model": "dot11.advertisedssid.wps_model_name",
+                "model_number": "dot11.advertisedssid.wps_model_number",
+                "serial": "dot11.advertisedssid.wps_serial_number",
+                "device_name": "dot11.advertisedssid.wps_device_name"}
+        rec = {"dot11.advertisedssid.ssid": ssid, "dot11.advertisedssid.wps_version": 16}
+        for k, v in wps.items():
+            rec[leaf[k]] = v
+        dev["dot11.device.advertised_ssid_map"] = [rec]
+    return dev
 
 
 class TestKismetProbeExtraction(unittest.TestCase):
@@ -345,6 +360,37 @@ class TestKismetProbeExtraction(unittest.TestCase):
         r = self._poll(MockSession, [_probe_device([_rec("HomeWiFi")])])[0]
         self.assertFalse(r["is_ap"])
         self.assertEqual(r["beaconed_ssid"], "")
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_ap_wps_identity_extracted_and_fingerprinted(self, MockSession):
+        wps = {"manuf": "Technicolor", "model": "TC8717T",
+               "model_number": "123456", "serial": "0000001",
+               "device_name": "TechnicolorAP"}
+        r = self._poll(MockSession, [_ap_device(ssid="Net", wps=wps)])[0]
+        self.assertEqual(r["wps"]["manuf"], "Technicolor")
+        self.assertEqual(r["wps"]["serial"], "0000001")
+        self.assertEqual(r["wps"]["device_name"], "TechnicolorAP")
+        self.assertTrue(r["wps_fingerprint"].startswith("wps-fp:"))
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_ap_without_wps_has_empty_identity(self, MockSession):
+        r = self._poll(MockSession, [_ap_device(ssid="Net")])[0]
+        self.assertEqual(r["wps"], {})
+        self.assertEqual(r["wps_fingerprint"], "")
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_ap_with_only_manufacturer_wps_gets_no_fingerprint(self, MockSession):
+        # Bare manufacturer can't discriminate distinct APs -> no fingerprint (but the
+        # attribute is still captured for the label).
+        r = self._poll(MockSession, [_ap_device(ssid="Net", wps={"manuf": "Technicolor"})])[0]
+        self.assertEqual(r["wps"]["manuf"], "Technicolor")
+        self.assertEqual(r["wps_fingerprint"], "")
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_client_never_gets_wps(self, MockSession):
+        r = self._poll(MockSession, [_probe_device([_rec("HomeWiFi")])])[0]
+        self.assertEqual(r["wps"], {})
+        self.assertEqual(r["wps_fingerprint"], "")
 
     @patch("modules.kismet.aiohttp.ClientSession")
     def test_fingerprint_and_count_read_as_integers(self, MockSession):

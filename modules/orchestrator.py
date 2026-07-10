@@ -290,6 +290,11 @@ class SensorOrchestrator:
                 fixture_fraction=float(os.getenv("COPRESENCE_FIXTURE_FRACTION", "0.5")),
                 min_obs_polls=int(os.getenv("COPRESENCE_MIN_OBS_POLLS", "6")),
                 min_fixture_polls=int(os.getenv("COPRESENCE_MIN_FIXTURE_POLLS", "30")),
+                rssi_gate=os.getenv("COPRESENCE_RSSI_GATE", "true").strip().lower()
+                != "false",
+                min_rssi_corr=float(os.getenv("COPRESENCE_MIN_RSSI_CORR", "0.2")),
+                min_corr_samples=int(os.getenv("COPRESENCE_MIN_CORR_SAMPLES", "10")),
+                min_rssi_std=float(os.getenv("COPRESENCE_MIN_RSSI_STD", "2.0")),
             )
             try:
                 self._copresence_linker.load_prior_links(entity_store.known_links())
@@ -1108,20 +1113,32 @@ class SensorOrchestrator:
             return "visitor" if sb.get("novelty") else "resident"
         return "unknown"
 
-    def _update_copresence(self, present_keys: set, now: datetime) -> None:
-        '''Feed this poll's present MOBILE contact identities to the linker, refresh
-        the person clusters, and durably persist any newly-established link (once).
-        Runs once per Kismet poll, after the per-device loop — off the per-device
-        hot path, and bounded inside the linker.'''
+    def _update_copresence(self, present_keys: set, now: datetime,
+                           signals: Optional[dict] = None) -> None:
+        '''Feed this poll's present MOBILE contact identities (and their signals) to
+        the linker, refresh the person clusters, and durably persist any newly-
+        established link (once). Runs once per Kismet poll, after the per-device loop
+        — off the per-device hot path, and bounded inside the linker.'''
         linker = self._copresence_linker
         if linker is None:
             return
         try:
-            linker.observe(present_keys)
+            linker.observe(present_keys, signals=signals)
             self._person_of = linker.clusters()
         except Exception as exc:
             logger.debug("co-presence update failed: %s", exc)
             return
+        # Surface the signal-motion gate's effect for the overnight watch: a periodic
+        # INFO line the watch can grep (throttled so it doesn't spam the journal).
+        self._copresence_poll_n = getattr(self, "_copresence_poll_n", 0) + 1
+        if self._copresence_poll_n % 20 == 0:
+            snap = getattr(linker, "gate_snapshot", None)
+            if snap:
+                logger.info(
+                    "CoPresence RSSI-gate: %d confirmed, %d vetoed, %d abstained "
+                    "| persons=%d",
+                    snap.get("confirmed", 0), snap.get("vetoed", 0),
+                    snap.get("abstained", 0), len(set(self._person_of.values())))
         # person sizes for the GUI
         sizes: dict = {}
         for pid in self._person_of.values():
@@ -1280,6 +1297,7 @@ class SensorOrchestrator:
             return
         dev_by_mac = {d.get("macaddr"): d for d in devices}
         present_mobile_keys: set = set()
+        present_mobile_signals: dict = {}   # contact_key -> strongest RSSI this poll
         for event in detection_events:
             self._stats["persistent_detections"] += 1
             device = dev_by_mac.get(event.mac)
@@ -1298,6 +1316,13 @@ class SensorOrchestrator:
             belongs = self._resident_status(is_mobile, enriched, event.score_breakdown)
             if is_mobile and contact_key and not contact_key.startswith("mac:"):
                 present_mobile_keys.add(contact_key)
+                # Strongest reading wins when a fingerprint has >1 MAC present this
+                # poll — one signal sample per identity feeds the motion correlation.
+                sig = device.get("last_signal") if device else None
+                if sig not in (None, 0):
+                    prev = present_mobile_signals.get(contact_key)
+                    present_mobile_signals[contact_key] = (
+                        sig if prev is None else max(prev, sig))
             person_id = self._person_of.get(contact_key)
             person_size = self._person_size.get(person_id, 0) if person_id else 0
             self._maybe_alert_visitor(contact_key, belongs, event.observation_count, contact)
@@ -1412,7 +1437,8 @@ class SensorOrchestrator:
         # After the per-device loop: fold this poll's present mobile radios into the
         # co-presence linker and refresh the person clusters (bounded, off the hot
         # path). Person ids attach to events on the next poll.
-        self._update_copresence(present_mobile_keys, datetime.now(timezone.utc))
+        self._update_copresence(present_mobile_keys, datetime.now(timezone.utc),
+                                signals=present_mobile_signals)
         self._write_session_summary()
 
     async def _poll_drone_rf(self) -> None:

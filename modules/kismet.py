@@ -15,6 +15,7 @@ import aiohttp
 from dotenv import load_dotenv
 
 from modules.mac_utils import get_mac_type, is_randomized_mac, get_manufacturer
+from modules.wifi_fingerprint import compute_ap_wps_fingerprint
 
 load_dotenv()
 
@@ -44,7 +45,21 @@ _DEVICE_FIELDS = [
     # kismet.device.base.name (the nested last_beaconed_ssid_record/advertisedssid.ssid
     # field returns a placeholder 0, not the string — confirmed against the live API).
     "kismet.device.base.channel",
+    # AP-side WPS device attributes (manufacturer/model/serial/name), nested in the
+    # advertised-SSID records. Verified against the live daemon: WPS is emitted only
+    # by APs here (0 clients), leaf keys are dot11.advertisedssid.wps_*.
+    "dot11.device/dot11.device.advertised_ssid_map",
 ]
+
+# WPS leaf field -> our short record key. Only the identity-bearing attributes;
+# wps_state/version/config_methods are protocol status, not identity.
+_WPS_FIELD_MAP = {
+    "dot11.advertisedssid.wps_manuf":        "manuf",
+    "dot11.advertisedssid.wps_model_name":   "model",
+    "dot11.advertisedssid.wps_model_number": "model_number",
+    "dot11.advertisedssid.wps_serial_number": "serial",
+    "dot11.advertisedssid.wps_device_name":  "device_name",
+}
 
 
 def _is_access_point(device_type) -> bool:
@@ -76,6 +91,30 @@ def _extract_probe_ssids(probed_map) -> list:
         seen.add(ssid)
         ssids.append(ssid)
     return ssids
+
+
+def _extract_wps_identity(advertised_map) -> dict:
+    """Pull an AP's stable WPS identity attributes (manufacturer/model/model
+    number/serial/device name) out of its ``advertised_ssid_map``.
+
+    Each record is one advertised SSID; WPS attributes hang off it under the
+    ``dot11.advertisedssid.wps_*`` leaf keys (verified live). Returns the first
+    non-empty value seen per attribute across the AP's advertised SSIDs, as a dict
+    keyed by our short names. Placeholder ``0`` / empty values are ignored. A missing
+    or non-list value yields ``{}``."""
+    out: dict = {}
+    if not isinstance(advertised_map, list):
+        return out
+    for rec in advertised_map:
+        if not isinstance(rec, dict):
+            continue
+        for leaf, short in _WPS_FIELD_MAP.items():
+            if short in out:
+                continue
+            val = rec.get(leaf)
+            if isinstance(val, str) and val.strip():
+                out[short] = val.strip()
+    return out
 
 
 class KismetModule:
@@ -262,6 +301,11 @@ class KismetModule:
             manufacturer = (kismet_manuf
                             if kismet_manuf and kismet_manuf != "Unknown"
                             else get_manufacturer(mac))
+            # AP-side WPS device identity (manufacturer/model/serial/name) + a stable
+            # per-AP fingerprint. Only APs advertise it; a client yields {} / "".
+            wps = _extract_wps_identity(
+                entry.get("dot11.device.advertised_ssid_map")) if is_ap else {}
+            wps_fp = compute_ap_wps_fingerprint(wps) if wps else ""
             record = {
                 "macaddr":      mac,
                 "type":         dev_type,
@@ -284,6 +328,9 @@ class KismetModule:
                 "is_ap":         is_ap,
                 "beaconed_ssid": ssid if (is_ap and ssid and ssid != mac) else "",
                 "beacon_channel": entry.get("kismet.device.base.channel") if is_ap else None,
+                # AP hardware identity from WPS (empty for clients / WPS-silent APs).
+                "wps":           wps,
+                "wps_fingerprint": wps_fp,
                 "gps_lat":      gps_fix["lat"]  if gps_fix else None,
                 "gps_lon":      gps_fix["lon"]  if gps_fix else None,
                 "gps_utc":      gps_fix["utc"]  if gps_fix else None,

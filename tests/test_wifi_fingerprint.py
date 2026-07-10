@@ -2,6 +2,7 @@
 import unittest
 
 from modules.wifi_fingerprint import (
+    compute_ap_wps_fingerprint,
     compute_identity_key,
     compute_pnl_fingerprint,
     compute_wifi_fingerprint,
@@ -140,6 +141,36 @@ class TestIdentityKey(unittest.TestCase):
         a = compute_identity_key({"probe_fingerprint": 123, "fp_anchor": "HomeA"})
         b = compute_identity_key({"probe_fingerprint": 123, "fp_anchor": "HomeB"})
         self.assertNotEqual(a.key, b.key)
+
+
+class TestApWpsFingerprint(unittest.TestCase):
+    def test_serial_yields_stable_fingerprint(self):
+        w = {"manuf": "Technicolor", "model": "TC8717T", "serial": "0000001"}
+        fp = compute_ap_wps_fingerprint(w)
+        self.assertTrue(fp.startswith("wps-fp:"))
+        self.assertEqual(fp, compute_ap_wps_fingerprint(dict(w)))   # deterministic
+
+    def test_bare_manufacturer_gives_no_fingerprint(self):
+        # Every Technicolor AP shares the manufacturer — it must not fuse them.
+        self.assertEqual(compute_ap_wps_fingerprint({"manuf": "Technicolor"}), "")
+
+    def test_model_alone_is_enough(self):
+        self.assertTrue(compute_ap_wps_fingerprint({"model": "TC8717T"}).startswith("wps-fp:"))
+
+    def test_distinct_serials_distinct_fingerprints(self):
+        a = compute_ap_wps_fingerprint({"manuf": "X", "model": "M", "serial": "1"})
+        b = compute_ap_wps_fingerprint({"manuf": "X", "model": "M", "serial": "2"})
+        self.assertNotEqual(a, b)
+
+    def test_empty_and_non_dict_yield_empty(self):
+        self.assertEqual(compute_ap_wps_fingerprint({}), "")
+        self.assertEqual(compute_ap_wps_fingerprint(None), "")
+
+    def test_device_name_does_not_affect_identity_hash(self):
+        # device_name is a (renamable) label, not part of the identity hash.
+        a = compute_ap_wps_fingerprint({"model": "M", "serial": "1", "device_name": "Living Room"})
+        b = compute_ap_wps_fingerprint({"model": "M", "serial": "1", "device_name": "Bedroom"})
+        self.assertEqual(a, b)
 
 
 if __name__ == "__main__":
