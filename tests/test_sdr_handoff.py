@@ -357,6 +357,38 @@ async def test_failed_acquire_resets_owner_and_allows_readsb_retry():
     assert c.healthy is True
 
 
+@pytest.mark.asyncio
+async def test_failed_release_defers_handoff_instead_of_acquiring_new_owner():
+    """#214: an AIS/ACARS decoder that outlives its slice must not be silently
+    treated as released. If release() reports the dongle is still held, the
+    coordinator must NOT acquire the new band (that's exactly how readsb ended up
+    crash-looping on "Device or resource busy" for hours) — it stays parked on the
+    still-active owner and reports unhealthy, instead of lying that ADS-B owns a
+    dongle ais-catcher still has open."""
+    c = SDRCoordinator(cycle_slices=[("adsb", 800), ("ais", 60)])
+    ais = _fake_owner("ais")
+    c.register_owner(ais)
+    c._handoff_settle = 0
+
+    with patch.object(c, "_start_readsb_with_handshake", AsyncMock(return_value=True)):
+        await c._handoff_to("adsb")
+    assert c.current_owner == "adsb"
+
+    with patch.object(c, "_stop_readsb_with_handshake", AsyncMock(return_value=True)):
+        await c._handoff_to("ais")                  # ais acquired, current_owner=ais
+    assert c.current_owner == "ais"
+
+    # AIS overstays its slice: release() reports the dongle is still active.
+    ais.release = AsyncMock(return_value=False)
+    adsb_start = AsyncMock(return_value=True)
+    with patch.object(c, "_start_readsb_with_handshake", adsb_start):
+        await c._handoff_to("adsb")
+
+    adsb_start.assert_not_awaited()                  # never raced onto the busy device
+    assert c.current_owner == "ais"                  # honest — dongle is still ais's
+    assert c.healthy is False
+
+
 def test_parse_slices_drops_non_positive():
     with patch.dict(os.environ, {
         "SDR_CYCLE_SLICES": "adsb:600,ais:0,acars:-5",
