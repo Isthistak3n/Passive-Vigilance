@@ -1936,6 +1936,27 @@ def test_ble_advert_buffered_as_btle_device(orch):
     assert d["macaddr"] == "c2:aa:bb:cc:dd:ee"
 
 
+def test_ble_advert_resolves_manufacturer_via_offline_oui_lookup(orch):
+    # BLE never goes through Kismet, so the offline OUI database is its only
+    # manufacturer source (mirrors the kismet.py fallback pattern for WiFi).
+    so = orch.sensor_orchestrator
+    with patch("modules.orchestrator.get_manufacturer", return_value="Acme") as m:
+        so._on_ble_advert(_advert("00:11:22:33:44:55"))
+        m.assert_called_once_with("00:11:22:33:44:55")
+    devices = so._drain_ble_adverts()
+    assert devices[0]["manuf"] == "Acme"
+
+
+def test_ble_advert_manufacturer_empty_when_oui_unresolved(orch):
+    # A randomized (or otherwise unresolvable) address yields no vendor, same as
+    # get_manufacturer()'s normal behavior — proven separately in test_oui_database.py.
+    so = orch.sensor_orchestrator
+    with patch("modules.orchestrator.get_manufacturer", return_value=""):
+        so._on_ble_advert(_advert("c2:aa:bb:cc:dd:ee"))
+    devices = so._drain_ble_adverts()
+    assert devices[0]["manuf"] == ""
+
+
 def test_drain_clears_buffer(orch):
     so = orch.sensor_orchestrator
     so._on_ble_advert(_advert("c2:aa:bb:cc:dd:ee"))
