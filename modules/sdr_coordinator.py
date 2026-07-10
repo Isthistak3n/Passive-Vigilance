@@ -38,7 +38,8 @@ _SLICE_TICK_SECONDS = 1.0
 
 class _BandOwner:
     """Duck-typed band: ``name``, ``async acquire()`` (open the dongle for this
-    band, return True on success), ``async release()`` (free it), and
+    band, return True on success), ``async release()`` (free it, return True only
+    once the dongle is *confirmed* free — see ``_handoff_to``), and
     ``is_available`` (False → the cycle skips this band's slice, e.g. an
     auto-disabled scanner or a decoder whose service isn't installed)."""
 
@@ -51,8 +52,8 @@ class _BandOwner:
     async def acquire(self) -> bool:  # pragma: no cover - interface
         return True
 
-    async def release(self) -> None:  # pragma: no cover - interface
-        return None
+    async def release(self) -> bool:  # pragma: no cover - interface
+        return True
 
 
 class _ReadsbOwner(_BandOwner):
@@ -66,8 +67,8 @@ class _ReadsbOwner(_BandOwner):
     async def acquire(self) -> bool:
         return await self._c._start_readsb_with_handshake()
 
-    async def release(self) -> None:
-        await self._c._stop_readsb_with_handshake()
+    async def release(self) -> bool:
+        return await self._c._stop_readsb_with_handshake()
 
 
 class _DecoderServiceOwner(_BandOwner):
@@ -94,10 +95,10 @@ class _DecoderServiceOwner(_BandOwner):
             self._module.can_scan = bool(ok)
         return ok
 
-    async def release(self) -> None:
+    async def release(self) -> bool:
         if self._module is not None:
             self._module.can_scan = False
-        await self._c._stop_service_with_handshake(self._service)
+        return await self._c._stop_service_with_handshake(self._service)
 
 
 class _DroneRFOwner(_BandOwner):
@@ -117,11 +118,12 @@ class _DroneRFOwner(_BandOwner):
         await self._module.start_scan()
         return True
 
-    async def release(self) -> None:
+    async def release(self) -> bool:
         self._module.can_scan = False
         task = getattr(self._module, "_scan_task", None)
         if task is not None and not task.done():
             await self._module.stop_scan()
+        return True
 
 
 class SDRCoordinator:
@@ -343,9 +345,26 @@ class SDRCoordinator:
             current = self._owners.get(self._current_owner)
             if current is not None and current is not owner:
                 try:
-                    await current.release()
+                    released = await current.release()
                 except Exception as exc:
+                    released = False
                     logger.warning("SDR release of %s failed: %s", current.name, exc)
+                if not released:
+                    # #214: the previous owner (e.g. an AIS/ACARS decoder that
+                    # outlived its slice) is still confirmed holding the dongle.
+                    # Acquiring the new band here is exactly how readsb ended up
+                    # crash-looping on "Device or resource busy" for hours — the
+                    # coordinator believed ADS-B owned the dongle while ais-catcher
+                    # still had it open. Stay parked on the still-active owner
+                    # (current_owner unchanged — stay honest for the health
+                    # banner) and let the next time this band comes up in the
+                    # cycle retry the release, instead of racing a new acquire
+                    # onto a device that isn't actually free yet.
+                    self._healthy = False
+                    logger.warning(
+                        "SDR handoff to %s deferred — %s has not released the dongle",
+                        band, current.name)
+                    return
             await self._settle_sdr()
             try:
                 ok = await owner.acquire()
@@ -388,8 +407,10 @@ class SDRCoordinator:
             if not await self._is_readsb_active():
                 return True
             await asyncio.sleep(0.5)
-        logger.debug("readsb stop handshake could not confirm inactive state (CI/test env?) — assuming success")
-        return True
+        logger.warning(
+            "readsb stop handshake could not confirm inactive state after %d attempts",
+            max_attempts)
+        return False
 
     async def _is_readsb_active(self) -> bool:
         return await self._is_service_active(_READSB_SERVICE)
@@ -425,8 +446,17 @@ class SDRCoordinator:
             if not await self._is_service_active(service):
                 return True
             await asyncio.sleep(0.5)
-        logger.debug("%s stop handshake unconfirmed (CI/test env?) — assuming success", service)
-        return True
+        # #214: the old behaviour here logged a debug line and *returned True
+        # anyway* ("assuming success"), even though systemd still reports the unit
+        # active. The coordinator then handed the dongle to the next owner while
+        # the decoder genuinely still held it open — readsb crash-looped on
+        # "Device or resource busy" for hours because nothing was actually wrong
+        # from the coordinator's point of view. Reporting the truth here lets
+        # _handoff_to (below) refuse to hand off and keep retrying instead.
+        logger.warning(
+            "%s did not stop after %d graceful attempts — still active, SDR not released",
+            service, max_attempts)
+        return False
 
     async def _is_service_active(self, service: str) -> bool:
         loop = asyncio.get_running_loop()
