@@ -131,3 +131,89 @@ def test_pair_table_bounded():
     for i in range(40):
         lk.observe({f"wifi-fp:{i}", f"ble-fp:{i}"})
     assert len(lk._copresent) <= 10
+
+
+# ---------------------------------------------------------------------------
+# Signal-motion correlation gate (#1)
+# ---------------------------------------------------------------------------
+
+A, B = "wifi-fp:a", "ble-fp:b"
+# A varied signal walk (std well above the 2 dB floor) and a copy offset by a
+# constant — perfectly correlated (they move together, like one person's radios).
+_WALK = [-70, -55, -48, -62, -75, -50, -44, -66, -58, -47,
+         -72, -53, -46, -64, -73, -51, -45, -67, -59, -49]
+_TOGETHER = [s - 5 for s in _WALK]              # r = +1
+_OPPOSITE = [-120 - s for s in _WALK]           # mirror image -> r = -1
+
+
+def _visit_signals(lk, key_sig: dict, start, length, total):
+    """Run *total* polls; the keys in *key_sig* are present for polls
+    [start, start+length) each carrying that poll's signal from their list."""
+    for i in range(total):
+        if start <= i < start + length:
+            j = i - start
+            lk.observe(set(key_sig), signals={k: v[j] for k, v in key_sig.items()})
+        else:
+            lk.observe(set())
+
+
+def test_gate_confirms_pair_that_moves_together():
+    """Two radios whose signals rise and fall together link, and the gate records
+    the confirmation. The visit sits in the first polls so the pair accumulates
+    while the fixture gate is still dormant (total < min_fixture_polls)."""
+    lk = _linker(min_polls=5, min_fixture_polls=20, min_corr_samples=10)
+    _visit_signals(lk, {A: _WALK, B: _TOGETHER}, start=0, length=19, total=40)
+    links = lk.established_links()
+    assert len(links) == 1 and {links[0][0], links[0][1]} == {A, B}
+    assert lk.gate_snapshot["confirmed"] == 1
+    r, _sa, _sb, n = lk.rssi_correlation(A, B)
+    assert n == 19 and r > 0.99
+
+
+def test_gate_vetoes_co_present_pair_that_moves_independently():
+    """Two radios that co-occur but whose signals move oppositely are NOT linked —
+    the case presence/Jaccard alone would wrongly merge."""
+    lk = _linker(min_polls=5, min_fixture_polls=20, min_corr_samples=10)
+    _visit_signals(lk, {A: _WALK, B: _OPPOSITE}, start=0, length=19, total=40)
+    assert lk.established_links() == []
+    assert lk.gate_snapshot["vetoed"] == 1
+    assert lk.clusters() == {}
+
+
+def test_gate_abstains_for_stationary_flat_signals():
+    """A still pair (both signals flat, no motion evidence) is judged by presence/
+    Jaccard alone — the gate must NOT veto it for failing to move."""
+    lk = _linker(min_polls=5, min_fixture_polls=20, min_corr_samples=10)
+    flat = [-60] * 19
+    _visit_signals(lk, {A: flat, B: flat}, start=0, length=19, total=40)
+    links = lk.established_links()
+    assert len(links) == 1
+    assert lk.gate_snapshot["abstained"] == 1
+
+
+def test_gate_abstains_below_min_samples():
+    """Too few joint signal readings -> the gate can't judge and abstains (links on
+    presence/Jaccard)."""
+    lk = _linker(min_polls=5, min_fixture_polls=20, min_corr_samples=15)
+    _visit_signals(lk, {A: _WALK, B: _TOGETHER}, start=0, length=12, total=40)  # 12 < 15
+    links = lk.established_links()
+    assert len(links) == 1
+    assert lk.gate_snapshot["abstained"] == 1
+    assert lk.rssi_correlation(A, B) is None
+
+
+def test_gate_disabled_links_regardless_of_motion():
+    """With the gate off, an oppositely-moving co-present pair links as before."""
+    lk = _linker(min_polls=5, min_fixture_polls=20, rssi_gate=False)
+    _visit_signals(lk, {A: _WALK, B: _OPPOSITE}, start=0, length=19, total=40)
+    assert len(lk.established_links()) == 1
+
+
+def test_placeholder_zero_and_none_signals_skipped():
+    """Zero/None signals are Kismet placeholders and must not enter the correlation."""
+    lk = _linker(min_polls=5, min_fixture_polls=20, min_corr_samples=10)
+    a_sig = [0 if i % 2 else _WALK[i] for i in range(19)]     # placeholders on odd j
+    b_sig = [None if i % 2 else _TOGETHER[i] for i in range(19)]
+    _visit_signals(lk, {A: a_sig, B: b_sig}, start=0, length=19, total=40)
+    stats = lk.rssi_correlation(A, B)
+    assert stats is not None and stats[3] == 10        # only the 10 real joint samples
