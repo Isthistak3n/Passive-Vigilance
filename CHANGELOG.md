@@ -61,6 +61,25 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
   further behind a busy gpsd — minutes to hours on long runs. Harmless on a fixed node
   (its position is constant) but a real correctness fix for mobile nodes, where every
   detection was being stamped with a stale location.
+- **Devices now show their maker.** Every device is labelled with its manufacturer,
+  looked up offline from the hardware portion of its address — no network calls. This
+  covers Bluetooth devices too, which the capture layer previously left unnamed. Devices
+  using a randomized (private) address are honestly shown as unknown rather than guessed
+  at, since a random address carries no real maker.
+- **The node stays up on SD storage.** The observation-history database used to grow
+  until routine reads stalled the main loop long enough to trip the system watchdog,
+  which then restarted the service in a loop — repeatedly, on the busiest node. Its
+  growth is now bounded three ways (an age window, a hard row cap, and regular
+  compaction of the write-ahead log), with an optional off-loop writer so a slow SD
+  card can't block capture. The fixed node has since run **45+ hours unattended with no
+  restarts**, the database holding flat at its cap.
+- **The shared SDR fails honestly instead of crash-looping.** When an audio/data
+  decoder (AIS or ACARS) is slow to hand the single dongle back, the coordinator no
+  longer starts ADS-B onto a device the decoder is still holding — which used to leave
+  ADS-B crash-looping on a busy device with nobody to recover it, both mid-run and on
+  shutdown. It now waits for a confirmed release, keeps its own health status honest,
+  and its automatic recovery reports failure truthfully rather than claiming success
+  while the receiver is still down.
 
 ### Changed
 
