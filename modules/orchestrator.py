@@ -2369,6 +2369,19 @@ class SensorOrchestrator:
                         pass
                     await self.sdr_coordinator.start()
                     self._modules_active["sdr_coordinator"] = True
+                    # start() hands the dongle back to ADS-B, but if a decoder is
+                    # still holding it (the stuck-release case this PR's stop() fix
+                    # is about) the coordinator comes back unhealthy and readsb was
+                    # never restored. Without this check the loop below would log
+                    # "reconnected successfully" and flip sensor health True while
+                    # the SDR is in fact still down — hiding the fault. Treat
+                    # unhealthy-after-restart as a failed attempt so the retry loop
+                    # backs off and tries again (giving the decoder time to
+                    # release), and honestly reports failure if it never recovers.
+                    if not self.sdr_coordinator.healthy:
+                        raise RuntimeError(
+                            "SDR coordinator unhealthy after restart — the current "
+                            "band owner has not released the dongle")
                 logger.info("Sensor %s reconnected successfully", module_name)
                 self._sensor_health[module_name] = True
                 return True

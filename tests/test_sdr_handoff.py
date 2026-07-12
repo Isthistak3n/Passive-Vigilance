@@ -326,6 +326,29 @@ async def test_stop_settles_before_restarting_readsb():
 
 
 @pytest.mark.asyncio
+async def test_stop_does_not_start_readsb_when_decoder_wont_release():
+    """#214 shutdown residual: if the decoder holding the dongle can't be
+    confirmed released, stop() must NOT start readsb onto the busy device — after
+    PV exits nothing re-hands-off, so readsb would crash-loop on 'SDR wedged' /
+    'Device or resource busy' forever. Leave readsb stopped and report unhealthy."""
+    c = SDRCoordinator(cycle_slices=[("adsb", 800), ("ais", 60)])
+    ais = _fake_owner("ais")
+    ais.release = AsyncMock(return_value=False)      # still active — did not release
+    c.register_owner(ais)
+    c._current_owner = "ais"
+
+    with patch.object(c, "_settle_sdr", AsyncMock()) as settle, \
+         patch.object(c, "_start_readsb", AsyncMock()) as start:
+        await c.stop()
+
+    ais.release.assert_awaited_once()
+    start.assert_not_awaited()                       # never raced readsb onto a busy device
+    settle.assert_not_awaited()
+    assert c.current_owner == "ais"                  # honest — dongle is still ais's
+    assert c.healthy is False
+
+
+@pytest.mark.asyncio
 async def test_failed_acquire_resets_owner_and_allows_readsb_retry():
     """After the previous owner is released and the new acquire fails, the dongle
     is unowned — current_owner must read 'none', not the stale prior owner. Left

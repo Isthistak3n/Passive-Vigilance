@@ -1334,6 +1334,42 @@ async def test_reconnect_logs_error_when_all_attempts_fail(orch, caplog):
     assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_reconnect_sdr_fails_when_coordinator_unhealthy_after_restart(orch):
+    """A decoder still holding the dongle after restart leaves the coordinator
+    unhealthy; _reconnect('sdr') must NOT report success just because start()
+    returned — it retries and ultimately returns False."""
+    so = orch.sensor_orchestrator
+    so._max_reconnect_attempts = 2
+    so._sensor_health["sdr"] = False
+    so.sdr_coordinator = MagicMock()
+    so.sdr_coordinator.stop = AsyncMock()
+    so.sdr_coordinator.start = AsyncMock()
+    so.sdr_coordinator.healthy = False          # still-held dongle after restart
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await so._reconnect("sdr")
+    assert result is False
+    assert so._sensor_health["sdr"] is not True          # not falsely marked healthy
+    assert so.sdr_coordinator.start.await_count == 2      # retried each attempt
+
+
+@pytest.mark.asyncio
+async def test_reconnect_sdr_succeeds_when_coordinator_healthy_after_restart(orch):
+    """When start() restores a healthy coordinator (ADS-B owns the dongle again),
+    _reconnect('sdr') reports success as before."""
+    so = orch.sensor_orchestrator
+    so._sensor_health["sdr"] = False
+    so.sdr_coordinator = MagicMock()
+    so.sdr_coordinator.stop = AsyncMock()
+    so.sdr_coordinator.start = AsyncMock()
+    so.sdr_coordinator.healthy = True
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await so._reconnect("sdr")
+    assert result is True
+    assert so._sensor_health["sdr"] is True
+    so.sdr_coordinator.start.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Poll loop reconnect triggering
 # ---------------------------------------------------------------------------

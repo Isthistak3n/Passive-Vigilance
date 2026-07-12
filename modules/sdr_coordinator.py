@@ -241,10 +241,12 @@ class SDRCoordinator:
         # Release whatever holds the dongle, then restore readsb (ADS-B is the
         # safe default owner) so the node leaves the SDR in a known state.
         cur = self._owners.get(self._current_owner)
+        released = True
         if cur is not None and cur.name != "adsb":
             try:
-                await cur.release()
+                released = await cur.release()
             except Exception as exc:
+                released = False
                 logger.debug("SDR coordinator stop — release %s error: %s", cur.name, exc)
         # Legacy: ensure DroneRF scanning is off regardless of current owner.
         if self._drone_rf is not None:
@@ -253,6 +255,22 @@ class SDRCoordinator:
                 await self._drone_rf.stop_scan()
             except Exception as exc:
                 logger.debug("SDR coordinator stop — DroneRF stop error: %s", exc)
+        if not released:
+            # The decoder is still confirmed holding the dongle (same #214
+            # mechanism as _handoff_to). Starting readsb onto a device it hasn't
+            # released is the exact "SDR wedged, exiting!" / "Device or resource
+            # busy" crash-loop — and on shutdown nothing re-hands-off to recover
+            # it, so readsb would crash-loop indefinitely after PV exits. Leave
+            # readsb stopped and report loudly instead; the SDR-wedge watchdog and
+            # the operator can take it from here, and a normal decoder shutdown
+            # (its own systemd stop) frees the dongle for readsb's next start.
+            self._current_owner = cur.name if cur is not None else "none"
+            self._healthy = False
+            logger.error(
+                "SDR coordinator stop — %s did not release the dongle; leaving "
+                "readsb stopped rather than crash-looping it onto a busy device",
+                cur.name if cur is not None else "current owner")
+            return
         # Settle before reopening the dongle for readsb. Starting readsb inline on a
         # decoder's still-releasing device is the exact "SDR wedged, exiting!"
         # crash-loop the settle barrier exists to prevent — and on shutdown nothing
