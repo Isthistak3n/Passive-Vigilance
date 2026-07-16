@@ -419,3 +419,124 @@ def test_parse_slices_drops_non_positive():
     }):
         c = SDRCoordinator()
     assert c.slices == [("adsb", 600)]   # ais:0 and acars:-5 dropped
+
+
+# ---------------------------------------------------------------------------
+# Startup reclaim — orphaned decoders from a killed session (2026-07-14 outage)
+# ---------------------------------------------------------------------------
+
+
+def _reclaim_coordinator(active_services):
+    """Coordinator with AIS+ACARS decoder bands and a fake systemd where
+    ``active_services`` (a mutable set) is the ground truth: is-active consults
+    it, stop removes from it, start adds to it. No real subprocess calls."""
+    with patch.dict(os.environ, {"SDR_HANDOFF_SETTLE_SECONDS": "0"}):
+        c = SDRCoordinator(None, cycle_slices=[("adsb", 1), ("ais", 1)])
+    c.add_decoder_band("ais", "ais-catcher", None)
+    c.add_decoder_band("acars", "dumpvdl2", None)
+
+    async def is_active(service):
+        return service in active_services
+
+    async def stop(service, max_attempts=5):
+        active_services.discard(service)
+        return True
+
+    async def start(service, max_attempts=5):
+        active_services.add(service)
+        return True
+
+    c._is_service_active = is_active
+    c._stop_service_with_handshake = stop
+    c._start_service_with_handshake = start
+    # readsb control: track it through the same fake systemd.
+    async def start_readsb(*args):
+        return await start("readsb")
+
+    async def stop_readsb(*args):
+        return await stop("readsb")
+
+    c._start_readsb_with_handshake = start_readsb
+    c._stop_readsb_with_handshake = stop_readsb
+    return c
+
+
+@pytest.mark.asyncio
+async def test_start_reclaims_orphaned_decoder_before_readsb():
+    """A decoder left running by a killed session must be stopped BEFORE readsb
+    is started — starting readsb onto the busy dongle is the crash-loop that
+    took the node down for 24h on 2026-07-14."""
+    active = {"dumpvdl2"}  # orphan from the previous incarnation
+    c = _reclaim_coordinator(active)
+
+    await c.start()
+
+    assert "dumpvdl2" not in active, "orphaned decoder was not reclaimed"
+    assert "readsb" in active, "readsb was not started after the reclaim"
+    assert c.current_owner == "adsb"
+    assert c.healthy
+
+
+@pytest.mark.asyncio
+async def test_start_reclaims_multiple_orphans():
+    active = {"dumpvdl2", "ais-catcher"}
+    c = _reclaim_coordinator(active)
+
+    await c.start()
+
+    assert active == {"readsb"}
+    assert c.current_owner == "adsb"
+    assert c.healthy
+
+
+@pytest.mark.asyncio
+async def test_start_with_no_orphans_is_a_no_op_reclaim():
+    active = set()
+    c = _reclaim_coordinator(active)
+
+    await c.start()
+
+    assert active == {"readsb"}
+    assert c.current_owner == "adsb"
+    assert c.healthy
+
+
+@pytest.mark.asyncio
+async def test_unstoppable_orphan_parks_owner_and_never_starts_readsb():
+    """If the orphan refuses to stop, the coordinator must park on it (honest
+    #214 behaviour) rather than start readsb onto a busy device."""
+    active = {"dumpvdl2"}
+    c = _reclaim_coordinator(active)
+
+    async def stop_fails(service, max_attempts=5):
+        return False  # decoder stays active — dongle never released
+
+    c._stop_service_with_handshake = stop_fails
+
+    await c.start()
+
+    assert "dumpvdl2" in active, "test premise: orphan still running"
+    assert "readsb" not in active, "readsb must not be started onto a busy dongle"
+    assert c.current_owner == "acars", "coordinator must stay parked on the orphan"
+    assert not c.healthy
+
+
+@pytest.mark.asyncio
+async def test_reclaim_ignores_in_process_owners():
+    """Owners without a systemd service (readsb owner, drone module, mocks with
+    non-string service attrs) are skipped — they die with the process, so they
+    cannot be orphans."""
+    active = set()
+    c = _reclaim_coordinator(active)
+    checked = []
+
+    async def is_active(service):
+        checked.append(service)
+        return False
+
+    c._is_service_active = is_active
+    c.register_owner(_fake_owner("mock_band"))  # MagicMock service attr
+
+    await c._reclaim_orphaned_decoders()
+
+    assert set(checked) == {"ais-catcher", "dumpvdl2"}
