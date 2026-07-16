@@ -297,3 +297,110 @@ def test_bulk_upserts_durable_across_reopen_under_wal(tmp_path):
     p = s2.get_profile("mac:00:00:00:00:00:05")
     assert p is not None and p.observation_count == 1
     s2.close()
+
+
+# ---------------------------------------------------------------------------
+# batch() — one commit per poll pass (2026-07-14 watchdog-stall regression)
+# ---------------------------------------------------------------------------
+
+def _committed_profiles(db_path):
+    """Count device_profiles rows a FRESH connection can see — i.e. committed
+    state only. Uncommitted work on the store's own connection is invisible here."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM device_profiles").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_batch_defers_commit_until_exit(tmp_path):
+    """Inside batch() nothing is committed; the outermost exit commits it all.
+
+    Per-device commits inside FixedScoring.update() overran the 2-minute systemd
+    watchdog at ~12.5k devices/poll (2026-07-14 outage) — one poll, one commit."""
+    db = str(tmp_path / "b.db")
+    store = BaselineStore(db, baseline_hours=72, now=T0)
+
+    with store.batch():
+        for i in range(50):
+            store.upsert(f"mac:00:00:00:00:01:{i:02x}", T0)
+        assert _committed_profiles(db) == 0     # still one open transaction
+
+    assert _committed_profiles(db) == 50        # single commit on exit
+    store.close()
+
+
+def test_batch_commits_prior_work_on_exception(tmp_path):
+    """An exception mid-batch must not roll back sightings already folded in —
+    those observations happened; losing them would silently thin the baseline."""
+    db = str(tmp_path / "b.db")
+    store = BaselineStore(db, baseline_hours=72, now=T0)
+
+    class Boom(Exception):
+        pass
+
+    try:
+        with store.batch():
+            store.upsert("mac:00:00:00:00:02:01", T0)
+            store.upsert("mac:00:00:00:00:02:02", T0)
+            raise Boom()
+    except Boom:
+        pass
+
+    assert _committed_profiles(db) == 2
+    # The store must remain usable (batch depth unwound, lock released).
+    store.upsert("mac:00:00:00:00:02:03", T0)
+    assert _committed_profiles(db) == 3
+    store.close()
+
+
+def test_nested_batches_commit_once_at_outermost_exit(tmp_path):
+    db = str(tmp_path / "b.db")
+    store = BaselineStore(db, baseline_hours=72, now=T0)
+
+    with store.batch():
+        store.upsert("mac:00:00:00:00:03:01", T0)
+        with store.batch():
+            store.upsert("mac:00:00:00:00:03:02", T0)
+        # Inner exit must NOT commit — only the outermost does.
+        assert _committed_profiles(db) == 0
+    assert _committed_profiles(db) == 2
+    store.close()
+
+
+def test_upsert_outside_batch_still_commits_immediately(tmp_path):
+    db = str(tmp_path / "b.db")
+    store = BaselineStore(db, baseline_hours=72, now=T0)
+    store.upsert("mac:00:00:00:00:04:01", T0)
+    assert _committed_profiles(db) == 1
+    store.close()
+
+
+def test_gui_reads_interleave_during_open_batch(tmp_path):
+    """batch() deliberately does not hold the store lock for the whole block, so
+    the GUI thread's status() reads keep interleaving between upserts instead of
+    blocking for a full poll pass."""
+    db = str(tmp_path / "b.db")
+    store = BaselineStore(db, baseline_hours=72, now=T0)
+
+    results = {}
+    with store.batch():
+        store.upsert("mac:00:00:00:00:05:01", T0)
+
+        def reader():
+            try:
+                # Same connection => sees the store's own uncommitted work; the
+                # point is it neither raises nor deadlocks mid-batch.
+                results["profiles"] = store.profile_count()
+            except Exception as exc:
+                results["error"] = exc
+
+        t = threading.Thread(target=reader)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive(), "GUI-style read deadlocked against an open batch"
+
+    assert "error" not in results, f"mid-batch read raised: {results.get('error')}"
+    assert results["profiles"] == 1
+    store.close()
