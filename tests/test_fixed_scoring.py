@@ -840,3 +840,46 @@ def test_egregious_explicit_value_overrides_density_preset():
     with patch.dict(os.environ, {"NODE_DENSITY": "dense", "EGREGIOUS_SIGNAL_DBM": "-25"}):
         e = FixedScoring(store=BaselineStore(":memory:", baseline_hours=1.0, now=T0))
         assert e._egregious_signal_dbm == -25.0
+
+
+def test_update_commits_once_per_poll_pass(tmp_path):
+    """One poll pass = one baseline-store commit, regardless of device count.
+
+    Per-device commits at ~12.5k devices/poll kept the asyncio poll thread inside
+    update() past the 2-minute systemd watchdog (2026-07-14 outage, py-spy-proven
+    stall in baseline_store.upsert). The engine must wrap its device loop in
+    store.batch() so the commit count stays flat as density grows."""
+    store = BaselineStore(str(tmp_path / "b.db"), baseline_hours=1.0, now=T0)
+    with patch.dict(os.environ, {"EGREGIOUS_SIGNAL_DBM": "-45"}):
+        engine = FixedScoring(store=store, clock=lambda: T0)
+
+    class _CommitCountingConn:
+        """sqlite3.Connection attributes are read-only, so count commits via a
+        delegating proxy swapped in for the store's connection."""
+
+        def __init__(self, conn):
+            self._conn = conn
+            self.commits = 0
+
+        def commit(self):
+            self.commits += 1
+            self._conn.commit()
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    proxy = _CommitCountingConn(store._conn)
+    store._conn = proxy
+
+    devices = [
+        {"macaddr": f"d8:96:85:00:00:{i:02x}", "manuf": "Acme",
+         "type": "Wi-Fi Device", "last_signal": -70}
+        for i in range(40)
+    ]
+    engine.update(devices)
+
+    assert proxy.commits == 1, (
+        f"expected exactly one commit for the poll pass, saw {proxy.commits}"
+    )
+    # And the pass itself must be durable.
+    assert store.profile_count() == 40

@@ -24,6 +24,7 @@ import logging
 import os
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -137,6 +138,9 @@ class BaselineStore:
         # Reentrant lock guards all connection access; check_same_thread=False lets
         # the GUI thread read status() off the connection the asyncio thread owns.
         self._lock = threading.RLock()
+        # Depth of nested batch() contexts on the writer thread; while non-zero,
+        # upsert() defers its commit to the outermost batch exit.
+        self._batch_depth = 0
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._apply_pragmas()
@@ -287,6 +291,44 @@ class BaselineStore:
         "pf_first": None, "pf_last": None,
     }
 
+    @contextmanager
+    def batch(self):
+        """Coalesce every upsert() inside the block into ONE commit on exit.
+
+        WAL + synchronous=NORMAL already removed the per-commit fsync, but each
+        commit still closes a write transaction and advances the WAL toward the
+        auto-checkpoint threshold — and a checkpoint DOES fsync the main DB. At
+        the 2026-07-14 ambient density (~12.5k devices per Kismet poll) the
+        per-device commits in FixedScoring.update() added up past the 2-minute
+        systemd watchdog on the asyncio poll thread (stall captured live by
+        py-spy: MainThread inside upsert while keep-alives went stale), so one
+        poll pass = one commit is a correctness requirement, not a tuning nicety.
+
+        Durability is unchanged in spirit: a crash mid-batch loses at most one
+        poll's worth of recency updates, which the next poll re-observes — the
+        same guarantee the per-commit design gave for its last commit. On an
+        exception mid-batch the work already executed is still committed (not
+        rolled back) for the same reason: those sightings happened.
+
+        Must be entered on the writer (poll) thread only — the depth counter is
+        deliberately not locked, so the GUI thread's reads keep interleaving
+        between upserts instead of blocking for the whole batch. Reentrant:
+        nested batches commit once at the outermost exit.
+        """
+        self._batch_depth += 1
+        try:
+            yield self
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0:
+                with self._lock:
+                    self._conn.commit()
+
+    def _commit(self) -> None:
+        """Commit now, unless a batch() is open (then the batch exit commits)."""
+        if self._batch_depth == 0:
+            self._conn.commit()
+
     @_synchronized
     def upsert(
         self,
@@ -389,7 +431,7 @@ class BaselineStore:
             # so the scorer's novelty gate sees a promoted device on the same poll.
             promoted_final = existing.promoted
             promo_ts_final = existing.promotion_ts
-        self._conn.commit()
+        self._commit()
         return DeviceProfile(
             key=key,
             first_seen=first_seen,

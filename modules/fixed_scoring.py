@@ -298,44 +298,48 @@ class FixedScoring(ScoringEngine):
         freeze_time = self._store.freeze_time
 
         events: list = []
-        for device in devices:
-            key = self._device_key(device)
-            if key is None:
-                continue
-            manuf = device.get("manuf", "") or ""
-            dtype = device.get("type", "") or ""
-            mac_type = get_mac_type(normalize_mac(device.get("macaddr", "")))
-            signal = _coerce_signal(device.get("last_signal"))
+        # One commit per poll pass, not per device. At high ambient density
+        # (~12.5k devices/poll, 2026-07-14) per-device commits kept the asyncio
+        # poll thread inside this loop past the 2-minute systemd watchdog.
+        with self._store.batch():
+            for device in devices:
+                key = self._device_key(device)
+                if key is None:
+                    continue
+                manuf = device.get("manuf", "") or ""
+                dtype = device.get("type", "") or ""
+                mac_type = get_mac_type(normalize_mac(device.get("macaddr", "")))
+                signal = _coerce_signal(device.get("last_signal"))
 
-            # Baseline stats (hour mask + RSSI mean/var) accumulate ONLY while
-            # learning, so the frozen baseline is never moved by post-freeze
-            # sightings. Recency (last_seen / count) advances either way.
-            profile = self._store.upsert(
-                key, now, manuf, dtype, mac_type,
-                last_signal=signal, accumulate_baseline=learning,
-            )
+                # Baseline stats (hour mask + RSSI mean/var) accumulate ONLY while
+                # learning, so the frozen baseline is never moved by post-freeze
+                # sightings. Recency (last_seen / count) advances either way.
+                profile = self._store.upsert(
+                    key, now, manuf, dtype, mac_type,
+                    last_signal=signal, accumulate_baseline=learning,
+                )
 
-            if learning:
-                # Design 5.2 — learn the ordinary, but still shout about the
-                # obviously alarming so an already-present device in the
-                # operator's space isn't silently baked into the baseline.
-                egregious = self._egregious_signals(profile, signal)
-                if _any_active(egregious):
-                    score, level = self._combine(egregious)
-                    # A single egregious signal scores 0.5 ("suspicious"), below the
-                    # WiFi paging bar — but this IS the during-learning safety net
-                    # (design 5.2), so it must page anyway. force_page lets the
-                    # orchestrator bypass the suspicious-display gate; the per-entity
-                    # rate limiter still bounds it.
-                    events.append(self._make_event(
-                        device, profile, now, egregious, score, level, force_page=True))
-                continue
+                if learning:
+                    # Design 5.2 — learn the ordinary, but still shout about the
+                    # obviously alarming so an already-present device in the
+                    # operator's space isn't silently baked into the baseline.
+                    egregious = self._egregious_signals(profile, signal)
+                    if _any_active(egregious):
+                        score, level = self._combine(egregious)
+                        # A single egregious signal scores 0.5 ("suspicious"), below the
+                        # WiFi paging bar — but this IS the during-learning safety net
+                        # (design 5.2), so it must page anyway. force_page lets the
+                        # orchestrator bypass the suspicious-display gate; the per-entity
+                        # rate limiter still bounds it.
+                        events.append(self._make_event(
+                            device, profile, now, egregious, score, level, force_page=True))
+                    continue
 
-            signals = self._signals(profile, now, freeze_time)
-            if not _any_active(signals):
-                continue
-            score, level = self._combine(signals)
-            events.append(self._make_event(device, profile, now, signals, score, level))
+                signals = self._signals(profile, now, freeze_time)
+                if not _any_active(signals):
+                    continue
+                score, level = self._combine(signals)
+                events.append(self._make_event(device, profile, now, signals, score, level))
 
         if events:
             logger.info(
