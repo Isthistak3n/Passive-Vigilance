@@ -319,3 +319,18 @@ def test_plain_acars_has_no_app_decode():
     assert _decode_app({"reg": "N5", "label": "H1", "msg_text": "hello"}) is None
     d = _parsed_nested({"reg": "N5", "label": "H1", "msg_text": "hello world"})
     assert d["category"] == "Free text / other"      # unchanged for plain messages
+
+
+def test_app_decode_failure_falls_back_to_text(monkeypatch):
+    """A decode crash on an unforeseen structure degrades to text classification and
+    never drops the message — the ACARS UDP callback must stay alive on the live node."""
+    import modules.acars as A
+
+    def _boom(_acars):
+        raise RuntimeError("unexpected libacars shape")
+
+    monkeypatch.setattr(A, "_decode_app", _boom)
+    m = _mod()
+    m._ingest(json.dumps({"reg": "N6", "label": "H1", "text": "hello world"}))
+    d = m.drain_detections()[0]
+    assert d["category"] == "Free text / other" and d["text"] == "hello world"

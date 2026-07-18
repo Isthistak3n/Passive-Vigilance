@@ -569,7 +569,14 @@ class ACARSModule:
         # decoded a standardized payload — CPDLC / ADS-C / MIAM / media advisory — read
         # its decoded tree instead of re-parsing free text. ADS-C carries a precise fix,
         # so adopt it when the message had no other position.
-        app = _decode_app(acars)
+        # Guarded: a decode failure on an unforeseen real-world structure must never
+        # drop the message or break the UDP callback — fall back to text classification.
+        try:
+            app = _decode_app(acars)
+        except Exception:  # pragma: no cover - defensive on live decoder output
+            logger.debug("ACARS app-layer decode failed; using text classification",
+                         exc_info=True)
+            app = None
         if app is not None and app["lat"] is not None and lat is None:
             lat, lon = app["lat"], app["lon"]
         # Human-friendly breakout: category + extracted fields + a named label. These
