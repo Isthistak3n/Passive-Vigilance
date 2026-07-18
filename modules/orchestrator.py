@@ -1728,6 +1728,14 @@ class SensorOrchestrator:
                 "text": msg.get("text"),
                 "origin": msg.get("origin"), "destination": msg.get("destination"),
                 "lat": msg.get("lat"), "lon": msg.get("lon"),
+                # Carry the decoded breakout through to disk + the GUI feed. Without
+                # these three, the app-layer decode (CPDLC/ADS-C/MIAM/media advisory)
+                # computed in acars._parse is dropped here and never reaches the
+                # operator. label_name is required alongside category because the GUI's
+                # idempotent reclassify() returns early on an already-categorized record
+                # and would otherwise stop supplying it.
+                "category": msg.get("category"), "fields": msg.get("fields"),
+                "label_name": msg.get("label_name"),
                 "timestamp": ts,
             }
             self._append_jsonl(self._session_dir / "acars.jsonl", record)
