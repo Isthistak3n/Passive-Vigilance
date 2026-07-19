@@ -252,6 +252,204 @@ def classify(label, text, flight, origin, destination, lat, lon):
     return category, fields
 
 
+# ---------------------------------------------------------------------------
+# Application-layer decode (CPDLC / ADS-C / MIAM / media advisory)
+# ---------------------------------------------------------------------------
+#
+# The parts of ACARS that ARE standardized — CPDLC (controller/pilot datalink),
+# ADS-C (surveillance contracts), MIAM (file transfer), and media advisories —
+# are decoded by libacars, which dumpvdl2/acarsdec emit as a nested tree inside
+# the ACARS object. We read that decoded tree rather than re-parsing free text.
+#
+# Extraction is deliberately DEFENSIVE: we locate app nodes and pull fields by
+# key name via a recursive scan, so a libacars version that renames or re-nests a
+# field degrades to naming the message type (still a readability win) instead of
+# crashing or silently vanishing. This mirrors the module's "name what we can,
+# never fake-decode" stance — every field shown is a value libacars produced.
+
+CATEGORY_CPDLC = "CPDLC (controller/pilot)"
+CATEGORY_ADSC = "ADS-C (surveillance)"
+CATEGORY_MIAM = "MIAM (file transfer)"
+CATEGORY_MEDIA_ADV = "Link status (media advisory)"
+
+# Scalar leaf keys worth surfacing from a decoded app subtree → display name.
+# Position (lat/lon) is intentionally excluded: it flows through classify() as the
+# single "Position" field so ADS-C reports don't show it twice.
+_APP_SCALAR_NAMES = {
+    "alt": "Altitude", "altitude": "Altitude",
+    "level": "Level", "flight_level": "Flight level",
+    "heading": "Heading", "track": "Track", "true_track": "Track",
+    "speed": "Speed", "ground_speed": "Ground speed",
+    "vspd": "Vertical speed", "vertical_speed": "Vertical speed",
+    "freq": "Frequency", "frequency": "Frequency",
+    "eta": "ETA",
+    "temp": "Temperature", "sat": "SAT",
+    "msg_id": "Msg id", "msg_ref": "Reply to",
+}
+
+# Media-advisory link-state and link-type codes (ARINC 618 / libacars).
+_LINK_STATE = {"E": "Established", "L": "Lost"}
+_LINK_TYPE = {
+    "V": "VHF ACARS", "2": "VDL Mode 2", "X": "VDL",
+    "S": "SATCOM", "H": "HF", "G": "GlobalStar SATCOM",
+    "C": "ICO SATCOM", "I": "Inmarsat SATCOM",
+}
+
+
+def _walk(obj):
+    """Yield ``(key, scalar_value)`` for every scalar leaf in a nested dict/list."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(v, (dict, list)):
+                yield from _walk(v)
+            else:
+                yield k, v
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _walk(item)
+
+
+def _find_node(tree, target: str):
+    """First value stored under a key equal to *target* (case-insensitive), searched
+    recursively through nested dicts/lists. ``None`` if absent."""
+    if isinstance(tree, dict):
+        for k, v in tree.items():
+            if isinstance(k, str) and k.lower() == target:
+                return v
+        for v in tree.values():
+            found = _find_node(v, target)
+            if found is not None:
+                return found
+    elif isinstance(tree, list):
+        for item in tree:
+            found = _find_node(item, target)
+            if found is not None:
+                return found
+    return None
+
+
+def _first_scalar(tree, keys):
+    """First scalar leaf whose key matches one of *keys* (case-insensitive)."""
+    keyset = {k.lower() for k in keys}
+    for k, v in _walk(tree):
+        if isinstance(k, str) and k.lower() in keyset:
+            return v
+    return None
+
+
+def _humanize(s: str) -> str:
+    """A libacars identifier (``level_change``) → a readable phrase (``Level change``)."""
+    out = re.sub(r"[_\-]+", " ", str(s)).strip()
+    return out[:1].upper() + out[1:] if out else out
+
+
+def _app_scalar_fields(subtree, limit: int = 8) -> list:
+    """Surface a bounded, de-duplicated set of recognized scalar values as fields."""
+    fields, seen = [], set()
+    for k, v in _walk(subtree):
+        name = _APP_SCALAR_NAMES.get(k.lower()) if isinstance(k, str) else None
+        if not name or name in seen or isinstance(v, bool) or v is None or v == "":
+            continue
+        fields.append({"name": name, "value": str(v)})
+        seen.add(name)
+        if len(fields) >= limit:
+            break
+    return fields
+
+
+def _cpdlc_direction(tree) -> Optional[str]:
+    if _find_node(tree, "atc_uplink_msg") is not None or _find_node(tree, "atc_uplink") is not None:
+        return "Uplink (ATC → aircraft)"
+    if _find_node(tree, "atc_downlink_msg") is not None or _find_node(tree, "atc_downlink") is not None:
+        return "Downlink (aircraft → ATC)"
+    return None
+
+
+def _cpdlc_elements(cpdlc) -> list:
+    """Human phrases for each CPDLC message element. libacars serializes the ASN.1
+    CHOICE either as ``{"choice": "<name>", ...}`` or as ``{"<name>": {...}}`` — handle
+    both, and cap the count so a long clearance stays readable."""
+    elems = _find_node(cpdlc, "msg_element")
+    if isinstance(elems, dict):
+        elems = [elems]
+    out = []
+    if isinstance(elems, list):
+        for e in elems:
+            if not isinstance(e, dict):
+                continue
+            if e.get("choice"):
+                out.append(_humanize(str(e["choice"])))
+            else:
+                for k in e:                       # first alternative name
+                    out.append(_humanize(k))
+                    break
+    return out[:5]
+
+
+def _media_adv_fields(media) -> list:
+    fields = []
+    state = _first_scalar(media, ("state", "link_state"))
+    if state is not None and not isinstance(state, (dict, list)):
+        s = str(state)
+        fields.append({"name": "Link state", "value": _LINK_STATE.get(s[:1].upper(), s)})
+    link = _first_scalar(media, ("current_link", "link", "established_link"))
+    if link is not None and not isinstance(link, (dict, list)):
+        s = str(link)
+        fields.append({"name": "Current link", "value": _LINK_TYPE.get(s[:1].upper(), s)})
+    avail = _find_node(media, "available_links")
+    if isinstance(avail, list) and avail:
+        vals = [_LINK_TYPE.get(str(x)[:1].upper(), str(x))
+                for x in avail if not isinstance(x, (dict, list))]
+        if vals:
+            fields.append({"name": "Available", "value": ", ".join(vals)})
+    t = _first_scalar(media, ("time", "timestamp"))
+    if t is not None and not isinstance(t, (dict, list)):
+        fields.append({"name": "Time", "value": str(t)})
+    return fields
+
+
+def _decode_app(acars: dict):
+    """If libacars decoded a standardized application payload into the ACARS object,
+    return ``{"category", "fields", "lat", "lon"}``; otherwise ``None``.
+
+    ``lat``/``lon`` are populated only by ADS-C (which carries a precise fix); the
+    caller adopts them when the message had no other position.
+    """
+    if not isinstance(acars, dict):
+        return None
+
+    adsc = _find_node(acars, "adsc")
+    if adsc is not None:
+        lat = _num(_first_scalar(adsc, ("lat", "latitude")))
+        lon = _num(_first_scalar(adsc, ("lon", "longitude")))
+        if not (lat is not None and lon is not None and abs(lat) <= 90 and abs(lon) <= 180):
+            lat = lon = None
+        return {"category": CATEGORY_ADSC, "fields": _app_scalar_fields(adsc),
+                "lat": lat, "lon": lon}
+
+    cpdlc = _find_node(acars, "cpdlc")
+    if cpdlc is not None:
+        fields = []
+        direction = _cpdlc_direction(acars)
+        if direction:
+            fields.append({"name": "Direction", "value": direction})
+        fields.extend({"name": "Message", "value": e} for e in _cpdlc_elements(cpdlc))
+        fields.extend(_app_scalar_fields(cpdlc))
+        return {"category": CATEGORY_CPDLC, "fields": fields, "lat": None, "lon": None}
+
+    media = _find_node(acars, "media_adv") or _find_node(acars, "media-adv")
+    if media is not None:
+        return {"category": CATEGORY_MEDIA_ADV, "fields": _media_adv_fields(media),
+                "lat": None, "lon": None}
+
+    miam = _find_node(acars, "miam")
+    if miam is not None:
+        return {"category": CATEGORY_MIAM, "fields": _app_scalar_fields(miam),
+                "lat": None, "lon": None}
+
+    return None
+
+
 def reclassify(rec: dict) -> dict:
     """Backfill category / label_name / fields (and a compact-format position) onto a
     stored ACARS record that predates classification, derived from its own raw fields.
@@ -367,10 +565,29 @@ class ACARSModule:
         origin = _first_str((acars, _ORIGIN_KEYS), (msg, _ORIGIN_KEYS))
         destination = _first_str((acars, _DEST_KEYS), (msg, _DEST_KEYS))
         lat, lon = _extract_position(acars, msg, text)
+        # Application-layer decode: if the decoder (libacars, via dumpvdl2/acarsdec)
+        # decoded a standardized payload — CPDLC / ADS-C / MIAM / media advisory — read
+        # its decoded tree instead of re-parsing free text. ADS-C carries a precise fix,
+        # so adopt it when the message had no other position.
+        # Guarded: a decode failure on an unforeseen real-world structure must never
+        # drop the message or break the UDP callback — fall back to text classification.
+        try:
+            app = _decode_app(acars)
+        except Exception:  # pragma: no cover - defensive on live decoder output
+            logger.debug("ACARS app-layer decode failed; using text classification",
+                         exc_info=True)
+            app = None
+        if app is not None and app["lat"] is not None and lat is None:
+            lat, lon = app["lat"], app["lon"]
         # Human-friendly breakout: category + extracted fields + a named label. These
         # ride through correlation onto event["acars"] and /api/acars unchanged, so the
         # GUI can display the pieces without re-parsing the raw text.
         category, fields = classify(label, text, flight, origin, destination, lat, lon)
+        if app is not None:
+            # The decoded application is the authoritative category; keep the identity
+            # fields classify() surfaced (Flight/Route/Position) and append the app's.
+            category = app["category"]
+            fields = fields + app["fields"]
         return {
             "tail": tail,
             "flight_id": flight,

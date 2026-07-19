@@ -243,3 +243,94 @@ def test_reclassify_is_idempotent():
     from modules.acars import reclassify
     rec = {"label": "H1", "text": "hello", "category": "Free text / other", "fields": []}
     assert reclassify(rec) is rec                    # already classified → unchanged
+
+
+# ---------------------------------------------------------------------------
+# Application-layer decode (CPDLC / ADS-C / MIAM / media advisory)
+# ---------------------------------------------------------------------------
+
+def _parsed_nested(acars_block):
+    """Parse a dumpvdl2-shaped record with a nested libacars app tree."""
+    m = _mod()
+    m._ingest(json.dumps({"vdl2": {"avlc": {"acars": acars_block}}}))
+    return m.drain_detections()[0]
+
+
+def test_cpdlc_uplink_decoded_to_category_and_elements():
+    d = _parsed_nested({
+        "reg": "N827DN", "flight": "DAL123", "label": "H1", "msg_text": "/AA",
+        "arinc622": {"gs_addr": "KZAK", "cpdlc": {
+            "atc_uplink_msg": {"header": {"msg_id": 12},
+                               "msg_data": {"msg_element": [
+                                   {"choice": "climb_to_level", "data": {"level": "350"}}]}}}},
+    })
+    assert d["category"] == "CPDLC (controller/pilot)"
+    names = {f["name"]: f["value"] for f in d["fields"]}
+    assert names["Direction"].startswith("Uplink")
+    assert names["Message"] == "Climb to level"
+    assert names["Flight"] == "DAL123"               # identity fields preserved
+
+
+def test_cpdlc_choiceless_element_uses_alternative_name():
+    d = _parsed_nested({
+        "reg": "N1", "label": "H1", "msg_text": "x",
+        "cpdlc": {"atc_downlink_msg": {"msg_data": {"msg_element": [{"wilco": {}}]}}},
+    })
+    assert d["category"] == "CPDLC (controller/pilot)"
+    msgs = [f["value"] for f in d["fields"] if f["name"] == "Message"]
+    assert msgs == ["Wilco"]
+    assert any(f["value"].startswith("Downlink") for f in d["fields"])
+
+
+def test_adsc_position_becomes_the_contact_fix():
+    d = _parsed_nested({
+        "reg": "N2", "label": "H1", "msg_text": "x",
+        "arinc622": {"adsc": {"adsc_msg": {"tags": [
+            {"basic_report": {"lat": 47.101, "lon": -122.301, "alt": 35000}}]}}},
+    })
+    assert d["category"] == "ADS-C (surveillance)"
+    assert d["lat"] == 47.101 and d["lon"] == -122.301
+    names = {f["name"]: f["value"] for f in d["fields"]}
+    assert names["Position"] == "N47.101, W122.301"
+    assert names["Altitude"] == "35000"
+
+
+def test_media_advisory_link_state_and_type():
+    d = _parsed_nested({
+        "reg": "N3", "label": "SA", "msg_text": "x",
+        "media_adv": {"version": 0, "state": "E", "current_link": "V",
+                      "available_links": ["V", "2"]},
+    })
+    assert d["category"] == "Link status (media advisory)"
+    names = {f["name"]: f["value"] for f in d["fields"]}
+    assert names["Link state"] == "Established"
+    assert names["Current link"] == "VHF ACARS"
+    assert names["Available"] == "VHF ACARS, VDL Mode 2"
+
+
+def test_miam_named_even_when_fields_sparse():
+    d = _parsed_nested({"reg": "N4", "label": "H1", "msg_text": "x",
+                        "miam": {"single_transfer": {"hdr": {}}}})
+    assert d["category"] == "MIAM (file transfer)"
+
+
+def test_plain_acars_has_no_app_decode():
+    from modules.acars import _decode_app
+    assert _decode_app({"reg": "N5", "label": "H1", "msg_text": "hello"}) is None
+    d = _parsed_nested({"reg": "N5", "label": "H1", "msg_text": "hello world"})
+    assert d["category"] == "Free text / other"      # unchanged for plain messages
+
+
+def test_app_decode_failure_falls_back_to_text(monkeypatch):
+    """A decode crash on an unforeseen structure degrades to text classification and
+    never drops the message — the ACARS UDP callback must stay alive on the live node."""
+    import modules.acars as A
+
+    def _boom(_acars):
+        raise RuntimeError("unexpected libacars shape")
+
+    monkeypatch.setattr(A, "_decode_app", _boom)
+    m = _mod()
+    m._ingest(json.dumps({"reg": "N6", "label": "H1", "text": "hello world"}))
+    d = m.drain_detections()[0]
+    assert d["category"] == "Free text / other" and d["text"] == "hello world"
