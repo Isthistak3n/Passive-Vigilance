@@ -743,3 +743,84 @@ def test_known_links_round_trips_across_reopen(tmp_path):
     links = {tuple(sorted(p)) for p in s2.known_links()}
     assert links == {("ble-fp:b", "wifi-fp:a"), ("ble-fp:d", "wifi-fp:c")}
     s2.close()
+
+
+# ---------------------------------------------------------------------------
+# Audible-only sighting filter (ENTITY_AUDIBLE_WINDOW_SECONDS)
+# ---------------------------------------------------------------------------
+
+
+def _heard(mac, seconds_before_poll, poll_time=T0):
+    """A device Kismet last heard this many seconds before the poll."""
+    d = _device(mac=mac)
+    d["last_time"] = int(poll_time.timestamp()) - seconds_before_poll
+    return d
+
+
+def test_audible_filter_skips_stale_devices():
+    s = EntityStore(":memory:", audible_window_s=90)
+    s.record_poll([_heard("aa:aa:aa:aa:aa:aa", 10),     # heard just now — kept
+                   _heard("bb:bb:bb:bb:bb:bb", 600)],   # silent 10 min — dropped
+                  now=T0)
+    assert s.count("observations") == 1
+    assert s.count("entities") == 1
+    assert s.count("device_fingerprint") == 1
+    s.close()
+
+
+def test_audible_filter_stale_device_stops_accumulating():
+    # The failure mode this PR closes: a device heard once keeps generating a
+    # fresh observation row every poll for the rest of the session.
+    s = EntityStore(":memory:", audible_window_s=90)
+    for i in range(5):
+        now = T0 + timedelta(minutes=i)
+        s.record_poll([_heard("aa:aa:aa:aa:aa:aa", 0, poll_time=T0)], now=now)
+    # Audible for polls at +0s and +60s; silent (>90s) for the remaining three.
+    assert s.count("observations") == 2
+    s.close()
+
+
+def test_audible_filter_fails_open_without_last_time():
+    # BLE records and older callers don't carry last_time — they must persist.
+    s = EntityStore(":memory:", audible_window_s=90)
+    s.record_poll([_device()], now=T0)                  # no last_time key
+    stale_zero = _device(mac="bb:bb:bb:bb:bb:bb")
+    stale_zero["last_time"] = 0                          # Kismet placeholder
+    s.record_poll([stale_zero], now=T0)
+    assert s.count("observations") == 2
+    s.close()
+
+
+def test_audible_filter_disabled_by_default_records_everything():
+    s = _store()
+    s.record_poll([_heard("aa:aa:aa:aa:aa:aa", 99999)], now=T0)
+    assert s.count("observations") == 1
+    s.close()
+
+
+def test_audible_filter_env_var(monkeypatch):
+    monkeypatch.setenv("ENTITY_AUDIBLE_WINDOW_SECONDS", "90")
+    s = EntityStore(":memory:")
+    s.record_poll([_heard("aa:aa:aa:aa:aa:aa", 600)], now=T0)
+    assert s.count("observations") == 0
+    s.close()
+
+
+def test_audible_filter_skips_stale_ap_beacon_evidence():
+    # A long-silent AP must not keep bumping beacon_count / RSSI stats either.
+    s = EntityStore(":memory:", audible_window_s=90)
+    ap = _ap()
+    ap["last_time"] = int(T0.timestamp()) - 600
+    s.record_poll([ap], now=T0)
+    assert s.count("beacon_evidence") == 0
+    s.close()
+
+
+def test_audible_filter_applies_in_async_mode(tmp_path):
+    db = str(tmp_path / "e.db")
+    s = EntityStore(db, async_writes=True, audible_window_s=90)
+    s.record_poll([_heard("aa:aa:aa:aa:aa:aa", 10),
+                   _heard("bb:bb:bb:bb:bb:bb", 600)], now=T0)
+    s.flush()
+    assert s.count("observations") == 1
+    s.close()

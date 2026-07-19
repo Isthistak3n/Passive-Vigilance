@@ -81,7 +81,9 @@ class _DecoderServiceOwner(_BandOwner):
     def __init__(self, name: str, service: str, coordinator: "SDRCoordinator",
                  module=None) -> None:
         self.name = name
-        self._service = service
+        # Public: startup reclaim needs the systemd unit name to detect a
+        # decoder a previous (killed) session left running on the dongle.
+        self.service = service
         self._c = coordinator
         self._module = module
 
@@ -90,7 +92,7 @@ class _DecoderServiceOwner(_BandOwner):
         return not getattr(self._module, "auto_disabled", False)
 
     async def acquire(self) -> bool:
-        ok = await self._c._start_service_with_handshake(self._service)
+        ok = await self._c._start_service_with_handshake(self.service)
         if self._module is not None:
             self._module.can_scan = bool(ok)
         return ok
@@ -98,7 +100,7 @@ class _DecoderServiceOwner(_BandOwner):
     async def release(self) -> bool:
         if self._module is not None:
             self._module.can_scan = False
-        return await self._c._stop_service_with_handshake(self._service)
+        return await self._c._stop_service_with_handshake(self.service)
 
 
 class _DroneRFOwner(_BandOwner):
@@ -233,9 +235,52 @@ class SDRCoordinator:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
+        await self._reclaim_orphaned_decoders()
         await self._handoff_to("adsb")
         logger.info("SDR coordinator ready — cycle: %s",
                     ", ".join(f"{b}:{s}s" for b, s in self._slices))
+
+    async def _reclaim_orphaned_decoders(self) -> None:
+        """Take the dongle back from decoders a previous session left running.
+
+        Coordinator state dies with the process, but the decoder services it
+        manages do not: when a watchdog kill lands mid-decoder-slice, the decoder
+        (e.g. dumpvdl2) keeps the dongle, and the fresh coordinator — believing
+        nothing is held (``current_owner == "none"``) — starts readsb straight
+        onto a busy device. That is the 2026-07-14 outage: readsb crash-looped on
+        "Device or resource busy" 8k+ times while the orphan held the SDR for 33
+        hours, and every PV restart stalled in the resulting reconnect path until
+        the start-rate limit took the node down. The #214/#216 honest-release
+        machinery never sees this because it only guards handoffs *within* a
+        session.
+
+        So, before the first handoff: stop every registered decoder service that
+        systemd reports active. A decoder that refuses to stop becomes the parked
+        current owner instead of being ignored — the immediately following
+        ``_handoff_to("adsb")`` then walks the normal honest-release path (retry
+        the release; refuse to start readsb onto a busy device; report unhealthy)
+        rather than repeating the crash-loop.
+
+        Only runs in SHARED mode (``start()`` is not called in DEDICATED mode,
+        where an already-running decoder on its own dongle is intentional).
+        """
+        for owner in self._owners.values():
+            service = getattr(owner, "service", None)
+            if not isinstance(service, str) or not service:
+                continue  # in-process owners die with the process — no orphan
+            if not await self._is_service_active(service):
+                continue
+            logger.warning(
+                "SDR reclaim: %s (%s) already running at coordinator startup — "
+                "orphan from a previous session holds the dongle; stopping it",
+                owner.name, service)
+            if not await self._stop_service_with_handshake(service):
+                self._current_owner = owner.name
+                self._healthy = False
+                logger.warning(
+                    "SDR reclaim: %s did not stop — parking on it so the first "
+                    "handoff retries the release instead of starting readsb "
+                    "onto a busy device", owner.name)
 
     async def stop(self) -> None:
         # Release whatever holds the dongle, then restore readsb (ADS-B is the

@@ -348,6 +348,10 @@ class PassiveVigilance:
         # via ADAPTATION_POSTURE; off (the default) starts no task.
         if so._adaptation_sweep_enabled():
             tasks.append(asyncio.create_task(so._adaptation_sweep_loop(), name="adaptation-sweep"))
+        # Nightly sighting rollup — only when opted in via ENTITY_ROLLUP_ENABLED;
+        # folds aged observation rows into per-device state off the poll path.
+        if so._rollup_enabled():
+            tasks.append(asyncio.create_task(so._rollup_loop(), name="sighting-rollup"))
         # Recon-pair store-and-forward sync (mobile side) — only when this node has a
         # fixed-node URL configured; the loop no-ops otherwise. Off the poll hot path.
         if so.survey.sync_configured:
