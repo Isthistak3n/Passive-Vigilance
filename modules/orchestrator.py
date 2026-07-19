@@ -514,6 +514,57 @@ class SensorOrchestrator:
                 self._log_health_banner()
 
     # ------------------------------------------------------------------
+    # Nightly sighting rollup (design docs/rollup-investigation.md Phase 2)
+    # ------------------------------------------------------------------
+
+    def _rollup_enabled(self) -> bool:
+        """Opt-in via ENTITY_ROLLUP_ENABLED, and only meaningful for a file-backed
+        entity store (the rollup opens its own connection to the same file)."""
+        if os.getenv("ENTITY_ROLLUP_ENABLED", "false").strip().lower() not in (
+                "1", "true", "yes", "on"):
+            return False
+        db_path = getattr(self.entity_store, "_db_path", None)
+        return bool(db_path) and db_path != ":memory:"
+
+    async def _rollup_loop(self) -> None:
+        """Run the sighting rollup once nightly (ENTITY_ROLLUP_HOUR_UTC, default
+        03:00 UTC) on an executor thread — the fold uses its own DB connection and
+        never touches the poll path. Guarded: a rollup failure logs and waits for
+        the next night; it can never affect capture or detection."""
+        if not self._rollup_enabled():
+            return
+        from modules.sighting_rollup import SightingRollup
+        rollup = SightingRollup(self.entity_store._db_path)
+        rollup_hour = int(os.getenv("ENTITY_ROLLUP_HOUR_UTC", "3")) % 24
+        loop = asyncio.get_running_loop()
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.sleep(900)
+            except asyncio.CancelledError:
+                raise
+            if self._stop_event.is_set():
+                return
+            now = datetime.now(timezone.utc)
+            if now.hour != rollup_hour:
+                continue
+            try:
+                last = await loop.run_in_executor(None, rollup.last_run)
+                if last is not None and (now - last).total_seconds() < 20 * 3600:
+                    continue
+                # On a fixed node, devices first seen inside the baseline learning
+                # window are flagged as learning members (known-fixture candidates).
+                learning_end = getattr(
+                    getattr(self.persistence, "_store", None), "freeze_time", None)
+                summary = await loop.run_in_executor(
+                    None, lambda: rollup.run(now=now, learning_end=learning_end))
+                logger.info(
+                    "Sighting rollup: folded %d observation(s) into %d device "
+                    "state row(s)%s", summary["folded_rows"], summary["identities"],
+                    "" if summary["exhausted"] else " (budget hit — backlog resumes next run)")
+            except Exception as exc:
+                logger.warning("Sighting rollup failed (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------
     # Rolling-baseline adaptation sweep (P3) — separate from entity-prune
     # ------------------------------------------------------------------
 
