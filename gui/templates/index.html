@@ -55,6 +55,7 @@
     <button class="tab-btn" data-tab="survey" id="tabbtn-survey" hidden>
       Survey <span class="badge" id="badge-survey">0</span>
     </button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
   </nav>
 
   <main>
@@ -196,6 +197,18 @@
         <span id="patrol-state" class="patrol-state"></span>
       </div>
       <div id="survey-list"></div>
+    </section>
+
+    <!-- Settings tab — operator-tunable .env values (all read at startup only) -->
+    <section id="tab-settings" class="tab-panel">
+      <div id="settings-banner" class="settings-banner" hidden>
+        Changes apply after a node restart.
+      </div>
+      <div id="settings-root"><p class="settings-note">Loading settings…</p></div>
+      <div class="settings-actions">
+        <button id="settings-save" class="btn-sm" hidden>Save changes</button>
+        <span id="settings-status" class="settings-note"></span>
+      </div>
     </section>
   </main>
 
