@@ -3,8 +3,12 @@ name: Lint
 on:
   push:
     branches: [dev, main]
+  # No branches filter on pull_request: the filter matches the PR's BASE
+  # branch, so stacked PRs (based on another feature branch) silently ran no
+  # checks at all until GitHub retargeted them after the base merged — that is
+  # how a lint failure reached main in #222. Every PR runs checks, whatever
+  # its base.
   pull_request:
-    branches: [dev, main]
 
 jobs:
   lint:
