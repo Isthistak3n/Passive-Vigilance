@@ -47,13 +47,14 @@ FIXED_RSSI_MIN_SAMPLES = 10     # check is skipped below this many samples
 MOBILE_MIN_LOCATIONS = 2        # sighted from ≥2 distinct node positions ⇒ MOBILE
 MOBILE_MIN_DISTINCT_DAYS = 2    # recurring but intermittent (few hour buckets)
 MOBILE_MAX_ACTIVE_HOURS = 8     # ⇒ MOBILE on a fixed node
-MIN_EVIDENCE_SIGHTINGS = 10     # below this, stay UNKNOWN (thin-evidence gate,
-                                # mirrors OFF_SCHEDULE_MIN_BASELINE_HOURS's intent)
+# Below this, stay UNKNOWN — the thin-evidence gate, mirroring the intent of
+# OFF_SCHEDULE_MIN_BASELINE_HOURS.
+MIN_EVIDENCE_SIGHTINGS = 10
 
-DAY_COUNTS_KEEP = 45            # per-day counter ring kept on the row; the
-                                # distinct_days lifetime counter is NOT trimmed
-                                # (a >45-day returner may re-count a day — the
-                                # counter is a close upper bound, documented)
+# Per-day counter ring kept on the row. The distinct_days lifetime counter is
+# NOT trimmed with the ring, so a >45-day returner may re-count a day — the
+# counter is a close upper bound, documented.
+DAY_COUNTS_KEEP = 45
 LOCATION_CLUSTER_METERS = 100.0  # same 100 m rule mobile scoring uses
 MAX_LOCATION_CLUSTERS = 50
 
