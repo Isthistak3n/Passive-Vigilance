@@ -63,29 +63,35 @@ _VALID_MODES = ("fixed", "mobile")
 _DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 
-def read_node_mode(env_path) -> str:
-    """Return the NODE_MODE value currently set in *env_path*, or "" if absent.
+def read_env_value(key: str, env_path) -> str:
+    """Return *key*'s value currently set in *env_path*, or "" if absent.
 
-    Ignores commented-out lines (``# NODE_MODE=...``).
+    Ignores commented-out lines (``# KEY=...``).
     """
     try:
         text = Path(env_path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return ""
     for line in text.splitlines():
-        if line.split("=", 1)[0].strip() == "NODE_MODE":
+        if line.split("=", 1)[0].strip() == key:
             return line.split("=", 1)[1].strip() if "=" in line else ""
     return ""
 
 
-def write_node_mode(mode: str, env_path) -> None:
-    """Surgically set NODE_MODE in *env_path*, preserving everything else.
+def read_node_mode(env_path) -> str:
+    """Return the NODE_MODE value currently set in *env_path*, or "" if absent."""
+    return read_env_value("NODE_MODE", env_path)
 
-    Only the ``NODE_MODE=`` assignment line is rewritten in place; if no such
-    line exists it is appended. All other lines, comments, blank lines, ordering
-    and secrets are left byte-for-byte untouched. The write is atomic
-    (temp file in the same directory + ``os.rename``), matching the crash-safe
-    pattern in :class:`modules.ignore_list.IgnoreList`.
+
+def write_env_values(updates: dict, env_path) -> None:
+    """Surgically set the given KEY=value assignments in *env_path*, preserving
+    everything else.
+
+    Only the matching assignment lines are rewritten in place; keys with no
+    existing line are appended. All other lines, comments, blank lines, ordering
+    and secrets are left byte-for-byte untouched. All updates land in ONE atomic
+    write (temp file in the same directory + ``os.rename``), matching the
+    crash-safe pattern in :class:`modules.ignore_list.IgnoreList`.
     """
     path = Path(env_path)
     try:
@@ -93,20 +99,21 @@ def write_node_mode(mode: str, env_path) -> None:
     except FileNotFoundError:
         original = ""
 
+    remaining = dict(updates)
     lines = original.splitlines(keepends=True)
     new_lines: list[str] = []
-    replaced = False
     for line in lines:
-        if line.split("=", 1)[0].strip() == "NODE_MODE":
+        key = line.split("=", 1)[0].strip()
+        if key in remaining:
             nl = "\n" if line.endswith("\n") else ""
-            new_lines.append(f"NODE_MODE={mode}{nl}")
-            replaced = True
+            new_lines.append(f"{key}={remaining.pop(key)}{nl}")
         else:
             new_lines.append(line)
-    if not replaced:
+    if remaining:
         if new_lines and not new_lines[-1].endswith("\n"):
             new_lines[-1] = new_lines[-1] + "\n"
-        new_lines.append(f"NODE_MODE={mode}\n")
+        for key, value in remaining.items():
+            new_lines.append(f"{key}={value}\n")
 
     content = "".join(new_lines)
     dir_ = str(path.parent)
@@ -121,6 +128,130 @@ def write_node_mode(mode: str, env_path) -> None:
         except OSError:
             pass
         raise
+
+
+def write_node_mode(mode: str, env_path) -> None:
+    """Surgically set NODE_MODE in *env_path* (see :func:`write_env_values`)."""
+    write_env_values({"NODE_MODE": mode}, env_path)
+
+
+# Operator-tunable .env settings surfaced on the GUI Settings tab. Every entry
+# is read by the node AT STARTUP only, so the tab always reports that a restart
+# is required after a save. Descriptions are written for the operator — plain
+# language, no code — and the authoritative documentation stays in .env.example.
+_SETTINGS_SPEC = [
+    # ── Baseline & scoring ──
+    {"key": "FIXED_BASELINE_HOURS", "group": "Baseline & scoring",
+     "label": "Baseline learning window (hours)",
+     "help": "How long a fixed node learns the RF environment before freezing "
+             "its baseline and alerting on deviations. Changing this only "
+             "affects the NEXT baseline (the current window keeps its length).",
+     "type": "int", "min": 1, "max": 720, "default": "72"},
+    {"key": "KISMET_ACTIVE_WINDOW_SECONDS", "group": "Baseline & scoring",
+     "label": "Active-device window for scoring (seconds, 0 = all devices)",
+     "help": "Mobile nodes should set 90-120 so long-gone devices don't create "
+             "false 'following' clusters on a drive. Fixed nodes leave 0 — "
+             "baseline learning needs the full device list.",
+     "type": "int", "min": 0, "max": 86400, "default": "0"},
+    # ── Sighting capture ──
+    {"key": "ENTITY_AUDIBLE_WINDOW_SECONDS", "group": "Sighting capture",
+     "label": "Audible-only sighting window (seconds, 0 = record everything)",
+     "help": "Only devices actually heard within this window get a stored "
+             "sighting each poll. Recommended 2-3x the Kismet poll interval "
+             "(90 with the default 30 s poll) — silent devices then stop "
+             "generating phantom sighting rows all day.",
+     "type": "int", "min": 0, "max": 86400, "default": "0"},
+    {"key": "ENTITY_ASYNC_WRITES", "group": "Sighting capture",
+     "label": "Off-loop sighting writer",
+     "help": "Hand each poll's sighting write to a dedicated thread so a slow "
+             "SD-card commit can never stall the capture loop. Recommended on "
+             "for SD-card nodes.",
+     "type": "bool", "default": "false"},
+    # ── Sighting rollup ──
+    {"key": "ENTITY_ROLLUP_ENABLED", "group": "Sighting rollup",
+     "label": "Nightly sighting rollup",
+     "help": "Fold sightings older than the window below into one durable "
+             "state row per device (lifetime counters, schedule, fixed/mobile "
+             "classification), then delete them — keeps sighting storage flat.",
+     "type": "bool", "default": "false"},
+    {"key": "ENTITY_SIGHTING_RETENTION_DAYS", "group": "Sighting rollup",
+     "label": "Full-resolution sighting window (days)",
+     "help": "Sightings younger than this keep full timestamp resolution; "
+             "older ones are folded into the device's state row. Must be "
+             "smaller than the raw-history age limit below.",
+     "type": "int", "min": 1, "max": 365, "default": "7"},
+    {"key": "ENTITY_ROLLUP_HOUR_UTC", "group": "Sighting rollup",
+     "label": "Rollup hour (UTC, 0-23)",
+     "help": "When the nightly fold runs. Pick the local dead of night — "
+             "13 is 3 AM Hawaii time.",
+     "type": "int", "min": 0, "max": 23, "default": "3"},
+    {"key": "ENTITY_ROLLUP_BATCH_ROWS", "group": "Sighting rollup",
+     "label": "Rollup batch size (rows)",
+     "help": "Sightings folded and deleted per transaction.",
+     "type": "int", "min": 100, "max": 100000, "default": "5000"},
+    {"key": "ENTITY_ROLLUP_TIME_BUDGET_S", "group": "Sighting rollup",
+     "label": "Rollup time budget (seconds)",
+     "help": "Wall-clock cap per nightly run; an unfinished backlog resumes "
+             "the next night.",
+     "type": "float", "min": 10, "max": 86400, "default": "300"},
+    # ── Sighting history bounding ──
+    {"key": "ENTITY_OBSERVATION_RETENTION_DAYS", "group": "Sighting history bounding",
+     "label": "Raw history age limit (days, 0 = keep forever)",
+     "help": "Backstop delete for sighting rows older than this. With the "
+             "rollup enabled the nightly fold normally deletes first; rows "
+             "this sweep removes are NOT folded into state counters.",
+     "type": "int", "min": 0, "max": 3650, "default": "30"},
+    {"key": "ENTITY_OBSERVATION_MAX_ROWS", "group": "Sighting history bounding",
+     "label": "Raw history row cap (0 = uncapped)",
+     "help": "Emergency ceiling on stored sightings regardless of age — the "
+             "pressure valve that keeps slow storage from stalling the node.",
+     "type": "int", "min": 0, "max": 100000000, "default": "4000000"},
+    {"key": "ENTITY_WAL_CHECKPOINT_SECONDS", "group": "Sighting history bounding",
+     "label": "Database journal checkpoint interval (seconds, 0 = off)",
+     "help": "How often the write-ahead journal is folded back into the "
+             "database file. On SD-card nodes keep this short (120) — an "
+             "unchecked journal is what filled the disk on 2026-07-18.",
+     "type": "int", "min": 0, "max": 86400, "default": "300"},
+    {"key": "ENTITY_PRUNE_INTERVAL_SECONDS", "group": "Sighting history bounding",
+     "label": "History sweep interval (seconds)",
+     "help": "How often the age/cap sweep runs.",
+     "type": "int", "min": 10, "max": 86400, "default": "3600"},
+    {"key": "ENTITY_PRUNE_BATCH_ROWS", "group": "Sighting history bounding",
+     "label": "History sweep batch size (rows)",
+     "help": "Rows deleted per statement during a sweep.",
+     "type": "int", "min": 100, "max": 100000, "default": "5000"},
+    {"key": "ENTITY_PRUNE_TIME_BUDGET_S", "group": "Sighting history bounding",
+     "label": "History sweep time budget (seconds)",
+     "help": "Wall-clock cap per sweep so a big backlog can never stall the "
+             "capture loop.",
+     "type": "float", "min": 0.1, "max": 60, "default": "1.0"},
+]
+
+_SETTINGS_BY_KEY = {s["key"]: s for s in _SETTINGS_SPEC}
+
+_TRUTHY = ("1", "true", "yes", "on")
+_FALSY = ("0", "false", "no", "off")
+
+
+def _coerce_setting(spec: dict, raw) -> str:
+    """Validate *raw* against *spec* and return the canonical string to store
+    in .env. Raises ValueError with an operator-readable message."""
+    text = str(raw).strip()
+    if spec["type"] == "bool":
+        low = text.lower()
+        if low in _TRUTHY:
+            return "true"
+        if low in _FALSY:
+            return "false"
+        raise ValueError(f"{spec['key']} must be true or false")
+    try:
+        value = float(text) if spec["type"] == "float" else int(text)
+    except (TypeError, ValueError):
+        raise ValueError(f"{spec['key']} must be a number")
+    if value < spec["min"] or value > spec["max"]:
+        raise ValueError(
+            f"{spec['key']} must be between {spec['min']} and {spec['max']}")
+    return str(value)
 
 
 class GUIServer:
@@ -418,6 +549,93 @@ class GUIServer:
                     f"NODE_MODE saved as '{mode}'. RESTART REQUIRED to take "
                     "effect — the node only reads NODE_MODE at startup and will "
                     "keep running in its current mode until it is restarted."
+                ),
+            })
+
+        @app.route("/api/settings", methods=["GET", "POST"])
+        def api_settings():
+            """Report (GET) or change (POST) the operator-tunable .env settings.
+
+            GET returns the settings registry with each setting's current .env
+            value (or its default when unset). POST is a control action exactly
+            like ``/api/mode``: it requires GUI_TOKEN to be configured,
+            validates every submitted value against the registry, enforces the
+            cross-setting rule (the rollup fold window must sit inside the raw
+            age limit, or aged rows would be deleted unfolded), writes all
+            changes to .env in one atomic pass, and tells the operator a
+            RESTART is required — every one of these is read only at startup.
+            """
+            from flask import request as _req
+
+            def _current(key: str, spec: dict) -> str:
+                return read_env_value(key, self._env_path) or spec["default"]
+
+            if _req.method == "GET":
+                return jsonify({
+                    "control_enabled": bool(gui_token),
+                    "restart_required": True,
+                    "settings": [
+                        {**{k: s[k] for k in s if k != "default"},
+                         "default": s["default"],
+                         "value": _current(s["key"], s)}
+                        for s in _SETTINGS_SPEC
+                    ],
+                })
+
+            # POST — control action; see the /api/mode POST comment for why the
+            # no-token case must be refused here.
+            if not gui_token:
+                return jsonify({
+                    "error": "control actions require GUI_TOKEN to be configured",
+                }), 403
+
+            data = _req.get_json(silent=True) or {}
+            submitted = data.get("settings")
+            if not isinstance(submitted, dict) or not submitted:
+                return jsonify({"error": "body must be {\"settings\": {KEY: value}}"}), 400
+
+            updates: dict = {}
+            for key, raw in submitted.items():
+                spec = _SETTINGS_BY_KEY.get(key)
+                if spec is None:
+                    return jsonify({"error": f"unknown setting: {key}"}), 400
+                try:
+                    updates[key] = _coerce_setting(spec, raw)
+                except ValueError as exc:
+                    return jsonify({"error": str(exc)}), 400
+
+            # Cross-setting rule, checked against the MERGED result (current
+            # .env values overlaid with this submission): with the rollup on,
+            # the fold window must be smaller than the raw age limit — rows the
+            # age sweep deletes are never folded, so an inverted pair silently
+            # loses history from the state counters.
+            def _merged(key: str) -> str:
+                return updates.get(key) or _current(key, _SETTINGS_BY_KEY[key])
+
+            rollup_on = _merged("ENTITY_ROLLUP_ENABLED") == "true"
+            fold_days = int(_merged("ENTITY_SIGHTING_RETENTION_DAYS"))
+            age_days = int(_merged("ENTITY_OBSERVATION_RETENTION_DAYS"))
+            if rollup_on and age_days > 0 and fold_days >= age_days:
+                return jsonify({"error": (
+                    "the full-resolution sighting window "
+                    f"({fold_days}d) must be smaller than the raw history age "
+                    f"limit ({age_days}d) — otherwise the age sweep deletes "
+                    "sightings before the rollup can fold them")}), 400
+
+            try:
+                write_env_values(updates, self._env_path)
+            except Exception as exc:
+                logger.error("Settings: failed to write .env: %s", exc)
+                return jsonify({"error": f"failed to write .env: {exc}"}), 500
+
+            logger.info("Settings saved via GUI: %s (restart required)",
+                        ", ".join(f"{k}={v}" for k, v in sorted(updates.items())))
+            return jsonify({
+                "saved": sorted(updates),
+                "restart_required": True,
+                "message": (
+                    f"{len(updates)} setting(s) saved. RESTART REQUIRED to take "
+                    "effect — these are only read when the node starts."
                 ),
             })
 

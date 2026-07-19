@@ -1177,3 +1177,105 @@ document.getElementById('survey-refresh')?.addEventListener('click', loadSurvey)
 // Probe once on load; if survey is enabled this reveals the UI, otherwise it stays
 // hidden and the feature is entirely dormant.
 loadSurvey();
+
+// ── Settings tab — operator-tunable .env values ──────────────────────────────
+// Same token dance as the mode control: the page loads with ?token=<GUI_TOKEN>
+// and control POSTs carry it back. Every setting here is read only at node
+// startup, so the tab banners a restart after any save. Values are loaded
+// lazily on first open and re-fetched after a save so the form always shows
+// what is actually in .env (not what the running process happens to be using).
+const SETTINGS_TOKEN = new URLSearchParams(location.search).get('token') || '';
+function settingsUrl() {
+  return SETTINGS_TOKEN ? `/api/settings?token=${encodeURIComponent(SETTINGS_TOKEN)}` : '/api/settings';
+}
+
+let settingsLoaded = false;
+const settingsDirty = {};   // key -> new value, only what the operator changed
+
+function settingInput(s) {
+  if (s.type === 'bool') {
+    const on = String(s.value).toLowerCase() === 'true';
+    return `<input type="checkbox" data-key="${s.key}" ${on ? 'checked' : ''}>`;
+  }
+  const step = s.type === 'float' ? 'any' : '1';
+  return `<input type="number" data-key="${s.key}" value="${s.value}"
+          min="${s.min}" max="${s.max}" step="${step}">`;
+}
+
+function renderSettings(payload) {
+  const root = document.getElementById('settings-root');
+  const groups = {};
+  payload.settings.forEach(s => { (groups[s.group] ||= []).push(s); });
+  root.innerHTML = Object.entries(groups).map(([name, items]) => `
+    <div class="settings-group">
+      <h3>${name}</h3>
+      ${items.map(s => `
+        <div class="setting-row">
+          <label>
+            <span class="setting-label">${s.label}</span>
+            ${settingInput(s)}
+          </label>
+          <p class="settings-note">${s.help}</p>
+        </div>`).join('')}
+    </div>`).join('');
+
+  const save = document.getElementById('settings-save');
+  const status = document.getElementById('settings-status');
+  if (!payload.control_enabled || !SETTINGS_TOKEN) {
+    root.querySelectorAll('input').forEach(i => { i.disabled = true; });
+    status.textContent = 'read-only — open the dashboard with ?token= to edit';
+    save.hidden = true;
+    return;
+  }
+  save.hidden = false;
+  root.querySelectorAll('input').forEach(input => {
+    input.addEventListener('change', () => {
+      settingsDirty[input.dataset.key] =
+        input.type === 'checkbox' ? String(input.checked) : input.value;
+      status.textContent = `${Object.keys(settingsDirty).length} unsaved change(s)`;
+    });
+  });
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch(settingsUrl());
+    if (!r.ok) { throw new Error(`HTTP ${r.status}`); }
+    renderSettings(await r.json());
+    document.getElementById('settings-banner').hidden = false;
+    settingsLoaded = true;
+  } catch (e) {
+    document.getElementById('settings-root').innerHTML =
+      `<p class="settings-note">Failed to load settings (${e.message}).</p>`;
+  }
+}
+
+async function saveSettings() {
+  const status = document.getElementById('settings-status');
+  if (!Object.keys(settingsDirty).length) {
+    status.textContent = 'nothing to save';
+    return;
+  }
+  status.textContent = 'saving…';
+  try {
+    const r = await fetch(settingsUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: settingsDirty }),
+    });
+    const body = await r.json();
+    if (!r.ok) { status.textContent = `rejected: ${body.error}`; return; }
+    Object.keys(settingsDirty).forEach(k => delete settingsDirty[k]);
+    status.textContent = body.message;
+    loadSettings();   // re-read .env so the form shows the stored truth
+  } catch (e) {
+    status.textContent = `save failed: ${e.message}`;
+  }
+}
+
+document.getElementById('settings-save')?.addEventListener('click', saveSettings);
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === 'settings' && !settingsLoaded) { loadSettings(); }
+  });
+});

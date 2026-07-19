@@ -1083,3 +1083,130 @@ class TestGUIServerSurveyEndpoints(unittest.TestCase):
                                        rssi=-60, timestamp=datetime.now(timezone.utc))
         body = c.get("/api/patrol", headers=self._h()).get_json()
         self.assertEqual(body["wardrive_aps"], 1)
+
+
+class TestSettingsEndpoint(unittest.TestCase):
+    """GET/POST /api/settings — the Settings-tab control endpoint."""
+
+    def _env(self, content=FIXTURE_ENV):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        p = os.path.join(d, ".env")
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return p
+
+    def _client(self, token, env_path):
+        with patch.dict(os.environ, {"GUI_TOKEN": token}):
+            from gui.server import GUIServer
+            gui = GUIServer(env_path=env_path)
+        if gui.app is None:
+            self.skipTest("Flask not installed — skipping settings tests")
+        return gui.app.test_client()
+
+    def _read(self, p):
+        with open(p, encoding="utf-8") as fh:
+            return fh.read()
+
+    # ---- GET ----
+
+    def test_get_lists_registry_with_defaults_when_env_unset(self):
+        client = self._client("secret", self._env())
+        body = client.get("/api/settings?token=secret").get_json()
+        self.assertTrue(body["control_enabled"])
+        self.assertTrue(body["restart_required"])
+        by_key = {s["key"]: s for s in body["settings"]}
+        self.assertEqual(by_key["ENTITY_ROLLUP_ENABLED"]["value"], "false")
+        self.assertEqual(by_key["FIXED_BASELINE_HOURS"]["value"], "72")
+        for s in body["settings"]:          # every entry is fully described
+            for field in ("key", "label", "help", "group", "type", "value"):
+                self.assertIn(field, s)
+
+    def test_get_reflects_env_value_over_default(self):
+        p = self._env(FIXTURE_ENV + "FIXED_BASELINE_HOURS=108\n")
+        client = self._client("secret", p)
+        body = client.get("/api/settings?token=secret").get_json()
+        by_key = {s["key"]: s for s in body["settings"]}
+        self.assertEqual(by_key["FIXED_BASELINE_HOURS"]["value"], "108")
+
+    # ---- POST auth ----
+
+    def test_post_without_configured_token_is_refused(self):
+        p = self._env()
+        client = self._client("", p)
+        resp = client.post("/api/settings", json={
+            "settings": {"FIXED_BASELINE_HOURS": 108}})
+        self.assertEqual(resp.status_code, 403)
+        self.assertNotIn("FIXED_BASELINE_HOURS", self._read(p))
+
+    def test_post_with_wrong_token_is_refused_by_auth(self):
+        p = self._env()
+        client = self._client("secret", p)
+        resp = client.post("/api/settings?token=wrong", json={
+            "settings": {"FIXED_BASELINE_HOURS": 108}})
+        self.assertEqual(resp.status_code, 401)   # check_auth rejects pre-route
+        self.assertNotIn("FIXED_BASELINE_HOURS", self._read(p))
+
+    # ---- POST validation ----
+
+    def test_post_unknown_key_rejected(self):
+        client = self._client("secret", self._env())
+        resp = client.post("/api/settings?token=secret", json={
+            "settings": {"KISMET_API_KEY": "steal"}})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_post_out_of_range_rejected(self):
+        client = self._client("secret", self._env())
+        resp = client.post("/api/settings?token=secret", json={
+            "settings": {"ENTITY_ROLLUP_HOUR_UTC": 99}})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_post_non_numeric_rejected(self):
+        client = self._client("secret", self._env())
+        resp = client.post("/api/settings?token=secret", json={
+            "settings": {"FIXED_BASELINE_HOURS": "abc"}})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_post_fold_window_must_sit_inside_age_limit(self):
+        client = self._client("secret", self._env())
+        resp = client.post("/api/settings?token=secret", json={
+            "settings": {"ENTITY_ROLLUP_ENABLED": True,
+                         "ENTITY_SIGHTING_RETENTION_DAYS": 30,
+                         "ENTITY_OBSERVATION_RETENTION_DAYS": 30}})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("smaller", resp.get_json()["error"])
+
+    # ---- POST writes ----
+
+    def test_post_valid_writes_env_and_preserves_everything_else(self):
+        p = self._env()
+        client = self._client("secret", p)
+        resp = client.post("/api/settings?token=secret", json={
+            "settings": {"ENTITY_ROLLUP_ENABLED": True,
+                         "ENTITY_AUDIBLE_WINDOW_SECONDS": 90}})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertTrue(body["restart_required"])
+        self.assertEqual(sorted(body["saved"]),
+                         ["ENTITY_AUDIBLE_WINDOW_SECONDS", "ENTITY_ROLLUP_ENABLED"])
+        text = self._read(p)
+        self.assertIn("ENTITY_ROLLUP_ENABLED=true", text)
+        self.assertIn("ENTITY_AUDIBLE_WINDOW_SECONDS=90", text)
+        self.assertIn("KISMET_API_KEY=KISMET_FAKE_SECRET_abc123", text)
+        self.assertIn("NODE_MODE=mobile", text)          # untouched
+
+    def test_post_rewrites_existing_line_in_place_no_duplicates(self):
+        p = self._env(FIXTURE_ENV + "FIXED_BASELINE_HOURS=48\n")
+        client = self._client("secret", p)
+        client.post("/api/settings?token=secret", json={
+            "settings": {"FIXED_BASELINE_HOURS": 108}})
+        text = self._read(p)
+        self.assertEqual(text.count("FIXED_BASELINE_HOURS="), 1)
+        self.assertIn("FIXED_BASELINE_HOURS=108", text)
+
+    def test_post_bool_normalized_to_lowercase_true_false(self):
+        p = self._env()
+        client = self._client("secret", p)
+        client.post("/api/settings?token=secret", json={
+            "settings": {"ENTITY_ASYNC_WRITES": "YES"}})
+        self.assertIn("ENTITY_ASYNC_WRITES=true", self._read(p))

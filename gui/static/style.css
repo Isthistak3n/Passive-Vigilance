@@ -731,3 +731,28 @@ tr.visitor-row { background: rgba(248, 81, 73, 0.06); }
 .patrol-state.patrol-on { color: #3fb950; }
 /* A running patrol with no GPS fix banks nothing — flag it loudly over the green. */
 .patrol-state.patrol-nogps { color: #d29922; font-weight: 600; }
+
+/* ── Settings tab ── */
+#tab-settings { padding: 16px; max-width: 760px; }
+.settings-banner {
+  background: #21262d; border: 1px solid #d29922; border-radius: 4px;
+  color: #d29922; font-size: 13px; margin-bottom: 14px; padding: 8px 12px;
+}
+.settings-group { margin-bottom: 22px; }
+.settings-group h3 {
+  border-bottom: 1px solid #30363d; color: #58a6ff; font-size: 14px;
+  margin-bottom: 10px; padding-bottom: 4px;
+}
+.setting-row { margin-bottom: 12px; }
+.setting-row label {
+  align-items: center; display: flex; gap: 10px; justify-content: space-between;
+}
+.setting-label { color: #c9d1d9; font-size: 13px; }
+.setting-row input[type="number"] {
+  background: #0d1117; border: 1px solid #30363d; border-radius: 4px;
+  color: #c9d1d9; font-size: 13px; padding: 4px 8px; width: 130px;
+}
+.setting-row input:focus { outline: none; border-color: #58a6ff; }
+.setting-row input:disabled { opacity: 0.5; }
+.settings-note { color: #6e7681; font-size: 12px; margin: 3px 0 0; }
+.settings-actions { align-items: center; display: flex; gap: 12px; margin-top: 8px; }
