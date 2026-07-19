@@ -75,7 +75,8 @@ class EntityStore:
                  max_observation_rows: Optional[int] = None,
                  wal_checkpoint_s: Optional[int] = None,
                  async_writes: Optional[bool] = None,
-                 write_queue_max: Optional[int] = None) -> None:
+                 write_queue_max: Optional[int] = None,
+                 audible_window_s: Optional[int] = None) -> None:
         self._db_path = db_path or _DEFAULT_ENTITY_DB_PATH
         self._retention_days = int(
             os.getenv("ENTITY_OBSERVATION_RETENTION_DAYS", "30")
@@ -117,6 +118,20 @@ class EntityStore:
             os.getenv("ENTITY_PRUNE_TIME_BUDGET_S", "1.0")
             if prune_time_budget_s is None else prune_time_budget_s)
         self._last_prune: Optional[datetime] = None
+        # Audible-only sighting filter. Kismet's device list is CUMULATIVE for the
+        # session, and fixed nodes take the full list (KISMET_ACTIVE_WINDOW_SECONDS=0
+        # is required there for baseline learning) — so without this filter a device
+        # heard once keeps generating a fresh observation row every poll for the rest
+        # of the session. Row creation is then O(cumulative devices × polls), which is
+        # what outran the pruner and filled the disk (2026-07-18, issue #211). When
+        # set, only devices whose Kismet last_time falls within this many seconds of
+        # the poll are persisted; devices with no last_time are recorded anyway (fail
+        # open — BLE records and tests don't carry the field). The filter lives here,
+        # at the persistence site: the unfiltered list still reaches scoring/baseline.
+        # 0 disables it (legacy behavior: persist the entire list every poll).
+        self._audible_window_s = max(0, int(
+            os.getenv("ENTITY_AUDIBLE_WINDOW_SECONDS", "0")
+            if audible_window_s is None else audible_window_s))
         if self._db_path != ":memory:":
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path)
@@ -410,11 +425,16 @@ class EntityStore:
         """Persist one poll cycle. In sync mode (default) the write happens inline;
         with the off-loop writer enabled it is handed to the writer thread so a slow
         SD commit can't block the caller's (asyncio) loop. A full queue drops the
-        poll rather than blocking capture — history is lossy under stress by design."""
+        poll rather than blocking capture — history is lossy under stress by design.
+
+        With ENTITY_AUDIBLE_WINDOW_SECONDS set, devices that were not actually heard
+        within that window of this poll are filtered out here — before the write (and
+        before the async snapshot/queue), so silent devices cost nothing downstream."""
+        now = now or datetime.now(timezone.utc)
+        devices = self._audible_only(devices, now)
         if not self._async_writes:
             self._write_poll(devices, gps_fix=gps_fix, now=now)
             return
-        now = now or datetime.now(timezone.utc)
         try:
             # Snapshot the list so the caller can reuse it; device dicts are treated
             # as read-only downstream, so a shallow copy is enough.
@@ -425,6 +445,16 @@ class EntityStore:
                 logger.warning(
                     "EntityStore write queue full — dropping poll (%d dropped total); "
                     "the writer isn't keeping up with storage", self._write_drops)
+
+    def _audible_only(self, devices: list, now: datetime) -> list:
+        """Drop devices whose Kismet ``last_time`` is older than the audible window.
+        Devices with a missing/zero ``last_time`` are kept (fail open). Returns the
+        input list unchanged when the filter is disabled."""
+        if self._audible_window_s <= 0:
+            return devices
+        cutoff = now.timestamp() - self._audible_window_s
+        return [d for d in devices
+                if not (0 < (d.get("last_time") or 0) < cutoff)]
 
     def _write_poll(self, devices: list, *, gps_fix: Optional[dict] = None,
                     now: Optional[datetime] = None) -> None:
