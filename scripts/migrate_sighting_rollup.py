@@ -57,14 +57,27 @@ def seed_from_baseline(entities_db: str, baseline_db: str) -> int:
     seeded = 0
     for p in src.execute("SELECT * FROM device_profiles"):
         key = p["key"]  # already mac:/fp: form (FixedScoring._device_key)
-        hours = [1 if (p["hour_mask"] or 0) >> h & 1 else 0 for h in range(24)]
+        # The hour mask and the RSSI Welford accumulator live INSIDE the
+        # time_histogram column as JSON (BaselineStore packs its whole
+        # accumulator state there); the bare signal_mean/signal_var columns are
+        # a derived snapshot, kept only as a fallback for old rows.
+        try:
+            state = json.loads(p["time_histogram"]) if p["time_histogram"] else {}
+        except (TypeError, ValueError):
+            state = {}
+        mask = int(state.get("hour_mask") or 0)
+        hours = [1 if mask >> h & 1 else 0 for h in range(24)]
         learning = 0
         fs = _parse_iso(p["first_seen"])
         if freeze is not None and fs is not None and fs <= freeze:
             learning = 1
-        n = p["observation_count"] or 0
-        mean = p["signal_mean"] if p["signal_mean"] is not None else 0.0
-        m2 = (p["signal_var"] or 0.0) * n
+        n = int(state.get("sig_n") or 0)
+        mean = float(state.get("sig_mean") or 0.0)
+        m2 = float(state.get("sig_m2") or 0.0)
+        if n == 0 and p["signal_mean"] is not None:
+            n = p["observation_count"] or 0
+            mean = p["signal_mean"]
+            m2 = (p["signal_var"] or 0.0) * n
         row = dst.execute(
             "SELECT identity_key, hour_counts, learning_member FROM device_state "
             "WHERE identity_key = ?", (key,)).fetchone()
@@ -81,8 +94,9 @@ def seed_from_baseline(entities_db: str, baseline_db: str) -> int:
                 "last_seen, total_sightings, learning_member, hour_counts, "
                 "rssi_n, rssi_mean, rssi_m2, mac_type) "
                 "VALUES (?, 'wifi', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (key, p["first_seen"], p["last_seen"], n, learning,
-                 json.dumps(hours), n if mean else 0, mean, m2, p["mac_type"]))
+                (key, p["first_seen"], p["last_seen"],
+                 p["observation_count"] or 0, learning,
+                 json.dumps(hours), n, mean, m2, p["mac_type"] or "static"))
         seeded += 1
     dst.commit()
     dst.close()
