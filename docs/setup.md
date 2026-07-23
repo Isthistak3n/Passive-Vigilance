@@ -4,6 +4,33 @@
 
 ---
 
+## Contents
+
+- [Quick Install (recommended)](#quick-install-recommended)
+- [Detection mode (`NODE_MODE` — REQUIRED)](#detection-mode-node_mode--required)
+- [Boot Sequence](#boot-sequence)
+- [GPS](#gps)
+- [Kismet](#kismet)
+- [Troubleshooting](#troubleshooting)
+- [WiFi Monitor Mode](#wifi-monitor-mode)
+- [Bluetooth / BLE (USB dongle — optional)](#bluetooth--ble-usb-dongle--optional)
+- [ADS-B (readsb)](#ads-b-readsb)
+- [RTL-SDR](#rtl-sdr)
+- [Drone RF Detection](#drone-rf-detection)
+- [Ignore Lists](#ignore-lists)
+- [Persistence Engine](#persistence-engine)
+- [Alert Engine](#alert-engine)
+- [Orchestrator](#orchestrator)
+- [Operational Resilience](#operational-resilience)
+- [KML Output](#kml-output)
+- [MAC Randomization](#mac-randomization)
+- [Web GUI (optional)](#web-gui-optional)
+- [Enabling the recon pair (fixed + mobile team)](#enabling-the-recon-pair-fixed--mobile-team)
+- [Field Hardening](#field-hardening)
+- [See also](#see-also)
+- [Configuration reference](#configuration-reference)
+
+
 ## Quick Install (recommended)
 
 ```bash
@@ -1362,6 +1389,59 @@ ls data/sessions/*/
 ```
 
 ---
+
+
+---
+
+## Configuration reference
+
+Copy `.env.example` to `.env` and edit it. Every setting Passive Vigilance reads,
+with its default, is listed here. Only `NODE_MODE` is required; everything else
+has a working default.
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NODE_MODE` | **Required** scoring mode: `fixed` or `mobile` (no default — node refuses to start without it) | — |
+| `FIXED_BASELINE_HOURS` | Fixed mode: baseline learning window before novelty flagging begins | `72` |
+| `BASELINE_DB_PATH` | Fixed mode: durable baseline SQLite path (blank = `data/baseline.db`) | — |
+| `OFF_SCHEDULE_MIN_BASELINE_HOURS` | Fixed mode: distinct hours of baseline before off-schedule flagging activates | `12` |
+| `KISMET_API_KEY` | Generated in the Kismet web UI at `:2501` | — |
+| `KISMET_HOST` | Kismet daemon host | `localhost` |
+| `KISMET_PORT` | Kismet REST API port | `2501` |
+| `WIGLE_API_NAME` | WiGLE.net account API name | — |
+| `WIGLE_API_KEY` | WiGLE.net account API key | — |
+| `ADSBXLOL_API_KEY` | adsb.lol API key (free by feeding); also drives ACARS↔ADS-B enrichment | — |
+| `AIRCRAFT_REGISTRY_DB` | Offline ICAO→registration DB used when offline | `data/registry/aircraft.sqlite` |
+| `ALERT_BACKEND` | Where alerts go: `ntfy`, `telegram`, `discord`, or `console` | `ntfy` |
+| `GPS_DEVICE` | GPS dongle device path | `/dev/ttyUSB0` |
+| `GPS_MIN_QUALITY` | GPS fix quality gate: `any`, `2d`, or `3d` | `2d` |
+| `GPS_MAX_HDOP` | Reject fixes with HDOP above this value | `5.0` |
+| `WIFI_MONITOR_INTERFACE` | WiFi dongle interface name | `wlan1` |
+| `DUMP1090_HOST` | readsb/dump1090 host | `localhost` |
+| `LOG_LEVEL` | Python logging level | `INFO` |
+| `SDR_MODE` | `auto` / `shared` (one dongle, time-share) / `dedicated` (≥2 dongles) | `auto` |
+| `SDR_CYCLE_SLICES` | Explicit time-share cycle, e.g. `adsb:840,ais:60` (blank = auto-derive) | — |
+| `AIS_ENABLED` | Marine AIS band (needs AIS-catcher + a VHF antenna) | `false` |
+| `ACARS_ENABLED` | Aviation ACARS decode (needs acarsdec + a VHF antenna) | `false` |
+| `ACARS_TRIGGER_SECONDS` | Hold time before a contact triggers an ACARS window | `30` |
+| `DRONE_RF_ENABLED` | **Retired** — DroneRF replaced by the SDR decode cycle | `false` |
+| `GUI_ENABLED` | Enable the live web dashboard | `false` |
+| `GUI_PORT` | Web dashboard port | `8080` |
+| `GUI_TOKEN` | Bearer/`?token=` for the dashboard; **required** to use the mode toggle | — |
+| `FP_MEDIUM_MAX_DF` | Looser SSID-rarity bar for the *medium* contact-identity tier (display/re-link only) | `12` |
+| `WIFI_RETURN_GAP_SECONDS` | Absence after which a returning WiFi/BT contact is flagged a **return** | `900` |
+| `ENTITY_RETURN_MIN_GAP_SECONDS` | Cross-session: min age of a prior sighting to count as a **returning entity** (guards quick restarts) | `3600` |
+| `CROSS_PHY_LINKING_ENABLED` | Group a person's co-present mobile radios (Wi-Fi + BLE) into one **person**; APs excluded | `true` |
+| `VISITOR_ALERT_MIN_OBS` | Observations a novel, no-local-affinity **visitor** must linger before a display-only alert | `20` |
+| `NODE_DENSITY` | Fixed mode: egregious-threshold preset (`dense`/`suburban`/`rural`) | `suburban` |
+| `EGREGIOUS_SIGNAL_DBM` | Fixed mode: explicit WiFi egregious threshold (overrides preset) | preset |
+| `EGREGIOUS_BLE_SIGNAL_DBM` | Fixed mode: BLE egregious threshold (modality-specific, not density-keyed) | `-50` |
+| `ADAPTATION_POSTURE` | Fixed mode: rolling baseline — `off`, `conservative`, `permissive` | `off` |
 
 ## See also
 

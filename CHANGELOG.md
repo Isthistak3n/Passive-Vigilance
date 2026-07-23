@@ -135,7 +135,7 @@ address), keeps a durable operator view, and survived two multi-day validation s
   structure. Fingerprint enrichment is capture/display only — scoring key unchanged.
 - Deploy hardening: SDR handoff settle barrier, BLE controller raised LE-on at boot,
   refreshed `setup.sh`/service units, `READSB_URL` for the ADS-B JSON endpoint.
-- Validation: soaks #2 and #3 on the node (see `docs/field-findings-2026-06.md`).
+- Validation: soaks #2 and #3 on the node (see `docs/history/field-findings-2026-06.md`).
 - Test suite grew to 687 passing.
 
 ---

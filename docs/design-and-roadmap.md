@@ -3,8 +3,8 @@
 **Status:** Active, living document (2026-06). The single source for the fixed-node
 detector's design plan *and* its phased roadmap. Update phase status as work lands.
 **Audience:** Implementers (Claude Code), reviewers, operators.
-**Companion (test evidence):** [field-findings-2026-06.md](field-findings-2026-06.md),
-[field-test-2026-06.md](field-test-2026-06.md), and the project `setup.md`.
+**Companion (test evidence):** [field-findings-2026-06.md](history/field-findings-2026-06.md),
+[field-test-2026-06.md](history/field-test-2026-06.md), and the project `setup.md`.
 
 This document consolidates the former `design-detection-modes`, `design-entity-fingerprinting`,
 `design-ble-advertisement-capture`, `design-contact-designators`, `design-aircraft-of-interest`,
@@ -693,7 +693,7 @@ DroneRF sharing the SDR), returning-aircraft live, **memory bounded** (~116–20
 the post-freeze `all_events` dedups per device, retiring the P0 leak worry). BLE data-starved
 (1 `ble-fp:`) — concluded early to swap in the longer-range dongle.
 
-Full test evidence: [field-findings-2026-06.md](field-findings-2026-06.md).
+Full test evidence: [field-findings-2026-06.md](history/field-findings-2026-06.md).
 
 ## Method for a future confirmation soak
 
