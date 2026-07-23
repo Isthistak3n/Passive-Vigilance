@@ -3,7 +3,7 @@
 # Passive Vigilance
 
 [![CI](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml/badge.svg)](https://github.com/Isthistak3n/Passive-Vigilance/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-915%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
+[![Tests](https://img.shields.io/badge/tests-850%2B%20passing-brightgreen)](https://github.com/Isthistak3n/Passive-Vigilance/actions)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.7.0--alpha-orange)](https://github.com/Isthistak3n/Passive-Vigilance/releases)
 [![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red)](https://www.raspberrypi.org/)
@@ -215,34 +215,26 @@ it is restarted.
 
 ## Project status
 
-| Module | Status | Description |
-|--------|--------|-------------|
-| GPS daemon | ✅ Complete | gpsd integration, fix quality, HDOP filter — 12 tests |
-| Kismet integration | ✅ Complete | REST API, cookie auth (2025.09), WiGLE CSV — 10 tests |
-| ADS-B | ✅ Complete | readsb + adsb.lol enrichment — 20 tests |
-| SDR decode cycle | ✅ Handoffs validated | N-band single-dongle time-share (`SDRCoordinator`): ADS-B base + optional AIS slice, with ACARS preemption on a held contact. Handoff stability validated — 0 wedges on the live ADS-B+AIS cycle. Replaces DroneRF |
-| AIS (marine) | ✅ Complete | `AISModule` — AIS-catcher JSON over UDP; optional/VHF (needs a VHF antenna), default off |
-| ACARS (aviation datalink) | ✅ Complete | `ACARSModule` — acarsdec/dumpvdl2; >30s-held trigger + tail/flight-id correlation to ADS-B; optional/VHF, default off |
-| Drone RF | 🗄️ Retired | Replaced by the SDR decode cycle; `DRONE_RF_ENABLED=false`, code kept for reversibility — 15 tests |
-| WiFi monitor mode | ✅ Complete | RTL8811CU udev + NM unmanaged — 15 tests |
-| Ignore lists | ✅ Complete | MAC/OUI/SSID filtering, CLI tool — 25 tests |
-| MAC randomization | ✅ Complete | Randomization detection, fingerprinting, ignore — 14 tests |
-| Persistence engine | ✅ Complete | Time-window scoring, ProbeAnalyzer, DetectionEvent — 27 tests |
-| Detection modes | ✅ Phase 2 | `NODE_MODE` selector, ScoringEngine fork, FixedScoring (novelty + off-schedule + graduated severity), durable crash-safe SQLite baseline; randomized devices keyed by content fingerprint (`wifi-fp:`/`ble-fp:`) so identity survives MAC rotation |
-| BLE advertisement capture | ✅ Complete | Passive raw-HCI listener (`BLE_SCANNER_ENABLED`); recovers vendor data, service UUIDs, and real RSSI; auto-detects the HCI controller — 18 tests |
-| Device fingerprinting | ✅ Complete | Randomization-resistant BLE + WiFi signatures (vendor/services/name; probed SSIDs + IE hash) with over-merge safeguards — 27 tests |
-| Randomized-device identity (P4) | ✅ Complete | Strong/medium contact-identity tiers; within-session **return** + durable cross-session **returning-entity**; conservative cross-PHY **person** linking (Wi-Fi client + BLE, APs excluded); **resident vs. visitor** from local-AP affinity + baseline. Display/identity only — never changes scoring |
-| Entity/observation store | ✅ Complete | Durable SQLite (probe evidence, fingerprint, entities, observation history, cross-session contact registry + person links); recorded at the poll site for both modes; thread-safe reads for the GUI |
-| Alert engine | ✅ Complete | NtfyBackend, TelegramBackend, DiscordBackend, RateLimiter — 24 tests |
-| Remote ID | ✅ Complete | FAA Remote ID (ASTM F3411-22a) decode via Kismet 802.11 vendor IE; GUI tab + `/api/remote_id` — 22 tests |
-| Shapefile writer | ✅ Complete | geopandas/fiona, 3 layers per session — 7 tests |
-| KML output | ✅ Complete | Google Earth color-coded placemarks, track lines — 14 tests |
-| WiGLE uploader | ✅ Complete | multipart POST, session CSV upload — 7 tests |
-| Web GUI | ✅ Complete | Optional Flask dashboard, live Leaflet map, SSE stream, mode toggle, contact designators, current-sky aircraft + Remote ID tabs, durable detection/alert history across refresh & restart. A separate map-less **mobile** template with a Survey tab and patrol controls is served when `NODE_MODE=mobile` |
-| Reconnaissance pair | ✅ Validating | Fixed node tasks a survey → mobile node beds a target down by home-AP association → findings offload back (`SURVEY_ENABLED`, default off). Operator-bounded patrols hold a target open for a whole walk; a patrol banks every AP it hears into a **wardrive index** for retroactive, target-independent resolution. On-node plumbing + not-found flagging validated; a positive bed-down walk is the remaining gate |
-| Orchestrator | ✅ Complete | asyncio event loop, crash flush, isolated shutdown, watchdog, current-sky indexes + bounded tracks — 87 tests |
+The platform is feature-complete against its mission and runs untended in the
+field. In short, what works today:
 
-**915 tests passing** across all modules.
+- **Capture** — WiFi and Bluetooth via Kismet, passive BLE advertisements over
+  raw HCI (with real signal strength), ADS-B aircraft via readsb, and — with a
+  VHF antenna — AIS marine traffic and ACARS aviation datalink. A single RTL-SDR
+  is time-shared across the radio bands automatically.
+- **Detection** — both a **mobile** (does this device follow me?) and a **fixed**
+  (what deviates from this location's normal?) scoring mode, with a durable,
+  crash-safe learned baseline and identity that survives MAC randomization.
+- **Awareness** — FAA Remote ID drone decode, aircraft-of-interest enrichment,
+  and a contact-identity layer that collapses a device's rotating addresses,
+  flags returns, and links a person's radios together.
+- **Output** — a live optional web dashboard, GPS-stamped GIS exports
+  (shapefile, GeoJSON, KML), and WiGLE upload.
+- **Teamwork** — an optional fixed-plus-mobile reconnaissance pair.
+
+The suite carries **850+ automated tests** and runs in CI on every change. For
+the phase-by-phase breakdown of what has shipped and what is still ahead, see
+[docs/design-and-roadmap.md](docs/design-and-roadmap.md).
 
 ---
 
@@ -299,111 +291,18 @@ After install, follow the on-screen prompts to:
 ```
 
 See [docs/setup.md](docs/setup.md) for full installation and
-configuration details including troubleshooting.
+configuration details including troubleshooting, or start at the
+[documentation index](docs/README.md) for a map of all the guides.
 
 ---
 
 ## Architecture
 
-```
-Passive-Vigilance/
-├── main.py                           # asyncio orchestrator; loads .env; SIGINT/SIGTERM shutdown
-├── requirements.txt                  # Python dependencies
-├── .env.example                      # Environment variable template (never commit .env)
-├── core/
-│   ├── exceptions.py                 # Custom exception hierarchy + ErrorSeverity enum
-│   └── logging.py                    # Structured logger factory — consistent log format across modules
-├── modules/
-│   ├── gps.py                        # GPSModule — gpsd streaming client; position/time backbone
-│   ├── kismet.py                     # KismetModule — Kismet REST API; async WiFi + BT polling; probe-SSID + fingerprint extraction
-│   ├── dump1090.py                   # ADSBModule — readsb JSON; aircraft polling + adsb.lol enrichment
-│   ├── ais.py                        # AISModule — AIS-catcher JSON over UDP; marine vessel tracking (optional/VHF)
-│   ├── acars.py                      # ACARSModule — acarsdec/dumpvdl2 JSON; aviation datalink decode (optional/VHF)
-│   ├── aircraft_registry.py          # AircraftRegistry — connectivity-adaptive ICAO→registration (offline DB + adsb.lol)
-│   ├── drone_rf.py                   # DroneRFModule — RETIRED (default off; replaced by the SDR decode cycle; kept for reversibility)
-│   ├── remote_id.py                  # RemoteIDModule — FAA Remote ID (ASTM F3411-22a) via Kismet 802.11 vendor IE
-│   ├── ble_scanner.py                # BLEScanner — passive raw-HCI LE advertisement capture (vendor/services/name + real RSSI)
-│   ├── ble_fingerprint.py            # BLE advertisement → rotation-resistant signature (ble-fp:)
-│   ├── wifi_fingerprint.py           # WiFi probe SSIDs + IE-set hash → rotation-resistant signature (wifi-fp:)
-│   ├── device_identity.py            # Shared strong/medium contact-identity tiers used by both scoring engines
-│   ├── copresence.py                 # Cross-PHY co-presence linking — a person's Wi-Fi + BLE radios into one "person" (over-merge-safe)
-│   ├── contact_designator.py         # CLASS-IDENT-# naval/air-style track labels for WiFi/BT contacts
-│   ├── sdr_manager.py                # SDRManager — RTL-SDR inventory detection; SDRMode resolution
-│   ├── sdr_coordinator.py            # SDRCoordinator — asyncio time-share scheduler for single-dongle setups
-│   ├── sdr_utils.py                  # Shared RTL-SDR hardware detection utilities
-│   ├── orchestrator.py               # SensorOrchestrator — module lifecycle and health management
-│   ├── ignore_list.py                # IgnoreList — MAC/OUI/SSID filter; atomic JSON persistence
-│   ├── mac_utils.py                  # MAC randomization detection, type classification, fingerprinting
-│   ├── alerts.py                     # AlertBackend ABC + Ntfy / Telegram / Discord / Console backends
-│   ├── kml_writer.py                 # KMLWriter — Google Earth KML with color-coded placemarks and track lines
-│   ├── persistence.py                # PersistenceEngine — mobile (location-diversity) scoring; DetectionEvent dataclass
-│   ├── scoring_engine.py             # ScoringEngine ABC — strategy interface (update + status) selected by NODE_MODE
-│   ├── fixed_scoring.py              # FixedScoring — fixed-node baseline-deviation (novelty + off-schedule) scoring
-│   ├── baseline_store.py             # BaselineStore — durable SQLite baseline; crash-safe learning window; hour-mask + RSSI stats
-│   ├── entity_store.py               # EntityStore — durable SQLite (probe evidence, fingerprint, entities, observation history)
-│   ├── survey_store.py               # SurveyStore — durable SQLite for recon-pair taskings, mobile observations, wardrive index, bed-down findings
-│   ├── survey_sync.py                # SurveySync — mobile-node client to the fixed node's survey endpoints (store-and-forward)
-│   ├── survey_coordinator.py         # SurveyCoordinator — recon-pair logic: mobile matcher, fixed-node tasking, patrol-aware sync
-│   ├── probe_analyzer.py             # ProbeAnalyzer — WiFi probe pattern analysis
-│   ├── shapefile.py                  # ShapefileWriter — geopandas/fiona; detections as .shp point features
-│   ├── wigle.py                      # WiGLEUploader — upload Kismet CSV to WiGLE.net at session end
-├── gui/
-│   ├── __init__.py                   # Empty package marker
-│   ├── server.py                     # GUIServer — Flask in daemon thread; SSE /stream; REST /api/*; mode toggle (/api/mode)
-│   ├── templates/
-│   │   ├── index.html                # Fixed-node SPA; tabs (incl. Remote ID, Survey); Leaflet map; SSE client
-│   │   └── mobile.html               # Map-less mobile-node SPA; Nearby + Survey/patrol tabs (served when NODE_MODE=mobile)
-│   └── static/
-│       ├── app.js                    # Fixed-node SSE client; Leaflet markers; table rendering; tab switching
-│       ├── mobile.js                 # Mobile-node SSE client; proximity feed; patrol controls
-│       └── style.css                 # Dark theme; KML-matched alert colors; touch-friendly
-├── tests/
-│   ├── test_gps.py                   # 12 tests — GPSModule + quality filter
-│   ├── test_kismet.py                # 10 tests — KismetModule
-│   ├── test_dump1090.py              # 20 tests — ADSBModule
-│   ├── test_drone_rf.py              # 15 tests — DroneRFModule + drain_detections()
-│   ├── test_monitor_mode.py          # 15 tests — WiFi monitor mode
-│   ├── test_ignore_list.py           # 25 tests — IgnoreList
-│   ├── test_mac_utils.py             # 14 tests — MAC randomization + fingerprinting
-│   ├── test_persistence.py           # 27 tests — PersistenceEngine
-│   ├── test_probe_analyzer.py        # ProbeAnalyzer (persistence suite)
-│   ├── test_node_mode.py             # NODE_MODE resolution + fail-loud
-│   ├── test_scoring_engine.py        # ScoringEngine interface conformance
-│   ├── test_fixed_scoring.py         # FixedScoring — novelty, off-schedule, graduated severity, activation guard
-│   ├── test_baseline_store.py        # durable SQLite baseline + crash-loop regression + hour-mask/signal stats
-│   ├── test_entity_store.py          # EntityStore upserts (flat-line) + poll-site recording in both modes
-│   ├── test_kml_writer.py            # 14 tests — KMLWriter
-│   ├── test_shapefile.py             # 7 tests — ShapefileWriter
-│   ├── test_wigle.py                 # 7 tests — WiGLEUploader
-│   ├── test_sdr_manager.py           # SDRManager + SDRCoordinator tests
-│   ├── test_sdr_handoff.py           # SDRCoordinator handoff tests
-│   ├── test_remote_id.py             # 22 tests — RemoteIDModule
-│   ├── test_ble_scanner.py           # passive raw-HCI BLE advertisement capture
-│   ├── test_ble_fingerprint.py       # BLE signature (ble-fp:)
-│   ├── test_wifi_fingerprint.py      # WiFi signature (wifi-fp:)
-│   ├── test_device_identity.py       # shared fingerprint/label helpers + contact-identity tiers
-│   ├── test_copresence.py            # cross-PHY co-presence linking + over-merge guards
-│   ├── test_contact_designator.py    # CLASS-IDENT-# track labels
-│   ├── test_orchestrator.py          # 87 tests — PassiveVigilance orchestrator
-│   ├── test_gui.py                   # 63 tests — GUIServer, durable history, mode toggle
-│   └── test_alerts.py                # 24 tests — AlertEngine
-├── scripts/
-│   └── manage_ignore_list.py         # CLI: add/remove MAC, OUI, SSID; --import-kismet bulk add
-├── deploy/
-│   ├── install.sh                    # One-command installer; auto-detects Debian/Raspberry Pi OS
-│   ├── kismet.service                # Kismet systemd unit
-│   ├── passive-vigilance.service     # Orchestrator systemd unit
-│   ├── gpsd.override.conf            # gpsd drop-in config to add -n flag
-│   ├── 99-wlan1-monitor.rules        # udev rule — set wlan1 to monitor mode at boot/plug-in
-│   └── 99-unmanaged-wlan1.conf       # NetworkManager: mark wlan1 as unmanaged
-├── docs/
-│   ├── setup.md                      # Full installation, configuration, and troubleshooting guide
-│   ├── design-and-roadmap.md         # Consolidated design plan + phased roadmap + soak validation (P0–P7)
-│   ├── retrospective-2026-07.md      # The project journey Apr→Jul 2026 (159 PRs), narrated
-│   └── field-*.md                    # Field-test evidence behind the roadmap decisions
-└── data/
-    └── ignore_lists/                 # MAC/OUI/SSID ignore list JSON files (git-ignored)
-```
+The codebase is a set of background systemd services feeding a single
+Python `asyncio` orchestrator. The full source-tree map — every module and
+its responsibility — lives in **[docs/architecture.md](docs/architecture.md)**.
+The [How it works](#how-it-works) diagram above shows how the sensors feed
+each other at runtime.
 
 ---
 
@@ -416,45 +315,18 @@ cp .env.example .env
 nano .env
 ```
 
-Key variables:
+These are the variables needed to get a node running. **Every setting, with
+defaults, is documented in the [full configuration reference in
+docs/setup.md](docs/setup.md#configuration-reference).**
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NODE_MODE` | **Required** scoring mode: `fixed` or `mobile` (no default — node refuses to start without it) | — |
+| `KISMET_API_KEY` | Generated in the Kismet web UI at `:2501` | — |
+| `ALERT_BACKEND` | Where alerts go: `ntfy`, `telegram`, `discord`, or `console` | `ntfy` |
+| `GUI_ENABLED` | Enable the live web dashboard | `false` |
 | `FIXED_BASELINE_HOURS` | Fixed mode: baseline learning window before novelty flagging begins | `72` |
-| `BASELINE_DB_PATH` | Fixed mode: durable baseline SQLite path (blank = `data/baseline.db`) | — |
-| `KISMET_API_KEY` | Generated in Kismet web UI at `:2501` | — |
-| `WIGLE_API_NAME` | WiGLE.net account API name | — |
-| `WIGLE_API_KEY` | WiGLE.net account API key | — |
-| `ADSBXLOL_API_KEY` | adsb.lol API key (free by feeding) | — |
-| `ALERT_BACKEND` | `ntfy`, `telegram`, `discord`, or `console` | `ntfy` |
-| `GPS_DEVICE` | GPS dongle device path | `/dev/ttyUSB0` |
-| `WIFI_MONITOR_INTERFACE` | WiFi dongle interface name | `wlan1` |
-| `KISMET_HOST` | Kismet daemon host | `localhost` |
-| `KISMET_PORT` | Kismet REST API port | `2501` |
-| `DUMP1090_HOST` | readsb/dump1090 host | `localhost` |
-| `LOG_LEVEL` | Python logging level | `INFO` |
-| `GPS_MIN_QUALITY` | GPS fix quality gate: `any`, `2d`, or `3d` | `2d` |
-| `GPS_MAX_HDOP` | Reject fixes with HDOP above this value | `5.0` |
-| `SDR_MODE` | `auto` / `shared` (one dongle, time-share) / `dedicated` (≥2 dongles) | `auto` |
-| `SDR_CYCLE_SLICES` | Explicit time-share cycle, e.g. `adsb:840,ais:60` (blank = auto-derive) | — |
-| `AIS_ENABLED` | Marine AIS band (needs AIS-catcher + a VHF antenna) | `false` |
-| `ACARS_ENABLED` | Aviation ACARS decode (needs acarsdec + a VHF antenna) | `false` |
-| `ACARS_TRIGGER_SECONDS` | Hold time before a contact triggers an ACARS window | `30` |
-| `ADSBXLOL_API_KEY` / `AIRCRAFT_REGISTRY_DB` | ACARS↔ADS-B correlation: online enrich, else offline DB | — / `data/registry/aircraft.sqlite` |
-| `DRONE_RF_ENABLED` | **Retired** — DroneRF replaced by the SDR decode cycle | `false` |
-| `GUI_ENABLED` | Enable live web dashboard | `false` |
-| `GUI_PORT` | Web dashboard port | `8080` |
-| `GUI_TOKEN` | Bearer/`?token=` for the dashboard; **required** to use the mode toggle | — |
-| `FP_MEDIUM_MAX_DF` | Looser SSID-rarity bar for the *medium* contact-identity tier (display/re-link only) | `12` |
-| `WIFI_RETURN_GAP_SECONDS` | Absence after which a returning WiFi/BT contact is flagged a **return** | `900` |
-| `ENTITY_RETURN_MIN_GAP_SECONDS` | Cross-session: min age of a prior sighting to count as a **returning entity** (guards quick restarts) | `3600` |
-| `CROSS_PHY_LINKING_ENABLED` | Group a person's co-present mobile radios (Wi-Fi + BLE) into one **person**; APs excluded | `true` |
-| `VISITOR_ALERT_MIN_OBS` | Observations a novel, no-local-affinity **visitor** must linger before a display-only alert | `20` |
-| `NODE_DENSITY` | Fixed mode: egregious-threshold preset (`dense`/`suburban`/`rural`) | `suburban` |
-| `EGREGIOUS_SIGNAL_DBM` | Fixed mode: explicit WiFi egregious threshold (overrides preset) | preset |
-| `EGREGIOUS_BLE_SIGNAL_DBM` | Fixed mode: BLE egregious threshold (modality-specific, not density-keyed) | `-50` |
-| `ADAPTATION_POSTURE` | Fixed mode: rolling baseline — `off`, `conservative`, `permissive` | `off` |
+| `AIS_ENABLED` / `ACARS_ENABLED` | Marine AIS / aviation ACARS decode (each needs a VHF antenna) | `false` |
 
 ---
 

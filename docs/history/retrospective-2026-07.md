@@ -6,7 +6,7 @@ hunting team — across **~12 weeks** (#1, 2026-04-13 → #204, 2026-07-06), wha
 breaking, and what we learned. This is the narrative companion to the empirical record in
 [field-findings-2026-06.md](field-findings-2026-06.md) and
 [field-test-2026-06.md](field-test-2026-06.md), and the forward plan in
-[design-and-roadmap.md](design-and-roadmap.md). Configuration and hardware facts
+[design-and-roadmap.md](../design-and-roadmap.md). Configuration and hardware facts
 live in `CLAUDE.md` / `CONTEXT.md` and are cross-referenced, not repeated.
 
 ---
@@ -323,7 +323,7 @@ The recon pair's remaining gate is a positive **Ph1 bed-down walk** on the live
 `chase`↔`survkis` pair — the one thing the feature still owes. Beyond it: finish the
 detection-quality calibration owed by P2/P3, and the identity depth that raises what
 alerts *mean* — cross-session returning-entity resolution (P4) and cross-PHY
-WiFi↔BLE fusion. See [design-and-roadmap.md](design-and-roadmap.md) for the full
+WiFi↔BLE fusion. See [design-and-roadmap.md](../design-and-roadmap.md) for the full
 forward plan.
 
 *Written 2026-07-01, at #172.*
