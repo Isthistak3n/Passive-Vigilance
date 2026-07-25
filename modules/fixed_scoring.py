@@ -298,6 +298,11 @@ class FixedScoring(ScoringEngine):
         freeze_time = self._store.freeze_time
 
         events: list = []
+        # Per-signal tally + off-schedule exclusion diagnostic (logging-only; does
+        # NOT change scoring). Confirms on the live node whether the #138
+        # randomized-no-fingerprint guard is actually suppressing off-schedule.
+        sig_counts = {"novelty": 0, "off_schedule": 0, "approaching": 0}
+        diag = {"offsched_geom": 0, "offsched_suppressed_randnofp": 0}
         # One commit per poll pass, not per device. At high ambient density
         # (~12.5k devices/poll, 2026-07-14) per-device commits kept the asyncio
         # poll thread inside this loop past the 2-minute systemd watchdog.
@@ -335,17 +340,30 @@ class FixedScoring(ScoringEngine):
                             device, profile, now, egregious, score, level, force_page=True))
                     continue
 
-                signals = self._signals(profile, now, freeze_time)
+                signals = self._signals(profile, now, freeze_time, diag=diag)
                 if not _any_active(signals):
                     continue
+                for _name in sig_counts:
+                    if signals.get(_name, 0.0) > 0:
+                        sig_counts[_name] += 1
                 score, level = self._combine(signals)
                 events.append(self._make_event(device, profile, now, signals, score, level))
 
         if events:
-            logger.info(
-                "FixedScoring: %d device(s) flagged (%s)", len(events),
-                "egregious-during-baseline" if learning else "novel/off-schedule/approaching",
-            )
+            if learning:
+                logger.info(
+                    "FixedScoring: %d device(s) flagged (egregious-during-baseline)",
+                    len(events),
+                )
+            else:
+                logger.info(
+                    "FixedScoring: %d device(s) flagged (novel/off-schedule/approaching) "
+                    "— novelty=%d off_schedule=%d approaching=%d "
+                    "[off-sched geometry met=%d, suppressed by no-fingerprint guard=%d]",
+                    len(events), sig_counts["novelty"], sig_counts["off_schedule"],
+                    sig_counts["approaching"], diag["offsched_geom"],
+                    diag["offsched_suppressed_randnofp"],
+                )
         return events
 
     def _egregious_signals(self, profile: DeviceProfile, signal: Optional[float]) -> dict:
@@ -379,7 +397,8 @@ class FixedScoring(ScoringEngine):
     # Deviation signals + severity (Option B)
     # ------------------------------------------------------------------
 
-    def _signals(self, profile: DeviceProfile, now: datetime, freeze_time: datetime) -> dict:
+    def _signals(self, profile: DeviceProfile, now: datetime, freeze_time: datetime,
+                 diag: Optional[dict] = None) -> dict:
         """Return the active deviation signals for one post-freeze sighting.
 
         ``abnormal_dwell`` and ``approaching`` are reserved-but-inactive this
@@ -427,13 +446,22 @@ class FixedScoring(ScoringEngine):
         # seen in a single new hour. Flagging a device you cannot track across its
         # own rotation for "appearing in a new hour" is noise, not signal.
         off_schedule = 0.0
-        if not is_novel and not randomized_no_fp:
+        if not is_novel:
             distinct_baseline_hours = bin(profile.hour_mask).count("1")
-            if (
-                distinct_baseline_hours >= self._off_schedule_min_hours
-                and not (profile.hour_mask & (1 << now.hour))
-            ):
+            hour_unseen = not (profile.hour_mask & (1 << now.hour))
+            geometry_met = (
+                distinct_baseline_hours >= self._off_schedule_min_hours and hour_unseen
+            )
+            if geometry_met and not randomized_no_fp:
                 off_schedule = 1.0
+            # Diagnostic (logging-only): count devices that met the off-schedule
+            # geometry (known, rich baseline, this hour unseen) and how many the
+            # #138 randomized-no-fingerprint guard held back. Behaviour is identical
+            # to the original guard above — this only observes it.
+            if diag is not None and geometry_met:
+                diag["offsched_geom"] += 1
+                if randomized_no_fp:
+                    diag["offsched_suppressed_randnofp"] += 1
         return {
             "novelty": novelty,
             "off_schedule": off_schedule,
