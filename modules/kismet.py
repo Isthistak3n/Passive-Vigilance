@@ -46,6 +46,14 @@ _DEVICE_FIELDS = [
     "kismet.device.base.channel",
 ]
 
+# Default recency window (seconds) for KISMET_ACTIVE_WINDOW_SECONDS. Kismet's device
+# list is permanent, so an unfiltered poll re-processes every device ever heard in the
+# session — which smears fixed-node baselines (a passer-by heard once is stamped into
+# every subsequent hour it lingers in the list) and re-flags departed devices post-freeze
+# (#232). A device not heard within this window has left; drop it before it reaches
+# baseline learning and scoring. Set the env var to 0 to opt out (keep the full list).
+_DEFAULT_ACTIVE_WINDOW_SECONDS = 300
+
 
 def _is_access_point(device_type) -> bool:
     """True if Kismet classifies the device as a Wi-Fi access point (beaconing)."""
@@ -195,18 +203,22 @@ class KismetModule:
                 is available. Supplied by the orchestrator from its own fresh
                 fix — the module performs no GPS read of its own.
 
-        ``KISMET_ACTIVE_WINDOW_SECONDS`` (default 0 = disabled): when set to a
-        positive integer, devices whose Kismet ``last_time`` is older than this
-        many seconds are excluded from the returned list. Kismet's device list
-        is permanent — it retains every device ever heard in the session, so
-        on a mobile node a device passed 10 minutes ago is still present and
-        will accumulate GPS clusters from the node's subsequent movement,
-        making it look like a following device. Setting this to ~90–120 s
-        limits the list to devices that are currently in RF range: a device
-        not heard within the window has left (or never returned), so it is
-        dropped before reaching the persistence engine. Leave at 0 (disabled)
-        on fixed nodes where the full historical device list is needed for
-        baseline building.
+        ``KISMET_ACTIVE_WINDOW_SECONDS`` (default ``_DEFAULT_ACTIVE_WINDOW_SECONDS``,
+        300 s; 0 = opt out): devices whose Kismet ``last_time`` is older than this
+        many seconds are excluded from the returned list. Kismet's device list is
+        permanent — it retains every device ever heard in the session — so an
+        unfiltered poll hands the whole cumulative list to every downstream consumer
+        each poll. That is wrong for **both** node roles:
+          - Mobile: a device passed 10 minutes ago still appears and accumulates GPS
+            clusters from the node's own movement, looking like a follower.
+          - Fixed: a passer-by heard once gets its baseline hour-mask stamped with the
+            current hour on every subsequent poll it lingers in the list, smearing a
+            transient into an all-day "resident" (#232); post-freeze, departed devices
+            are re-scored and keep flagging.
+        Limiting the list to devices actually heard within the window fixes both — a
+        device not heard within it has left, so it is dropped before baseline learning
+        and scoring ever see it. Mobile nodes may tighten this to ~90–120 s. Set to 0
+        only to deliberately restore the full (unfiltered) list.
         """
         if self._session is None:
             logger.warning("poll_devices() called before connect()")
@@ -229,8 +241,9 @@ class KismetModule:
             return []
 
         # Read per-call so patch.dict(os.environ, ...) works in tests without
-        # module reload. 0 = disabled (default); positive int = seconds.
-        active_window = int(os.getenv("KISMET_ACTIVE_WINDOW_SECONDS", "0"))
+        # module reload. Default 300 s; 0 = opt out (keep full list).
+        active_window = int(os.getenv(
+            "KISMET_ACTIVE_WINDOW_SECONDS", str(_DEFAULT_ACTIVE_WINDOW_SECONDS)))
         now = time.time()
 
         devices = []
