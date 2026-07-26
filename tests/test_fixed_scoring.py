@@ -414,6 +414,34 @@ def test_off_schedule_ineligible_for_randomized_no_fp():
     assert engine.update([dev]) == []              # ineligible -> no off-schedule flag
 
 
+def test_signal_diag_counts_off_schedule_suppression():
+    # Logging-only instrumentation: _signals populates a diag dict recording how
+    # many devices met the off-schedule geometry (known, rich baseline, this hour
+    # unseen) and how many the randomized-no-fingerprint guard (#138) suppressed.
+    # Scoring behaviour is unchanged — only observed.
+    engine, clock = _clocked_engine(baseline_hours=24.0)
+    rnd = {"macaddr": "a2:bb:cc:dd:ee:f0", "name": "", "probe_ssids": []}  # randomized, no fp
+    stat = _static_device(mac="d8:96:85:aa:bb:cc")
+    _seed_distinct_hours(engine, clock, rnd, 12)   # rich baseline, hours 0..11
+    _seed_distinct_hours(engine, clock, stat, 12)
+    clock[0] = T0 + timedelta(hours=37)            # frozen, hour 13 (never baselined)
+
+    now = clock[0]
+    freeze = engine._store.freeze_time
+    diag = {"offsched_geom": 0, "offsched_suppressed_randnofp": 0}
+
+    p_rnd = engine._store.get_profile(engine._device_key(rnd))
+    p_stat = engine._store.get_profile(engine._device_key(stat))
+    s_rnd = engine._signals(p_rnd, now, freeze, diag=diag)
+    s_stat = engine._signals(p_stat, now, freeze, diag=diag)
+
+    # Both met the geometry; only the static (trackable) one actually fires.
+    assert s_rnd["off_schedule"] == 0.0
+    assert s_stat["off_schedule"] == 1.0
+    assert diag["offsched_geom"] == 2
+    assert diag["offsched_suppressed_randnofp"] == 1
+
+
 def test_off_schedule_not_applied_to_novel():
     # A novel device has no baseline schedule — off-schedule must not apply even
     # when it appears in an hour never seen during baseline.
