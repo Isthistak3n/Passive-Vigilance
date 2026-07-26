@@ -1,10 +1,16 @@
 """Unit tests for modules/kismet.py — aiohttp responses are fully mocked."""
 
 import asyncio
+import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import modules.kismet  # noqa: F401 — ensure module loaded for @patch resolution
+
+# Fixed-device mocks are stamped "heard just now" so they survive the default
+# KISMET_ACTIVE_WINDOW_SECONDS recency filter (300 s). Tests that exercise the
+# filter itself set their own last_time via _device_entry().
+_RECENT_TS = int(time.time())
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +120,7 @@ _SAMPLE_DEVICES = [
         "kismet.device.base.manuf": "Apple",
         "kismet.device.base.phyname": "IEEE802.11",
         "kismet.device.base.first_time": 1700000000,
-        "kismet.device.base.last_time": 1700000060,
+        "kismet.device.base.last_time": _RECENT_TS,
         "kismet.common.signal.last_signal": -72,
     }
 ]
@@ -248,7 +254,7 @@ def _probe_device(probed_map, fingerprint=None, num=None, mac="11:22:33:44:55:66
         "kismet.device.base.manuf": "Acme",
         "kismet.device.base.phyname": "IEEE802.11",
         "kismet.device.base.first_time": 1700000000,
-        "kismet.device.base.last_time": 1700000060,
+        "kismet.device.base.last_time": _RECENT_TS,
         "kismet.common.signal.last_signal": -55,
     }
     if probed_map is not None:
@@ -275,7 +281,7 @@ def _ap_device(ssid="HomeWiFi", channel="6", mac="ff:ee:dd:cc:bb:aa"):
         "kismet.device.base.manuf": "Netgear",
         "kismet.device.base.phyname": "IEEE802.11",
         "kismet.device.base.first_time": 1700000000,
-        "kismet.device.base.last_time": 1700000060,
+        "kismet.device.base.last_time": _RECENT_TS,
         "kismet.common.signal.last_signal": -42,
         "kismet.device.base.channel": channel,
     }
@@ -401,15 +407,33 @@ class TestKismetActiveWindow(unittest.TestCase):
         return result
 
     @patch("modules.kismet.aiohttp.ClientSession")
-    def test_window_disabled_by_default(self, MockSession):
-        """Default (0) keeps all devices regardless of last_time."""
+    def test_window_enabled_by_default(self, MockSession):
+        """Default (300 s) drops devices not heard recently — a stale device from
+        an hour ago must not reach baseline learning or scoring (#232)."""
         import time
-        stale_time = int(time.time()) - 3600  # 1 hour ago
+        now = int(time.time())
+        devices = [
+            _device_entry("AA:BB:CC:DD:EE:01", last_time=now - 3600),  # stale -> dropped
+            _device_entry("AA:BB:CC:DD:EE:02", last_time=now - 20),    # fresh -> kept
+        ]
+        result = self._poll(MockSession, devices)  # no env override -> default window
+        macs = [r["macaddr"] for r in result]
+        self.assertEqual(macs, ["AA:BB:CC:DD:EE:02"])
+
+    @patch("modules.kismet.aiohttp.ClientSession")
+    def test_explicit_zero_disables_window(self, MockSession):
+        """KISMET_ACTIVE_WINDOW_SECONDS=0 is the explicit opt-out — the full
+        (unfiltered) list is returned regardless of last_time."""
+        import time
+        stale_time = int(time.time()) - 3600
         devices = [
             _device_entry("AA:BB:CC:DD:EE:01", last_time=stale_time),
             _device_entry("AA:BB:CC:DD:EE:02", last_time=stale_time),
         ]
-        result = self._poll(MockSession, devices)
+        result = self._poll(
+            MockSession, devices,
+            env_override={"KISMET_ACTIVE_WINDOW_SECONDS": "0"},
+        )
         self.assertEqual(len(result), 2)
 
     @patch("modules.kismet.aiohttp.ClientSession")
