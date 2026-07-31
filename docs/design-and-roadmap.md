@@ -518,8 +518,10 @@ disabling Kismet disk logging, #190), the **RTL8812AU WiFi adapter** (swapped to
 auto-`usbreset` watchdog). Method note: the Kismet root cause was found by journal-triggered live
 gdb thread dumps at the failure moment, after adapter/heat/memory/UI theories were each tested and
 eliminated — the discipline being *prove the mechanism, don't automate around the symptom*. These
-are captured in Standing Risks below. With them closed, the remaining gate to a **1.0** tag is
-unattended multi-day stability, not features — tracked in **#191** (1.0 release readiness).
+are captured in Standing Risks below. That unattended multi-day stability has since been
+demonstrated — a clean power-cut recovery plus a full learn-to-freeze cycle with zero restarts
+(2026-07-31) — so the remaining gate to a **1.0** tag is production-wired alerting, not features —
+tracked in **#191** (1.0 release readiness).
 
 ## Forward roadmap (priority order)
 
@@ -626,12 +628,14 @@ multi-node **reconnaissance pair** (fixed tasks → mobile survey → offload, �
   systemd crash-looped it 22 times; the kernel showed no USB error, and the same morning the device
   had briefly fallen off the bus ("Cannot enable. Maybe the USB cable is bad?"). This is a dongle
   firmware/physical-layer hang, not a software fault: a service restart never clears it, only a
-  USB-level `usbreset 0bda:2838` does. **Containment installed (node-local, not in-repo):** a wedge
-  watchdog (`/etc/cron.d/sdr-wedge-watch`, every 2 min) that auto-`usbreset`s on ≥2 "SDR wedged"
-  lines in 3 min — caught in ~2–4 min vs the ~hours the manual incident ran. Only one unexplained
-  incident to date, so it reads as an intermittent-dongle anomaly, not a pattern; a 2nd VHF dongle
-  (DEDICATED) or a dongle swap is the durable answer if it recurs. Watchdog disposition is a 1.0
-  checkbox (#191).
+  USB-level `usbreset 0bda:2838` does. **Containment now ships in the repo (2026-07-31):** the wedge
+  watchdog (`/etc/cron.d/sdr-wedge-watch`, every 2 min, auto-`usbreset`s on ≥2 "SDR wedged" lines in
+  3 min) is installed by `deploy/install.sh` (`deploy/sdr-wedge-watch.sh` + `.cron`) rather than
+  living only on the node. Proven over the 2026-07-27..31 fixed-node run: 2–4 episodes/day, every one
+  auto-recovered in ~2–4 min, ADS-B never down >~2 min. `vcgencmd get_throttled=0x0` across the whole
+  run rules out the power supply and heat, isolating the wedge to the SDR/USB link; a 2nd VHF dongle
+  (DEDICATED) or a dongle swap is the durable answer if the rate climbs. Watchdog disposition (#191)
+  is resolved: ship-and-document.
 - **Post-freeze memory leak — RETIRED.** Soak #3 ran ~42 h post-freeze, RSS bounded
   (~116–200 MB, no drift); `all_events` dedups per device.
 - **Alert fatigue — largely addressed.** Soak #1 novelty flood and soak #2 off-schedule flood
@@ -655,8 +659,9 @@ multi-node **reconnaissance pair** (fixed tasks → mobile survey → offload, �
   site config (nothing consumes Kismet's disk logs here — PV is REST-only, no WiGLE on a fixed node),
   which removes SQLite/fsync from Kismet entirely. Eliminated en route: adapter/driver/USB (usbreset
   no-op), heat, memory, device-tracker size, GPS, and the browser web-UI (tabs-closed test negative).
-  Under overnight validation; a fixed-node deploy-doc recommendation and cron retirement are 1.0
-  checkboxes (#191).
+  Validated (22 h / 0 errors) and now shipped: `enable_logging=false` is applied by
+  `deploy/install.sh` (`deploy/kismet-site-fixed-node.conf`) and the interim Kismet-restart cron is
+  retired. The #191 deploy-doc / cron-retirement checkbox is resolved.
 
 ---
 
