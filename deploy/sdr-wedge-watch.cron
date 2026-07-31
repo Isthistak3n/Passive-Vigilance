@@ -1,0 +1,4 @@
+# SDR wedge watchdog — auto-usbreset the RTL-SDR when readsb crash-loops on
+# "SDR wedged". A service restart never clears a wedge; only a USB-level reset
+# does. Installed by deploy/install.sh. See deploy/sdr-wedge-watch.sh.
+*/2 * * * * root /home/${PI_USER}/sdr-watch/sdr-wedge-watch.sh

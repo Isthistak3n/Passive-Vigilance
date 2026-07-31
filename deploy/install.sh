@@ -284,6 +284,21 @@ PI_USER="$PI_USER" envsubst '$PI_USER' \
   < "$REPO_DIR/deploy/kismet.service" \
   > /etc/systemd/system/kismet.service
 
+# ── 6b. Kismet fixed-node hardening (disable kismetdb logging) ──────────────
+# On SD-card hardware Kismet's kismetdb fdatasync() stalls the capture timer
+# engine and gets the wlan1 source killed as SOURCEERROR. Disable logging; PV
+# keeps its own durable store. See deploy/kismet-site-fixed-node.conf. Idempotent.
+echo "$LOG Applying Kismet fixed-node logging-disable..."
+KS_CONF=/etc/kismet/kismet_site.conf
+mkdir -p /etc/kismet
+touch "$KS_CONF"
+if grep -qE '^[[:space:]]*enable_logging=' "$KS_CONF"; then
+  echo "$LOG   enable_logging already set in $KS_CONF — leaving as-is"
+else
+  cat "$REPO_DIR/deploy/kismet-site-fixed-node.conf" >> "$KS_CONF"
+  echo "$LOG   appended enable_logging=false to $KS_CONF"
+fi
+
 # ── 7. Passive Vigilance service ───────────────────────────────────────────
 echo "$LOG Installing Passive Vigilance service..."
 PI_USER="$PI_USER" envsubst '$PI_USER' \
@@ -308,6 +323,22 @@ mkdir -p /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
 systemctl restart systemd-journald
 journalctl --flush 2>/dev/null || true
+
+# ── 7c. SDR-wedge watchdog (auto-usbreset on a readsb wedge loop) ───────────
+# The RTL2838 dongle occasionally wedges at the USB level; readsb then restart-
+# loops on "SDR wedged" and only a USB-level reset clears it. Ships a root cron
+# that resets the dongle when it detects the loop. See deploy/sdr-wedge-watch.sh.
+echo "$LOG Installing SDR-wedge watchdog..."
+install -d -o "$PI_USER" -g "$PI_USER" "/home/$PI_USER/sdr-watch"
+PI_USER="$PI_USER" envsubst '$PI_USER' \
+  < "$REPO_DIR/deploy/sdr-wedge-watch.sh" \
+  > "/home/$PI_USER/sdr-watch/sdr-wedge-watch.sh"
+chmod +x "/home/$PI_USER/sdr-watch/sdr-wedge-watch.sh"
+chown "$PI_USER:$PI_USER" "/home/$PI_USER/sdr-watch/sdr-wedge-watch.sh"
+PI_USER="$PI_USER" envsubst '$PI_USER' \
+  < "$REPO_DIR/deploy/sdr-wedge-watch.cron" \
+  > /etc/cron.d/sdr-wedge-watch
+chmod 0644 /etc/cron.d/sdr-wedge-watch
 
 # ── 8. Enable services ─────────────────────────────────────────────────────
 echo "$LOG Enabling services..."
