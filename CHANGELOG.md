@@ -7,8 +7,33 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+---
+
+## [1.0] — unreleased
+
+**The 1.0 changeset — the label earned through unattended stability, not new features.**
+After an unplanned power loss the fixed node cold-booted the whole sensor stack unattended
+and ran a full learn-to-freeze baseline cycle with zero restarts, and the reliability fixes
+that used to live only on the node now ship in the installer. One gate remains before the
+tag is cut: a production-wired alert backend with the randomized-MAC flood contained at
+source rather than merely rate-limited (#191).
+
 ### What's better now
 
+- **The fixed node survives a power cut and banks a clean, unsmeared baseline.** After an
+  unplanned outage the node cold-booted the whole sensor stack unattended and ran a full
+  108-hour baseline from learning to freeze to live scoring with zero restarts — the first
+  baseline learned end-to-end with the active-window fix in effect, so transient passers-by
+  are no longer smeared into all-day residents. Post-freeze scoring is healthy and
+  novelty-dominated, and the old morning flag-wave is gone.
+- **The node-local reliability fixes now ship in the installer.** The Kismet logging-disable
+  (which cures the SD-card fsync stall that was killing WiFi capture) and the SDR-wedge
+  watchdog (which auto-resets the dongle when readsb crash-loops on "SDR wedged") are now in
+  the repo and applied by `deploy/install.sh`, instead of living only on the node. The
+  watchdog is proven over a multi-day run: a handful of wedge episodes a day, every one
+  auto-recovered, with the power supply and heat ruled out as causes.
 - **Two nodes can now hunt as a team.** A fixed base node can hand a flagged device
   to a roaming mobile node and ask it to find where that device *beds down*. The
   mobile operator starts a **patrol**, walks or drives the area, and the node maps
