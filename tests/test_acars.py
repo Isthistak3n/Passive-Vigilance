@@ -239,10 +239,27 @@ def test_reclassify_backfills_old_record_without_mutating_it():
     assert old.get("category") is None and old["lat"] is None   # original untouched
 
 
-def test_reclassify_is_idempotent():
-    from modules.acars import reclassify
-    rec = {"label": "H1", "text": "hello", "category": "Free text / other", "fields": []}
-    assert reclassify(rec) is rec                    # already classified → unchanged
+def test_reclassify_is_idempotent_on_current_version():
+    from modules.acars import reclassify, _CLASSIFY_VERSION
+    rec = {"label": "H1", "text": "hello", "category": "Free text / other",
+           "fields": [], "cver": _CLASSIFY_VERSION}
+    assert reclassify(rec) is rec                    # current-schema record → unchanged
+
+
+def test_reclassify_upgrades_record_from_older_schema():
+    """A record the OLD code classified (a category but no/old cver) must be re-decoded,
+    so a schema improvement reaches captured history without rewriting the logs."""
+    from modules.acars import reclassify, _CLASSIFY_VERSION
+    old = {"label": "H1", "category": "Free text / other", "fields": [],
+           "text": "++86501,N8774Q,B7378MAX,260722,WN2879,KOAK,PHNL,0946,X\n1\n"
+                   "N2144.5,W15712.7,222335,16782,-00.3,196,017,DC,00000,0,"}
+    new = reclassify(old)
+    assert new is not old
+    assert new["category"] == "Position report"
+    assert new["cver"] == _CLASSIFY_VERSION
+    names = {f["name"]: f["value"] for f in new["fields"]}
+    assert names["Route"] == "KOAK→PHNL" and names["Aircraft type"] == "B7378MAX"
+    assert old["category"] == "Free text / other"    # original untouched
 
 
 # ---------------------------------------------------------------------------
@@ -334,3 +351,85 @@ def test_app_decode_failure_falls_back_to_text(monkeypatch):
     m._ingest(json.dumps({"reg": "N6", "label": "H1", "text": "hello world"}))
     d = m.drain_detections()[0]
     assert d["category"] == "Free text / other" and d["text"] == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# Structured airline report families (APM / <701> / ++865xx track / CRUISE)
+# ---------------------------------------------------------------------------
+# Message shapes below are trimmed from real captures on the node.
+
+def _fields(d):
+    return {f["name"]: f["value"] for f in d["fields"]}
+
+
+def test_apm_report_header_and_mach():
+    text = ("APM    6 N45905         UAL345  KIADPHNL010726200452,\n"
+            ",70000017,.850,,,258.6,,,-27.68,,,40000,,,363259")
+    d = _parsed(tail=".N45905", flight="UA0345", label="H1", text=text)
+    assert d["category"] == "Performance / engine"
+    f = _fields(d)
+    assert f["Report"] == "Engine performance (APM)"
+    assert f["Registration"] == "N45905"
+    assert f["Route"] == "KIAD→PHNL"
+    assert f["Report time"] == "20:04:52Z"
+    assert f["Mach"] == "0.850"          # the .850 header field, not a lat/lon decimal
+
+
+def test_apm_mach_not_taken_from_position_decimals():
+    # A later "31.8860" latitude must not be mistaken for a Mach number.
+    text = "APM  4 N781HA  ASA121  KSEAPHNL020726042750,,X,.848,,,31.8860,,,-156.1558"
+    d = _parsed(tail=".N781HA", flight="HA0121", label="H1", text=text)
+    assert _fields(d)["Mach"] == "0.848"
+
+
+def test_s701_engine_report_identity_and_route():
+    text = ("<701>IEG\n N13013UAL219    ER 243210726215737KORDPHNL42681810C  7\n"
+            " 360002876861-110 250336ENGD330NOTA")
+    d = _parsed(tail=".N13013", flight="UA0219", label="H1", text=text)
+    assert d["category"] == "Performance / engine"
+    f = _fields(d)
+    assert f["Report"] == "Engine data (<701>)"
+    assert f["Registration"] == "N13013"
+    assert f["Route"] == "KORD→PHNL"     # digit-bounded run, not the trailing NOTA
+
+
+def test_track_report_header_position_and_summary():
+    text = ("++86501,N8774Q,B7378MAX,260722,WN2879,KOAK,PHNL,0946,SMX34-2502-F320\n"
+            "4\n"
+            "N2144.5,W15712.7,222335,16782,-00.3,196,017,DC,00000,0,\n"
+            "N2140.0,W15717.5,222336,14525, 03.8,182,008,DC,00000,0,")
+    d = _parsed(tail=".N8774Q", flight="WN2879", label="H1", text=text)
+    assert d["category"] == "Position report"
+    # First waypoint (degree-minute, comma-separated) becomes the message fix.
+    assert abs(d["lat"] - (21 + 44.5 / 60.0)) < 1e-6      # N2144.5
+    assert abs(d["lon"] - -(157 + 12.7 / 60.0)) < 1e-6    # W15712.7
+    f = _fields(d)
+    assert f["Aircraft type"] == "B7378MAX"
+    assert f["Route"] == "KOAK→PHNL"
+    assert f["Fixes"] == "2 positions"
+    assert f["Altitude"] == "FL145–FL168"
+
+
+def test_cruise_report_state_and_per_engine_n1_n2():
+    text = ("CRUISE REPORT SAGE\n"
+            "535#CRUISE#27-0720:29:10#1#1#0#1#1#0#0#0#034001#-16.7#0.804#\n"
+            "090.6#094.3#00704#03250#049#0100#0.61#0.35#\n"
+            "090.7#094.1#00696#03206#051#0099#0.31#0.17#\n"
+            "0000.26#0000.72#0064.0#0064.0#0.20")
+    d = _parsed(tail=".N535AS", flight="AS0258", label="H1", text=text)
+    assert d["category"] == "Performance / engine"
+    f = _fields(d)
+    assert f["Altitude"] == "FL340"
+    assert f["OAT"] == "-16.7°C"
+    assert f["Mach"] == "0.804"
+    assert f["Eng 1 N1/N2"] == "90.6% / 94.3%"
+    assert f["Eng 2 N1/N2"] == "90.7% / 94.1%"
+    # The trailing ratio row (leading 0.26) is not a rotor-speed line → no phantom Eng 3.
+    assert "Eng 3 N1/N2" not in f
+
+
+def test_structured_report_does_not_fire_on_plain_free_text():
+    raw = "014F63N )4D:Z4D0EZ0IONMPP ZHN1SMS13ZU1P"
+    d = _parsed(tail="N5", label="37", text=raw)
+    assert d["category"] == "Free text / other"
+    assert d["text"] == raw
