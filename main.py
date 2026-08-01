@@ -62,7 +62,7 @@ _SURVEY_ENABLED = os.getenv("SURVEY_ENABLED", "false").lower() == "true"
 if _GUI_ENABLED:
     from gui.server import GUIServer
 
-_VERSION = "0.7.0-alpha"
+_VERSION = "1.0.0-rc"
 _SESSION_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
 _RATE_LIMIT_PERSIST = "data/rate_limits.json"
 
