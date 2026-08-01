@@ -117,6 +117,11 @@ def _extract_position(acars: dict, outer: dict, text: Optional[str]):
                 1 if m.group("lonh") == "E" else -1)
             if abs(lat) <= 90 and abs(lon) <= 180:
                 return lat, lon
+        # Comma-separated degree-minute fix as written in a "++865xx" track row
+        # ("N2144.5,W15712.7") — the first waypoint locates the message.
+        fix = _degmin_comma(text)
+        if fix:
+            return fix
     return None, None
 
 
@@ -155,6 +160,14 @@ CATEGORY_OOOI = "Flight progress (OOOI)"
 CATEGORY_ROUTE = "Route / dispatch"
 CATEGORY_LINK = "Link management"
 CATEGORY_FREE = "Free text / other"
+
+# Classification-schema version. Stamped onto every classified record (``cver``) and
+# used by reclassify() to decide whether a stored record's breakout is current. BUMP
+# this whenever classify()/the structured-report parsers change what they emit, so the
+# GUI re-decodes already-classified history at serve time instead of showing the stale
+# breakout (records carry the category the OLD code baked in, so a plain "has a
+# category" check would skip them forever). v2 = engine/position report families.
+_CLASSIFY_VERSION = 2
 
 # Labels that are pure link/media management (no user-facing content).
 _LINK_LABELS = {"_d", "_j", "sa", "q0", "sm", "sv"}
@@ -209,6 +222,263 @@ def _position_report_fields(text: str) -> list:
     return fields
 
 
+# ---------------------------------------------------------------------------
+# Structured airline report families (header + self-describing fields)
+# ---------------------------------------------------------------------------
+#
+# A large share of what lands in "Free text / other" is not free text at all —
+# it is an airline engine/position report in one of a few recurring dialects
+# (APM, the "<701>" downlink, the "++865xx" position track, and the "#"-delimited
+# CRUISE report). Their DEEP columns (per-engine EGT / fuel flow / N2 / oil) are
+# proprietary and positionally undocumented, so we do NOT decode those. But every
+# one of these carries a stable HEADER — registration, flight/callsign, route,
+# aircraft type, report time — that today is thrown away, plus a few values that
+# are self-describing (Mach, altitude, outside-air temperature, N1 fan speed). We
+# surface exactly those and leave the rest in the raw text: same "name what we can,
+# never fake-decode" stance the rest of the module follows. Every extractor is
+# defensive — a field is emitted only when its token matches the expected shape, so
+# an unforeseen airline variant degrades to fewer fields rather than a wrong value.
+
+
+def _mach(tok: str) -> Optional[str]:
+    """A cruise-Mach token (``.850`` / ``0.804``) → ``'0.850'``; else None. Ranged so a
+    stray fractional (a latitude's decimals) can't be mistaken for a Mach number."""
+    m = re.fullmatch(r"0?\.(\d{3})", tok.strip())
+    if not m:
+        return None
+    v = int(m.group(1)) / 1000.0
+    return f"{v:.3f}" if 0.40 <= v <= 0.98 else None
+
+
+def _alt_ft(tok: str) -> Optional[int]:
+    """A cruise-altitude token (feet) → int, if it falls in a plausible cruise band."""
+    t = tok.strip()
+    if not re.fullmatch(r"\d{4,6}", t):
+        return None
+    v = int(t)
+    return v if 8000 <= v <= 45000 else None
+
+
+def _sat(tok: str) -> Optional[str]:
+    """An outside-air / static-air temperature token (°C) → clean string, if in range.
+    Cruise SAT is deeply negative; we allow down to +60 for low-level reports."""
+    t = tok.strip()
+    if not re.fullmatch(r"-?\d{1,2}\.\d", t):
+        return None
+    v = float(t)
+    return f"{v:.1f}" if -90.0 <= v <= 60.0 else None
+
+
+def _pct(tok: str) -> Optional[float]:
+    """An engine rotor-speed percent token (N1/N2) → float, if 0–115 %."""
+    try:
+        v = float(tok.strip())
+    except (TypeError, ValueError):
+        return None
+    return v if 0.0 <= v <= 115.0 else None
+
+
+def _is_icao(s) -> bool:
+    return isinstance(s, str) and len(s) == 4 and s.isalpha() and s.isupper()
+
+
+def _hhmmss_clock(tok: str) -> Optional[str]:
+    """A 6-digit HHMMSS report time → ``'HH:MM:SS'``, only if it is a real clock time."""
+    t = tok.strip()
+    if not re.fullmatch(r"\d{6}", t):
+        return None
+    hh, mm, ss = int(t[0:2]), int(t[2:4]), int(t[4:6])
+    return f"{hh:02d}:{mm:02d}:{ss:02d}" if hh < 24 and mm < 60 and ss < 60 else None
+
+
+def _fl(alt_ft: int) -> str:
+    """Feet → a flight level label, e.g. 34001 → 'FL340'."""
+    return f"FL{round(alt_ft / 100):03d}"
+
+
+# APM (Aircraft Performance Monitoring, Teledyne ACMS) header. The report id/counter
+# between "APM" and the tail is optional; the route is a concatenated ICAO origin+dest
+# pair, and the trailer is DDMMYY + HHMMSS. Deliberately strict so it only fires on a
+# real APM header line.
+_APM_HEADER_RE = re.compile(
+    r"\bAPM\b\s*\d*\s+(?P<reg>[A-Z]\d?[A-Z0-9]{3,5})\s+(?P<flight>[A-Z]{2,3}\d{1,4})\s+"
+    r"(?P<orig>[A-Z]{4})(?P<dest>[A-Z]{4})\d{6}(?P<time>\d{6})"
+)
+# "<701>" engine downlink: the identity is a concatenated tail+callsign, and the route
+# is the only 8-letter run bounded by digits on both sides — anchoring on those digits
+# keeps it from matching an unrelated word (e.g. a trailing "ENGD330NOTA").
+_S701_ID_RE = re.compile(r"\b(?P<reg>N[A-Z0-9]{4,5})(?P<flight>[A-Z]{2,3}\d{2,4})\b")
+_S701_ROUTE_RE = re.compile(r"(?<=\d)(?P<orig>[A-Z]{4})(?P<dest>[A-Z]{4})(?=\d)")
+# A degree-minute fix as written in a comma-delimited track row: "N2144.5,W15712.7".
+_DEGMIN_COMMA_RE = re.compile(
+    r"\b(?P<lath>[NS])(?P<latd>\d{2})(?P<latm>\d{2}\.\d+)\s*,\s*"
+    r"(?P<lonh>[EW])(?P<lond>\d{3})(?P<lonm>\d{2}\.\d+)"
+)
+
+
+def _degmin_comma(text: str):
+    """First comma-separated degree-minute fix in *text* → ``(lat, lon)`` or None."""
+    m = _DEGMIN_COMMA_RE.search(text)
+    if not m:
+        return None
+    lat = (int(m.group("latd")) + float(m.group("latm")) / 60.0) * (
+        1 if m.group("lath") == "N" else -1)
+    lon = (int(m.group("lond")) + float(m.group("lonm")) / 60.0) * (
+        1 if m.group("lonh") == "E" else -1)
+    if abs(lat) <= 90 and abs(lon) <= 180:
+        return lat, lon
+    return None
+
+
+def _parse_apm(text: str) -> Optional[dict]:
+    """APM engine-performance report → header fields + the (unambiguous) cruise Mach.
+    Deep engine columns are airline-proprietary and left in the raw text."""
+    m = _APM_HEADER_RE.search(text)
+    if not m:
+        return None
+    fields = [{"name": "Report", "value": "Engine performance (APM)"},
+              {"name": "Registration", "value": m.group("reg")},
+              {"name": "Flight", "value": m.group("flight")},
+              {"name": "Route", "value": f'{m.group("orig")}→{m.group("dest")}'}]
+    clock = _hhmmss_clock(m.group("time"))
+    if clock:
+        fields.append({"name": "Report time", "value": f"{clock}Z"})
+    # Mach is the first cruise-range decimal token after the header (config/route ids
+    # carry no decimal point; the lat/lon decimals appear only later in the payload).
+    for tok in re.findall(r"0?\.\d{3}", text[m.end():]):
+        mach = _mach(tok)
+        if mach:
+            fields.append({"name": "Mach", "value": mach})
+            break
+    return {"category": CATEGORY_PERFORMANCE, "fields": fields, "lat": None, "lon": None}
+
+
+def _parse_701(text: str) -> Optional[dict]:
+    """"<701>" engine downlink → header fields (identity + route). The numeric body is
+    an undocumented per-airline engine snapshot; it stays in the raw text."""
+    if "<701>" not in text:
+        return None
+    fields = [{"name": "Report", "value": "Engine data (<701>)"}]
+    ident = _S701_ID_RE.search(text)
+    if ident:
+        fields.append({"name": "Registration", "value": ident.group("reg")})
+        fields.append({"name": "Flight", "value": ident.group("flight")})
+    route = _S701_ROUTE_RE.search(text)
+    if route:
+        fields.append({"name": "Route", "value": f'{route.group("orig")}→{route.group("dest")}'})
+    return {"category": CATEGORY_PERFORMANCE, "fields": fields, "lat": None, "lon": None}
+
+
+def _parse_track(text: str) -> Optional[dict]:
+    """"++865xx" position/track report → header (identity/type/route) plus a summary of
+    the waypoint track. Cleanly comma-delimited, so every field is shape-validated and
+    the first fix is adopted as the message position."""
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith("++"):
+        return None
+    head = [t.strip() for t in lines[0].split(",")]
+    fields = [{"name": "Report", "value": "Position / track report"}]
+    reg = head[1] if len(head) > 1 else ""
+    typ = head[2] if len(head) > 2 else ""
+    flight = head[4] if len(head) > 4 else ""
+    orig = head[5] if len(head) > 5 else ""
+    dest = head[6] if len(head) > 6 else ""
+    if re.fullmatch(r"N?[A-Z0-9]{4,6}", reg):
+        fields.append({"name": "Registration", "value": reg})
+    if re.fullmatch(r"[A-Z][A-Z0-9]{2,7}", typ):
+        fields.append({"name": "Aircraft type", "value": typ})
+    if re.fullmatch(r"[A-Z]{2,3}\d{1,4}", flight):
+        fields.append({"name": "Flight", "value": flight})
+    if _is_icao(orig) and _is_icao(dest):
+        fields.append({"name": "Route", "value": f"{orig}→{dest}"})
+    # Waypoint rows: "<degmin lat>,<degmin lon>,<HHMMSS>,<alt ft>,...". Count them and
+    # take the first fix; report the altitude band when the alt column validates.
+    first = None
+    count = 0
+    alts = []
+    for ln in lines[1:]:
+        fix = _degmin_comma(ln)
+        if not fix:
+            continue
+        count += 1
+        if first is None:
+            first = fix
+        cells = [c.strip() for c in ln.split(",")]
+        if len(cells) >= 4:
+            a = _alt_ft(cells[3])
+            if a:
+                alts.append(a)
+    lat = lon = None
+    if first is not None:
+        lat, lon = first
+        fields.append({"name": "Fixes", "value": f"{count} position{'s' if count != 1 else ''}"})
+        if alts:
+            lo, hi = min(alts), max(alts)
+            fields.append({"name": "Altitude",
+                           "value": _fl(hi) if lo == hi else f"{_fl(lo)}–{_fl(hi)}"})
+    return {"category": CATEGORY_POSITION, "fields": fields, "lat": lat, "lon": lon}
+
+
+def _parse_cruise(text: str) -> Optional[dict]:
+    """"CRUISE REPORT" ("#"-delimited) → cruise state (altitude / SAT / Mach) and the
+    per-engine N1/N2. The "#" delimiting makes these columns unambiguous, so they are
+    safe to name; remaining columns (fuel flow / EGT / oil) stay in the raw text."""
+    if "CRUISE" not in text[:40].upper():
+        return None
+    lines = text.splitlines()
+    fields = [{"name": "Report", "value": "Engine cruise report"}]
+    # Header line: locate the "CRUISE" marker, then the first consecutive
+    # (altitude, SAT, Mach) triple that all validate.
+    head_cells = None
+    for ln in lines:
+        cells = [c for c in ln.split("#") if c != ""]
+        if any(c.upper() == "CRUISE" for c in cells):
+            head_cells = cells
+            break
+    if head_cells:
+        for i in range(len(head_cells) - 2):
+            alt = _alt_ft(head_cells[i])
+            sat = _sat(head_cells[i + 1])
+            mach = _mach(head_cells[i + 2])
+            if alt is not None and sat is not None and mach is not None:
+                fields.append({"name": "Altitude", "value": _fl(alt)})
+                fields.append({"name": "OAT", "value": f"{sat}°C"})
+                fields.append({"name": "Mach", "value": mach})
+                break
+    # Engine lines: an all-"#" numeric row whose first two cells are rotor-speed
+    # percents. The header row (leading report id > 115) and the trailing ratio row
+    # (leading value < 40) are naturally excluded by the percent range.
+    eng = 0
+    for ln in lines:
+        cells = [c for c in ln.split("#") if c != ""]
+        if len(cells) < 2:
+            continue
+        n1, n2 = _pct(cells[0]), _pct(cells[1])
+        if n1 is not None and n2 is not None and 40.0 <= n1 <= 105.0 and 40.0 <= n2 <= 105.0:
+            eng += 1
+            fields.append({"name": f"Eng {eng} N1/N2", "value": f"{n1:.1f}% / {n2:.1f}%"})
+        if eng >= 4:
+            break
+    return {"category": CATEGORY_PERFORMANCE, "fields": fields, "lat": None, "lon": None}
+
+
+def _parse_structured_report(text: Optional[str]) -> Optional[dict]:
+    """If *text* is a recognized airline engine/position report, return
+    ``{"category", "fields", "lat", "lon"}`` with the safely-readable fields; else None.
+    Guarded so a malformed real-world variant never raises into the caller."""
+    if not text:
+        return None
+    for parser in (_parse_apm, _parse_701, _parse_track, _parse_cruise):
+        try:
+            result = parser(text)
+        except Exception:  # pragma: no cover - defensive on live decoder output
+            logger.debug("ACARS structured-report parse failed", exc_info=True)
+            continue
+        if result and len(result["fields"]) > 1:  # more than just the "Report" label
+            return result
+    return None
+
+
 def classify(label, text, flight, origin, destination, lat, lon):
     """Sort a parsed message into a human category and pull the fields we can parse.
 
@@ -227,6 +497,21 @@ def classify(label, text, flight, origin, destination, lat, lon):
         fields.append({"name": "Route", "value": f"{origin}→{destination}"})
     if lat is not None and lon is not None:
         fields.append({"name": "Position", "value": _fmt_pos(lat, lon)})
+
+    # A recognized airline engine/position report is the most specific signal and wins
+    # outright: name its type and surface the header + self-describing values. The
+    # report-type label leads, then the identity we already have, then the report's own
+    # fields — de-duplicated by name so the cleaner base identity wins on any conflict.
+    structured = _parse_structured_report(txt)
+    if structured is not None:
+        extras = structured["fields"]
+        seen, merged = set(), []
+        for f in extras[:1] + fields + extras[1:]:
+            if f["name"] in seen:
+                continue
+            seen.add(f["name"])
+            merged.append(f)
+        return structured["category"], merged
 
     oooi_pairs = _OOOI_PAIR_RE.findall(txt)
 
@@ -452,13 +737,16 @@ def _decode_app(acars: dict):
 
 def reclassify(rec: dict) -> dict:
     """Backfill category / label_name / fields (and a compact-format position) onto a
-    stored ACARS record that predates classification, derived from its own raw fields.
+    stored ACARS record, derived from its own raw fields, so historical messages show
+    the same breakout as freshly-decoded ones. Used at GUI serve time.
 
-    Returns a shallow copy so the caller's cached/stored dict is never mutated.
-    Idempotent: a record already carrying a category is returned unchanged. Used at GUI
-    serve time so historical messages show the same breakout as freshly-decoded ones.
+    Returns a shallow copy so the caller's cached/stored dict is never mutated. Skips
+    (returns unchanged) only a record already classified by the *current* schema
+    (``cver == _CLASSIFY_VERSION``); a record carrying an OLDER classification — including
+    one the previous code baked a category into — is re-decoded so a schema improvement
+    reaches history without a log rewrite.
     """
-    if not isinstance(rec, dict) or rec.get("category"):
+    if not isinstance(rec, dict) or rec.get("cver") == _CLASSIFY_VERSION:
         return rec
     text = rec.get("text")
     lat, lon = rec.get("lat"), rec.get("lon")
@@ -472,6 +760,7 @@ def reclassify(rec: dict) -> dict:
     out["category"] = category
     out["label_name"] = _LABEL_NAMES.get(label, "Airline / other") if label else None
     out["fields"] = fields
+    out["cver"] = _CLASSIFY_VERSION
     return out
 
 
@@ -600,6 +889,7 @@ class ACARSModule:
             "destination": destination,
             "lat": lat,
             "lon": lon,
+            "cver": _CLASSIFY_VERSION,   # freshly decoded → reclassify() leaves it as-is
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
