@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from modules import air_geometry, air_scoring, contact_designator, device_identity
+from modules import alert_suppression
 from modules.copresence import CoPresenceLinker
 from modules.mac_utils import get_manufacturer, get_mac_type, is_randomized_mac, normalize_mac
 from modules.sdr_manager import SDRMode
@@ -1467,9 +1468,19 @@ class SensorOrchestrator:
             # 3,385 alerts across 65 MACs). event.fingerprint collapses the
             # rotations into one bucket while keeping un-fingerprintable devices on
             # mac: (the over-merge guard — distinct devices never share a bucket).
+            # A randomized device with NO strong fingerprint has only a mac: key,
+            # which still rotates; the one path that pages such a device is the
+            # egregious-during-baseline safety net (force_page). alert_suppression
+            # collapses those into a coarse proximity:<modality>:<band> bucket so a
+            # dense-node learning window can't flood per rotation, while every
+            # rotation-stable contact keeps its per-identity key unchanged.
             # force_page (egregious-during-baseline) events use the longer window.
             elif await self.rate_limiter.is_allowed(
-                f"persist:{event.fingerprint or event.mac}",
+                alert_suppression.cooldown_key(
+                    fingerprint=event.fingerprint, mac=event.mac,
+                    mac_type=event.mac_type, device_type=event.device_type,
+                    signal=(device.get("last_signal") if device else None),
+                ),
                 cooldown_override=(
                     self._egregious_alert_cooldown if event.force_page else None),
             ):
