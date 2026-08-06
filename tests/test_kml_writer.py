@@ -304,5 +304,24 @@ class TestKMLWriterHTMLTable(unittest.TestCase):
         self.assertIn("0.75", result)
 
 
+class TestAltitudeFeet(unittest.TestCase):
+    """altitude_feet() — coerce ADS-B altitude (incl. the "ground" string) to feet."""
+
+    def test_numeric_passthrough(self):
+        self.assertEqual(modules.kml_writer.altitude_feet(10000), 10000.0)
+        self.assertEqual(modules.kml_writer.altitude_feet(11000.5), 11000.5)
+
+    def test_numeric_string_parsed(self):
+        self.assertEqual(modules.kml_writer.altitude_feet("35000"), 35000.0)
+
+    def test_ground_string_becomes_zero(self):
+        # ADS-B alt_baro == "ground" for an aircraft on the surface.
+        self.assertEqual(modules.kml_writer.altitude_feet("ground"), 0.0)
+
+    def test_none_and_garbage_become_zero(self):
+        self.assertEqual(modules.kml_writer.altitude_feet(None), 0.0)
+        self.assertEqual(modules.kml_writer.altitude_feet("n/a"), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

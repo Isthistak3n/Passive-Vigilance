@@ -26,6 +26,23 @@ _DEFAULT_OUTPUT_DIR = os.getenv("SESSION_OUTPUT_DIR", "data/sessions")
 
 _ICON_BASE = "http://maps.google.com/mapfiles/kml"
 
+
+def altitude_feet(value) -> float:
+    """Coerce an ADS-B altitude to numeric feet for geometry and records.
+
+    ADS-B reports ``alt_baro: "ground"`` for an aircraft on the surface, and the
+    field may be missing entirely; both — and any other non-numeric — mean "no
+    usable numeric altitude" and become ``0.0``. The raw value is still fine for
+    human-readable display (the KML "Altitude (ft)" row keeps showing "ground");
+    this is only for the numeric altitude feeding Point/LineString coordinates and
+    the shapefile record, where a string would raise (``int("ground")`` crashed the
+    aircraft shapefile write at session shutdown).
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
 # icon_href, KML color (aabbggrr)
 _POINT_STYLE_DEFS: dict[str, tuple[str, str]] = {
     "wifi-new":           (f"{_ICON_BASE}/pushpin/wht-pushpin.png",    "ffffffff"),
@@ -357,10 +374,8 @@ class KMLWriter:
         lat = float(event.get("lat") or 0.0)
         lon = float(event.get("lon") or 0.0)
         # Convert altitude from feet to metres for KML Point altitudeMode
-        try:
-            alt_m = float(event.get("altitude") or 0) * 0.3048
-        except (TypeError, ValueError):
-            alt_m = 0.0
+        # ("ground"/missing → 0 m, see altitude_feet).
+        alt_m = altitude_feet(event.get("altitude")) * 0.3048
         ts = event.get("timestamp", "")
         lines = self._build_placemark(
             name, desc, lat, lon, alt_m, style_id, ts, altitude_mode="absolute"
@@ -400,10 +415,7 @@ class KMLWriter:
             lat, lon = pos.get("lat"), pos.get("lon")
             if lat is None or lon is None:
                 continue
-            try:
-                alt_m = float(pos.get("altitude") or 0) * 0.3048
-            except (TypeError, ValueError):
-                alt_m = 0.0
+            alt_m = altitude_feet(pos.get("altitude")) * 0.3048
             current.append(f"{lon},{lat},{alt_m}")
         segments.append(current)
 
