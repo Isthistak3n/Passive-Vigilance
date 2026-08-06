@@ -43,6 +43,7 @@ def altitude_feet(value) -> float:
     except (TypeError, ValueError):
         return 0.0
 
+
 # icon_href, KML color (aabbggrr)
 _POINT_STYLE_DEFS: dict[str, tuple[str, str]] = {
     "wifi-new":           (f"{_ICON_BASE}/pushpin/wht-pushpin.png",    "ffffffff"),
