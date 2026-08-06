@@ -8,7 +8,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
-from modules.kml_writer import KMLWriter
+from modules.kml_writer import KMLWriter, altitude_feet
 
 load_dotenv()
 
@@ -110,7 +110,7 @@ class ShapefileWriter:
                     "reg":          str(e.get("registration", "")),
                     "operator":     str(e.get("operator", "")),
                     "country":      str(e.get("country", "")),
-                    "altitude":     int(e.get("altitude") or 0),
+                    "altitude":     int(altitude_feet(e.get("altitude"))),
                     "timestamp":    str(e.get("timestamp", "")),
                 }
                 for e in aircraft_events

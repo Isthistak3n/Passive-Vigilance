@@ -93,6 +93,24 @@ def test_write_session_creates_aircraft_shp(tmp_path):
     assert (Path(tmp_path) / "test_session" / "detections_aircraft.shp").exists()
 
 
+def test_write_session_aircraft_on_ground_altitude_does_not_crash(tmp_path):
+    # ADS-B reports alt_baro "ground" for an aircraft on the surface. The writer
+    # used to int("ground") and crash the whole aircraft layer at session
+    # shutdown ("Shapefile write failed: invalid literal for int()..."); a
+    # non-numeric altitude must now coerce to 0, not raise.
+    from pathlib import Path
+
+    writer = ShapefileWriter(output_dir=str(tmp_path))
+    events = _aircraft_events(1)
+    events[0]["altitude"] = "ground"
+    writer.write_session("ground_session", events)  # must not raise
+
+    shp = Path(tmp_path) / "ground_session" / "detections_aircraft.shp"
+    assert shp.exists(), "aircraft layer must still be written when one is on the ground"
+    gdf = geopandas.read_file(shp)
+    assert int(gdf.iloc[0]["altitude"]) == 0
+
+
 def test_write_session_handles_empty_events_gracefully(tmp_path):
     writer = ShapefileWriter(output_dir=str(tmp_path))
     # Must not raise even with no events
