@@ -19,6 +19,7 @@ This directory contains Wikipedia-style reference articles for the major modules
 6. **[Identity Layer](identity.md)** — fingerprints, contact identity, co-presence, designators
 7. **[SDR Coordination](sdr.md)** — single-dongle time-share
 8. **[Outputs](outputs.md)** — alerts, GIS, WiGLE, GUI
+9. **[Recon-Pair Survey](survey.md)** — fixed-base + mobile-patrol hunting team (optional)
 
 ## Structure of each article
 
@@ -35,6 +36,6 @@ These articles deliberately weave material from `CLAUDE.md`, `docs/architecture.
 
 ## Coverage status
 
-The pages above cover every major runtime component and the complete data path from radio → score → store → alert → GIS. Supporting utilities (`ignore_list`, `probe_analyzer`, `survey_*`, `aircraft_registry`, `air_scoring`, `promotion_policy`, `core/exceptions`, `core/logging`, deploy scripts, etc.) are documented inline inside the pages that consume them.
+The pages above cover every major runtime component and the complete data path from radio → score → store → alert → GIS, plus the optional recon-pair survey subsystem. Supporting utilities (`ignore_list`, `probe_analyzer`, `aircraft_registry`, `air_scoring`, `promotion_policy`, `sighting_rollup`, `alert_suppression`, `core/exceptions`, `core/logging`, deploy scripts, etc.) are documented inline inside the pages that consume them.
 
 **Documentation of the core system is complete.**

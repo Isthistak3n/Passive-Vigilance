@@ -122,6 +122,7 @@ Fixed-mode nodes also drive BaselineStore upserts inside FixedScoring; mobile no
 - [Identity](identity.md)
 - [SDR](sdr.md)
 - [Outputs](outputs.md)
+- [Recon-Pair Survey](survey.md)
 
 ## See also
 
