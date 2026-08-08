@@ -116,8 +116,8 @@ High-density fixed nodes should use the tighter profile documented in `.env.exam
 
 | Node | Store behaviour of interest |
 |---|---|
-| **chase** (fixed) | Both stores active. Baseline learns for 72 h then freezes; EntityStore records every poll and feeds distinctive anchors + contact registry. High ambient density requires the tighter row-cap / prune profile. |
-| **survkis** (mobile) | EntityStore still records (orthogonal). BaselineStore is not opened because FixedScoring is not constructed. |
+| **Fixed node** | Both stores active. Baseline learns for 72 h then freezes; EntityStore records every poll and feeds distinctive anchors + contact registry. High ambient density requires the tighter row-cap / prune profile. |
+| **Mobile node** | EntityStore still records (orthogonal). BaselineStore is not opened because FixedScoring is not constructed. |
 
 ## See also
 

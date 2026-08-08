@@ -61,7 +61,7 @@ Orchestrator obtains GPS fix (or None)
 
 ## Hardware notes
 
-Both **chase** and **survkis** run an RTL8811CU (or equivalent) in monitor mode as `wlan1`. Kismet is the only source of Wi-Fi probes and beacons.
+Both the fixed and mobile nodes run an RTL8811CU (or equivalent) in monitor mode as `wlan1`. Kismet is the only source of Wi-Fi probes and beacons.
 
 ## Related modules
 

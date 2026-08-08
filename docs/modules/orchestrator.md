@@ -79,7 +79,7 @@ Fixed-mode nodes also drive BaselineStore upserts inside FixedScoring; mobile no
 
 ## Example workflows on development hardware
 
-### chase (fixed node)
+### Fixed node
 
 - Mode forced `fixed`.
 - BaselineStore learns for `FIXED_BASELINE_HOURS` (default 72 h) then freezes.
@@ -87,7 +87,7 @@ Fixed-mode nodes also drive BaselineStore upserts inside FixedScoring; mobile no
 - Single RTL-SDR time-shared (`adsb:600,ais:30` + ACARS preemption).
 - Full Leaflet GUI on port 8088.
 
-### survkis (mobile node)
+### Mobile node
 
 - Mode `mobile`.
 - PersistenceEngine only; BaselineStore never opened.

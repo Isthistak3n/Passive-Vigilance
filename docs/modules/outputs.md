@@ -42,7 +42,7 @@ Zero overhead when the GUI is disabled — the import never happens.
 |---|---|---|
 | `ALERT_BACKEND` | ntfy | |
 | `GUI_ENABLED` | false | |
-| `GUI_PORT` | 8080 (chase uses 8088) | Avoids collision with readsb |
+| `GUI_PORT` | 8080 (fixed node uses 8088) | Avoids collision with readsb |
 | `GUI_TOKEN` | (empty) | Required for mode toggle and survey endpoints |
 | `NTFY_TOPIC` / Telegram / Discord credentials | — | |
 
@@ -59,4 +59,4 @@ Zero overhead when the GUI is disabled — the import never happens.
 
 ## Hardware notes
 
-Both development nodes run the GUI on port 8088. **chase** serves the full Leaflet dashboard; **survkis** serves the mobile Nearby + Survey UI.
+Both development nodes run the GUI on port 8088. The **fixed node** serves the full Leaflet dashboard; the **mobile node** serves the Nearby + Survey UI.

@@ -30,7 +30,7 @@ This directory contains Wikipedia-style reference articles for the major modules
 - Configuration
 - Pitfalls and edge cases
 - Related modules
-- Hardware notes (chase / survkis)
+- Hardware notes (fixed / mobile node)
 
 These articles deliberately weave material from `CLAUDE.md`, `docs/architecture.md`, `CONTEXT.md` and the source itself into a single, orienting reference for both newcomers and subject-matter experts.
 

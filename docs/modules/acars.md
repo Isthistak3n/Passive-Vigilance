@@ -76,7 +76,7 @@ Extracts: tail / registration, flight ID, ARINC label, free-text body, origin / 
 
 ## Hardware notes
 
-On **chase** the single RTL-SDR is time-shared; ACARS is requested only on long-held contacts. A VHF antenna (often via SMA splitter) is required. **survkis** has no SDR.
+On the fixed node the single RTL-SDR is time-shared; ACARS is requested only on long-held contacts. A VHF antenna (often via SMA splitter) is required. The mobile node has no SDR.
 
 ## Related modules
 

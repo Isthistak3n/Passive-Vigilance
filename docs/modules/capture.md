@@ -24,8 +24,8 @@ The capture layer turns raw RF into structured, GPS-stamped device records that 
 
 | Node | Capture stack |
 |---|---|
-| **chase** | wlan1 (monitor) + USB BT dongle + RTL-SDR (ADS-B/AIS/ACARS time-share) + Remote ID via Kismet |
-| **survkis** | wlan1 (monitor) + u-blox GPS; no SDR → ADS-B/AIS/ACARS stay dark |
+| **Fixed node** | wlan1 (monitor) + USB BT dongle + RTL-SDR (ADS-B/AIS/ACARS time-share) + Remote ID via Kismet |
+| **Mobile node** | wlan1 (monitor) + u-blox GPS; no SDR → ADS-B/AIS/ACARS stay dark |
 
 ## See also
 

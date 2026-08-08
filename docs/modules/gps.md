@@ -38,8 +38,8 @@ This separation was introduced after a silent gpsd wedge coupled the Wi-Fi and A
 
 | Node | GPS |
 |---|---|
-| **chase** | u-blox (or equivalent) via gpsd |
-| **survkis** | u-blox; critical for mobile location-diversity scoring |
+| **Fixed node** | u-blox (or equivalent) via gpsd |
+| **Mobile node** | u-blox; critical for mobile location-diversity scoring |
 
 ## Related modules
 

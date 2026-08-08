@@ -39,7 +39,7 @@ AIS-catcher (systemd) → UDP JSON on 127.0.0.1:10110
 
 ## Hardware notes
 
-On **chase** the single RTL-SDR is time-shared (`adsb:…,ais:…`). A VHF antenna is required for useful range. **survkis** has no SDR.
+On the fixed node the single RTL-SDR is time-shared (`adsb:…,ais:…`). A VHF antenna is required for useful range. The mobile node has no SDR.
 
 ## Related modules
 

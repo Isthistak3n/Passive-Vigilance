@@ -53,7 +53,7 @@ Decoder services are started/stopped via a scoped sudoers rule (`systemctl start
 
 ## Hardware notes
 
-On **chase** a single RTL-SDR is time-shared (`adsb:600,ais:30`) with ACARS preemption; a VHF antenna is attached via an SMA splitter. On **survkis** no SDR is present.
+On the fixed node a single RTL-SDR is time-shared (`adsb:600,ais:30`) with ACARS preemption; a VHF antenna is attached via an SMA splitter. On the mobile node no SDR is present.
 
 ## See also
 

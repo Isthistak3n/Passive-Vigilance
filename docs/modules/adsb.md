@@ -42,7 +42,7 @@ Orchestrator obtains GPS fix
 
 ## Hardware notes
 
-**chase** runs a single RTL-SDR time-shared with AIS/ACARS. **survkis** has no SDR, so ADS-B stays dark.
+The fixed node runs a single RTL-SDR time-shared with AIS/ACARS. The mobile node has no SDR, so ADS-B stays dark.
 
 ## Related modules
 

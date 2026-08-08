@@ -52,7 +52,7 @@ Orchestrator buffers latest advert per address
 
 ## Hardware notes
 
-**chase** uses a USB Bluetooth dongle on `hci0`. **survkis** can run the same stack when a dongle is present.
+The fixed node uses a USB Bluetooth dongle on `hci0`. A mobile node can run the same stack when a dongle is present.
 
 ## Related modules
 

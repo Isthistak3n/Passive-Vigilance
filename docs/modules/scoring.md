@@ -63,5 +63,5 @@ The *kind* of detection is read from `score_breakdown` / `alert_level`, not a se
 
 | Node | Engine |
 |---|---|
-| **chase** | FixedScoring + BaselineStore |
-| **survkis** | PersistenceEngine only |
+| **Fixed node** | FixedScoring + BaselineStore |
+| **Mobile node** | PersistenceEngine only |

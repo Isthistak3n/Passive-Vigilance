@@ -25,7 +25,7 @@ The orchestrator holds the coordinator as `self.survey` and touches it in exactl
 ## Workflow (fixed base + mobile patrol)
 
 ```
-FIXED (chase)                           MOBILE (survkis)
+FIXED (base node)                       MOBILE (patrol node)
   flag a strong contact
   → note_flagged_contact → tasking       ← pull_taskings (sync_loop)
                                           start_patrol
@@ -89,8 +89,8 @@ FIXED (chase)                           MOBILE (survkis)
 
 | Node | Survey role |
 |---|---|
-| **chase** (fixed) | Base — flags contacts, serves taskings, ingests findings; GUI on 8088 (survey endpoints need `?token=`) |
-| **survkis** / pi3 (mobile) | Patrol — pulls taskings, walks, records observations + wardrive, pushes findings back |
+| **Fixed node (base)** | Flags contacts, serves taskings, ingests findings; GUI on 8088 (survey endpoints need `?token=`) |
+| **Mobile node (patrol)** | Pulls taskings, walks, records observations + wardrive, pushes findings back |
 
 ## See also
 
