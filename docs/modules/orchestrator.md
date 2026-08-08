@@ -6,7 +6,7 @@ The runtime spine of Passive Vigilance. `PassiveVigilance` (in `main.py`) owns p
 
 | Component | File | Responsibility |
 |---|---|---|
-| **PassiveVigilance** | `main.py` | CLI entry, env loading, mode resolution (`fixed` / `mobile` / `auto`), sensor construction, graceful shutdown |
+| **PassiveVigilance** | `main.py` | CLI entry, env loading, mode resolution (`fixed` / `mobile`, required), sensor construction, graceful shutdown |
 | **SensorOrchestrator** | `modules/orchestrator.py` | Asyncio coordination of all capture loops, GPS stamping, scoring, entity/baseline writes, alerts, GIS, GUI push |
 
 Everything that happens at runtime eventually flows through the orchestrator.
