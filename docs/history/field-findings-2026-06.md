@@ -92,7 +92,7 @@ off-schedule gradation, FP-rate instrumentation, P3.
 
 **Disk, not RAM, is the real multi-day budget.** `observations` grew ~14 MB/hr
 (3,769 → 472,763 rows; entity DB 1.5 → 57 MB in 4h) by design, with **no pruning
-yet**. That's ~1 GB/day → ~2–3 GB for a 3-day baseline. chase has ~38 GB free, so
+yet**. That's ~1 GB/day → ~2–3 GB for a 3-day baseline. the fixed node has ~38 GB free, so
 a 72h run fits, but pruning/rotation is needed before this is a standing
 deployment.
 
@@ -161,7 +161,7 @@ small; soak #3 reinforces off-schedule and correlation as the higher-value work.
   baseline flagged ~**100%** of known devices the instant the clock crossed into
   any unbaselined hour. Fix shipped: the per-device activation guard
   (`OFF_SCHEDULE_MIN_BASELINE_HOURS`, default 12 distinct hours). Re-validated on
-  chase: same thin baseline flags 0% at the default, while a ≥12-hour baseline
+  the fixed node: same thin baseline flags 0% at the default, while a ≥12-hour baseline
   still flags a genuinely off-pattern sighting.
 - **Approaching trigger: 0% false positives, but the positive case is still
   owed.** A short fixed-mode check saw 0 of 1,841 eligible devices false-fire at
@@ -205,7 +205,7 @@ small; soak #3 reinforces off-schedule and correlation as the higher-value work.
   data is under `bluetooth.device.*`. Always verify a new path against the live
   daemon before building on it.
 
-## Bluetooth enablement (chase, 2026-06-06)
+## Bluetooth enablement (the fixed node, 2026-06-06)
 
 BT/BLE is captured via a **USB dongle** (`hci0`), not onboard Bluetooth (which
 shares the GPS-HAT UART, issue #48). The dongle ships rfkill soft-blocked;

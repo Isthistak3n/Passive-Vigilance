@@ -2634,7 +2634,7 @@ def test_cross_session_result_cached_per_session(orch):
 
 
 def test_resolve_contact_mac_scoring_fingerprint_is_weak_not_strong(orch):
-    """Regression (caught on chase): FixedScoring sets event.fingerprint to
+    """Regression (caught on the fixed node): FixedScoring sets event.fingerprint to
     'mac:<mac>' for un-fingerprinted devices; that is NOT a strong content
     fingerprint, so the contact must be labeled weak and mac:-keyed, not strong."""
     so = orch.sensor_orchestrator

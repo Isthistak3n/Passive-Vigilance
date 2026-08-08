@@ -1,11 +1,11 @@
 # Design: access-point hardware identity & evil-twin detection
 
-Status: **direction set (2026-08-06)** — after a live feasibility pass on `chase`, the plan is
+Status: **direction set (2026-08-06)** — after a live feasibility pass on the fixed node, the plan is
 **not to build a bespoke detector**. Kismet already ships a WIDS that raises the evil-twin
 signals automatically; the work is to **consume those alerts** and to **feed Kismet the one thing
 it lacks** (an authorized BSSID↔SSID list, which PV already learns as its baseline). The earlier
 WPS-fingerprint building block (`feat/ap-wps-identity`) stays **parked** (0% identity coverage on
-`chase`). This note records the threat model, what was tried, what the live data actually showed,
+the fixed node). This note records the threat model, what was tried, what the live data actually showed,
 and the direction it points to — so the idea and the findings are not lost.
 
 ## Why this exists
@@ -29,7 +29,7 @@ networks around me an impostor."
 
 # Part I — What the environment actually looks like (live findings, 2026-08-06)
 
-Before designing a detector, we measured the real RF environment on `chase`.
+Before designing a detector, we measured the real RF environment on the fixed node.
 
 ## 1. The capture substrate is already live
 
@@ -87,7 +87,7 @@ already present — several firing **automatically, with no configuration**:
 
 `CRYPTODROP` and `BSSTIMESTAMP` **are** the "cloned-AP" detection this note originally scoped by
 hand — done automatically, internally, by the WIDS. Building a bespoke `beacon_fingerprint`-diff
-engine in PV would **reimplement Kismet**. (On `chase` right now the only raised alerts are 50 ×
+engine in PV would **reimplement Kismet**. (On the fixed node right now the only raised alerts are 50 ×
 `NOCLIENTMFP` — sev-5 client-side noise filling a small buffer — i.e. the WIDS is live and firing,
 with no actual twin/spoof events in a benign environment.)
 
@@ -131,7 +131,7 @@ Cheap, and useful for PV's own display/history, but **not** load-bearing for det
 
 - **Not** building a bespoke `beacon_fingerprint` / IE-diff detector — it reimplements
   `CRYPTODROP` / `BSSTIMESTAMP` / `BEACONRATE`, and the fingerprint doesn't cluster by hardware anyway.
-- **Not** merging the WPS building block as the backbone (see Appendix) — 0% identity coverage on `chase`.
+- **Not** merging the WPS building block as the backbone (see Appendix) — 0% identity coverage on the fixed node.
 
 ---
 
@@ -140,7 +140,7 @@ Cheap, and useful for PV's own display/history, but **not** load-bearing for det
 Branch `feat/ap-wps-identity` (+10 tests, held from merge) captures AP-side WPS beacon attributes
 (manufacturer / model / serial / device name) into a `wps-fingerprint`, with an over-merge guard
 (a bare manufacturer alone yields no fingerprint). It is a genuine *hardware* descriptor and would
-survive an AP changing BSSID/SSID. But a 45 h `chase` soak found **0% coverage** of the
+survive an AP changing BSSID/SSID. But a 45 h the fixed node soak found **0% coverage** of the
 identity-bearing fields (model/serial) — consumer APs here run WPS locked down or off — so the
 fingerprint it builds is never generated. A small later sample did show a few APs (e.g. Roku)
 exposing WPS manuf/model, so coverage is site-dependent and non-zero *somewhere*; if a future site
