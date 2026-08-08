@@ -463,7 +463,7 @@ If `.env` does not exist or `GPS_DEVICE` is unset, it defaults to `/dev/ttyUSB0`
   daemon before building on it.
 - **Zero RSSI is a placeholder, not a measurement:** Kismet reports
   `last_signal == 0` for a device it tracked without a real signal sample (~15–18%
-  of readings on chase). Treat `0` like a missing reading wherever signal is
+  of readings on the fixed node). Treat `0` like a missing reading wherever signal is
   consumed; fixed-mode baseline RSSI stats skip both `None` and `0`.
 - **Randomized-MAC keying:** "new MAC" is the default for modern devices, so
   fixed-mode profiling keys randomized MACs by probe-SSID fingerprint, not MAC.

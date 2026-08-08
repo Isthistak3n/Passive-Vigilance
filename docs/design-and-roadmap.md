@@ -132,12 +132,12 @@ very strong on first contact (in the operator's space, not street traffic), or o
 stronger (reuses the approaching machinery, P1). Soak #1 showed a naive `-45 dBm` floor
 floods a dense environment (~22/poll), so the Wi-Fi threshold is **environment-density-tuned**:
 `NODE_DENSITY` → dense `-30` / suburban `-40` / rural `-50`, override `EGREGIOUS_SIGNAL_DBM`.
-chase runs `dense`. The operator may also run a deliberate clean-environment baseline, but
+the fixed node runs `dense`. The operator may also run a deliberate clean-environment baseline, but
 the system must not *depend* on it.
 
 **BLE has its own threshold** (`EGREGIOUS_BLE_SIGNAL_DBM`, default `-50`, *not* density-keyed):
 BLE RSSI runs much lower than Wi-Fi for the same distance and is inherently a ~10 m proximity
-signal, so the Wi-Fi presets silence it entirely. On chase the ambient BLE floor clusters
+signal, so the Wi-Fi presets silence it entirely. On the fixed node the ambient BLE floor clusters
 around `-55` while genuinely-close adverts reach `-32..-45`; `-50` separates them. A node whose
 operator device advertises at low TX power (iPhones) may need this calibrated against that
 device's measured close-range RSSI.
@@ -201,7 +201,7 @@ by `ble-fp:` (vendor / services / name, `modules/ble_fingerprint.py`). Same `key
 shape. **Over-merge guard:** a device with no distinctive content (bare vendor id / no named
 SSID) is **not** grouped, so distinct devices never merge. Both `FixedScoring._device_key` and
 `PersistenceEngine` key on it (stable MACs → `mac:<mac>`), so randomization resistance applies
-to both modes. On chase this cut the post-freeze randomized-MAC flood from ~36 flags/cycle to
+to both modes. On the fixed node this cut the post-freeze randomized-MAC flood from ~36 flags/cycle to
 **3–5/cycle**. (Supersedes the earlier `mac_utils.group_by_fingerprint` union-find.)
 
 **What's stable across rotation.** *WiFi:* vendor-specific IEs, supported/extended rate sets,
@@ -270,7 +270,7 @@ a near-empty feed). PV owns `hci0`, so Kismet's `linuxbluetooth` source is remov
 the setuid caps `sudo` needs and broke the SDR coordinator); the HCI index is auto-detected
 (`BLE_HCI_DEVICE`) so a USB re-enumeration to `hci1` still works. *Upgrade path if controller
 capture proves too lossy:* a dedicated sniffer (Ubertooth / nRF) Kismet can ingest directly.
-On chase, bare advertisers dominate (mostly `mac:`-keyed, few `ble-fp:`), as predicted — a
+On the fixed node, bare advertisers dominate (mostly `mac:`-keyed, few `ble-fp:`), as predicted — a
 longer-range dongle was swapped in at soak #3's conclusion to improve capture.
 
 ## 8. Contact designators (SHIPPED, 2026-06-14)
@@ -424,7 +424,7 @@ docs). DroneRF tab retired, AIS tab added, ACARS surfaced on the aircraft tab. *
 stability — validated.** The make-or-break check (the 2026-06-21 readsb "SDR wedged" crash-loop
 on every time-share handoff) is cleared on the live ADS-B+AIS cycle: readsb exits gracefully for
 the AIS slice and re-acquires the tuner with **0 wedges** — the settle barrier alone carries the
-handoff. **On `chase`, AIS is now ENABLED**: a VHF antenna was added via an SMA splitter, so the
+handoff. **On the fixed node, AIS is now ENABLED**: a VHF antenna was added via an SMA splitter, so the
 node runs `SDR_CYCLE_SLICES=adsb:600,ais:30` (10 min ADS-B, 30 s AIS). AIS *reception* is still
 being confirmed — VHF line-of-sight to sea-level vessels is marginal from this site (aircraft, at
 altitude, are the stronger VHF target). **ACARS stays off** — no decoder installed yet (acarsdec
@@ -453,7 +453,7 @@ beds down, by AP association → findings offload back) is **built (PR #195, `SU
 off)** and realises the multi-node correlation §5.5 named. Its full design and the on-node phased
 validation plan live in a dedicated document — **see [design-recon-pair.md](design-recon-pair.md)**.
 
-**On-node validation (2026-07-06).** The live `chase`↔`survkis` pair cleared **Ph0** (plumbing:
+**On-node validation (2026-07-06).** The live the fixed and mobile nodes pair cleared **Ph0** (plumbing:
 token-gated pull/push, store-and-forward round trip) and **Ph2** (not-found → WiGLE-candidate flag).
 The first two walk tests returned nothing — which turned out to be **two real bugs**, both now fixed:
 the AP-association anchor was sourced from an intermittently-present device field, so every tasking
@@ -497,13 +497,13 @@ deployability and set the lead priority (**detection-quality completion**):
 1. **Blind during learning (P2) — closed in code, owes field calibration.** A 48–72 h baseline
    that flags nothing while learning would bake an already-present surveillance device into
    "normal." The egregious-during-baseline net (§5.2) is now implemented *and paging*; what
-   remains is the on-chase walk-test to calibrate the thresholds (Wi-Fi + BLE) so it pages a
+   remains is the on-the fixed node walk-test to calibrate the thresholds (Wi-Fi + BLE) so it pages a
    genuinely-close device without flooding.
 2. **Fatigues over days (P3) — implemented, owes the multi-day read.** Post-freeze, every benign
    newcomer would otherwise read novel forever. Soak #1's novelty flood and soak #2's off-schedule
    flood are fixed, and the *durable* answer — a rolling baseline that promotes consistently-present
    devices without absorbing an intermittent/patient adversary — is now built and activated on
-   chase (`conservative`). What remains is watching it across a multi-day post-freeze run.
+   the fixed node (`conservative`). What remains is watching it across a multi-day post-freeze run.
 
 Identity and air-picture depth follow detection-quality — they make alerts *mean more*, but a
 detector you can't trust during learning isn't deployable regardless.
@@ -554,8 +554,8 @@ the detector.
 |---|---|---|---|
 | **P0** | Endurance hardening (post-freeze memory + disk) | ✅ Merged #74; forced-freeze + soak #3 (~42 h) validated bounded memory | ✅ shipped |
 | **P1** | Approaching trigger merged + walk-tested (Phase 2.5) | ◑ Merged & green; owes the positive walk-test | **① (owes walk-test)** |
-| **P2** | Egregious-during-baseline safety net (§5.2) | ◑ Implemented (Phase 2.6) — density-tuned Wi-Fi + modality-specific BLE threshold, now paging via `force_page` (the 0.5-score events were display-only before the fix). *Owes:* the on-chase calibration walk-test (does a deliberately-close device page without flooding) | **① lead (owes walk-test)** |
-| **P3** | Adaptation — rolling baseline (§5.4) | ◑ Implemented & wired — `promotion_policy.py` (swappable criterion, slow-in/fast-out invariant), `BaselineStore` promote/demote + post-freeze accumulator, `FixedScoring.run_adaptation_sweep`, the guarded `_adaptation_sweep_loop` task, 30 passing tests. Defaults `off`; **activated on chase** (`ADAPTATION_POSTURE=conservative`). *Owes:* multi-day post-freeze validation that FP decays without absorbing an intermittent returner | **① lead (owes validation)** |
+| **P2** | Egregious-during-baseline safety net (§5.2) | ◑ Implemented (Phase 2.6) — density-tuned Wi-Fi + modality-specific BLE threshold, now paging via `force_page` (the 0.5-score events were display-only before the fix). *Owes:* the on-the fixed node calibration walk-test (does a deliberately-close device page without flooding) | **① lead (owes walk-test)** |
+| **P3** | Adaptation — rolling baseline (§5.4) | ◑ Implemented & wired — `promotion_policy.py` (swappable criterion, slow-in/fast-out invariant), `BaselineStore` promote/demote + post-freeze accumulator, `FixedScoring.run_adaptation_sweep`, the guarded `_adaptation_sweep_loop` task, 30 passing tests. Defaults `off`; **activated on the fixed node** (`ADAPTATION_POSTURE=conservative`). *Owes:* multi-day post-freeze validation that FP decays without absorbing an intermittent returner | **① lead (owes validation)** |
 | **P4** | Cross-session entity resolution + cross-PHY | ✅ Phases A–C shipped (branch soaking): contact-identity tiers (strong/medium) + within-session return (A); durable cross-session returning-entity via `contact_registry` (B); cross-PHY person linking via `copresence.py` + resident-vs-visitor (C). All display/identity — scoring key untouched. *Owed:* multi-day threshold calibration (medium tier / co-presence), and wiring identity into scoring | ②/③ |
 | **P5** | Fixed-mode GUI framing + durable history | ✅ Contact designators, scoring-panel thread-safety, baseline-state header, sortable/filterable + CSV, durable history across ALL panels, live-mirror (re-seed + resync, #149). *Owed:* learning-vs-frozen framing + anomaly-by-severity list | ✅ shipped (slice owed) |
 | **P6** | Air-picture GUI: aircraft panel fix + decay + Remote ID surface | ✅ Complete — current-sky panel, decay, chiclet accuracy, bounded tracks, ID-less split, Remote ID pruning + surface; 24 h retention; returning-ICAO as same identity | ✅ shipped |
@@ -574,7 +574,7 @@ emits alerts for egregious triggers (very close/strong on first contact, or tren
 reusing P1's approaching machinery, a `NODE_DENSITY`-tuned Wi-Fi floor, and a separate BLE
 threshold (`EGREGIOUS_BLE_SIGNAL_DBM`). The events now **page** via `force_page` (they score
 0.5 and were silenced by the suspicious-display gate until the fix). Unit tests cover the
-threshold routing and the paging bypass. *Owed:* the on-chase calibration walk-test — confirm
+threshold routing and the paging bypass. *Owed:* the on-the fixed node calibration walk-test — confirm
 a deliberately-close phone (Wi-Fi *and* BLE) pages without flooding on ordinary traffic, and
 tune `EGREGIOUS_BLE_SIGNAL_DBM` to the device if its BLE TX power is low. *Exit:* egregious
 flags fire (and page) during learning, sparingly.
@@ -590,7 +590,7 @@ separate from the frozen baseline stats) feeds `FixedScoring.run_adaptation_swee
 hourly by the guarded `_adaptation_sweep_loop`; demotions emit a `baseline_demotion` event to
 `events.jsonl`. A promoted device is no longer novelty-eligible (§5.3) until demoted. Unit tests
 cover promotion, the intermittent-returner-not-absorbed case, demotion, off-posture, the policy
-seam, and the migration (30 passing). **Activated on chase** (`ADAPTATION_POSTURE=conservative`),
+seam, and the migration (30 passing). **Activated on the fixed node** (`ADAPTATION_POSTURE=conservative`),
 inert until the baseline freezes. *Owes:* the multi-day post-freeze read that novelty FP decays
 without swallowing an intermittent returner. *Exit:* FP decays without absorbing intermittent
 returners. *Deferred:* swapping in `ConsistencyPatternPolicy`; a "graveyard" GUI panel for
@@ -677,7 +677,7 @@ during-learning and multi-day FP behaviour, not a gate.
 
 ## Soak history
 
-**Soak #1 — chase, 2026-06-07→09 (P0+P1+P2, 48 h, DroneRF off).** *Machinery works; FP rate
+**Soak #1 — the fixed node, 2026-06-07→09 (P0+P1+P2, 48 h, DroneRF off).** *Machinery works; FP rate
 did not.* Passed: clean freeze at +48 h; rich banking (5,026 profiles; 1,872 with ≥10 RSSI →
 approaching-eligible; 4,227 with ≥12 baseline hours → off-schedule-eligible); 0 restarts; RSS
 modest (99→155 MB). Failed — two floods: (1) **egregious flooded** at the `-45 dBm` default
@@ -685,14 +685,14 @@ modest (99→155 MB). Failed — two floods: (1) **egregious flooded** at the `-
 (~969/poll, ~10.7k alerts), ~60% randomized MACs → fix: a randomized MAC with no fingerprint
 must show sustained presence (`NOVELTY_RANDOM_MIN_OBSERVATIONS`) before novelty fires.
 
-**Soak #2 — chase, 2026-06-17 (first post-freeze read).** Novelty flood stayed dead (~2% of
+**Soak #2 — the fixed node, 2026-06-17 (first post-freeze read).** Novelty flood stayed dead (~2% of
 flags) ✓, but the noise **moved to `off_schedule`**: ~50 WiFi suspicious/poll, 97% on held-MAC
 randomized (`mac:`) clients flagging on one new hour-of-day, all at 0.50; `alerts_dropped`
 shedding. Root cause: a randomized-no-fp device was novelty-ineligible but still
 off-schedule-eligible. Fixed (#138): off-schedule-ineligible for randomized-no-fp + page
 likely+ only.
 
-**Soak #3 — chase, 2026-06-17→19 (~42 h, post-fix validation).** The #138 fix held: **240
+**Soak #3 — the fixed node, 2026-06-17→19 (~42 h, post-fix validation).** The #138 fix held: **240
 paged / ~74.6k display-only / 0 dropped**, SDR time-share clean (**0 wedges** with ADS-B +
 DroneRF sharing the SDR), returning-aircraft live, **memory bounded** (~116–200 MB, no drift —
 the post-freeze `all_events` dedups per device, retiring the P0 leak worry). BLE data-starved
@@ -702,7 +702,7 @@ Full test evidence: [field-findings-2026-06.md](history/field-findings-2026-06.m
 
 ## Method for a future confirmation soak
 
-**Run the candidate stack on chase** (e.g. `feat/egregious-during-baseline` carrying P0+P1+P2)
+**Run the candidate stack on the fixed node** (e.g. `feat/egregious-during-baseline` carrying P0+P1+P2)
 — running unmerged validation code on the test node is acceptable for a prototype validation
 run; PRs still merge only after the walk-test passes. Wipe the baseline so a fresh window
 starts under the stack, then learn → freeze → observe.
@@ -728,7 +728,7 @@ count / disk bounded by the retention sweep; approaching fires on a real walk-to
 ambient FP; egregious flags during learning without flooding; a sane post-freeze anomaly stream
 with tolerable FP; uptime + counters advancing over days.
 
-**Safety / isolation.** This soak **is** the live run on chase, so the usual "operate on copies"
+**Safety / isolation.** This soak **is** the live run on the fixed node, so the usual "operate on copies"
 rule is inverted — it is the production-shaped exercise. Guard rails: confirm `NODE_MODE=fixed`
 before restart (or the service crash-loops); keep the retired baseline backup; **read counter
 advancement, not the health-banner ✓ flags, to judge liveness** — the node has silently stalled

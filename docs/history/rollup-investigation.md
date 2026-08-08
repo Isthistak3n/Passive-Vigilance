@@ -2,7 +2,7 @@
 
 Branch: `experiment/sighting-rollup` · Written 2026-07-18 · Status: **PROPOSAL — no code changes**
 
-Motivation: the SD card on the chase node hit 100% full on 2026-07-18 (27 GB
+Motivation: the SD card on the fixed node hit 100% full on 2026-07-18 (27 GB
 entities.db WAL; ~18 h of silent persistence failures). The per-sighting event-log
 model grows without bound at fixed-node device density. This doc records exactly how
 sightings are persisted today (Phase 1) and proposes a bounded state-table +
@@ -51,19 +51,19 @@ device key — `first_seen`, `last_seen`, `observation_count`, `manufacturer`,
 
 Write site: `SensorOrchestrator._poll_kismet` → `entity_store.record_poll(devices,
 gps_fix=…)` (`orchestrator.py:1216`), every Kismet poll
-(`KISMET_POLL_INTERVAL_SECONDS=30` on chase). `record_poll` →
+(`KISMET_POLL_INTERVAL_SECONDS=30` on the fixed node). `record_poll` →
 `_write_poll` (`entity_store.py:429`) inserts **one `observations` row per device
 in the poll list**, all in one commit (via a writer thread when
-`ENTITY_ASYNC_WRITES=true`, as on chase).
+`ENTITY_ASYNC_WRITES=true`, as on the fixed node).
 
 The multiplier that makes it explode: **Kismet's device list is cumulative for the
 session**, and on fixed nodes `KISMET_ACTIVE_WINDOW_SECONDS` is deliberately 0
-(unset on chase) so the full historical list feeds baseline learning. So a device
+(unset on the fixed node) so the full historical list feeds baseline learning. So a device
 heard once at 09:00 keeps generating a fresh "sighting" row every 30 seconds for
 the rest of the session, even though it is long gone. Row creation is therefore
 O(cumulative devices × polls), not O(actual sightings):
 
-- chase health banner 2026-07-18: **15.0 M cumulative device records in 13.8 h**
+- the fixed node health banner 2026-07-18: **15.0 M cumulative device records in 13.8 h**
   ≈ 12.5 k devices per poll × 2 polls/min ≈ **36 M observation rows/day attempted**.
 - The prune (age retention + 250 k hard row cap, #206/#212) deletes at most one
   25 k batch per sweep under a 3 s SD-fsync budget (~700 k rows/h ceiling), so at

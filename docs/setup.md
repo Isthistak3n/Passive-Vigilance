@@ -867,7 +867,7 @@ The installer creates a virtualenv at `/opt/passive-vigilance/venv`. Use the
 venv interpreter so it sees the same packages as the systemd service:
 
 ```bash
-cd /home/survkis/Passive-Vigilance
+cd /home/the mobile node/Passive-Vigilance
 /opt/passive-vigilance/venv/bin/python3 main.py
 # convenience symlink (created by installer):
 pv-python main.py
@@ -1230,7 +1230,7 @@ GUI auth       : enabled (token required)
 Use `GUI_HOST=127.0.0.1` or a VPN / SSH tunnel for remote access:
 
 ```bash
-ssh -L 8080:localhost:8080 survkis@<pi-ip>
+ssh -L 8080:localhost:8080 the mobile node@<pi-ip>
 # then open http://localhost:8080 locally
 ```
 
@@ -1242,7 +1242,7 @@ A fixed node can task a mobile node to survey where a flagged device beds down a
 receive the findings back (design + validation plan: `docs/design-recon-pair.md`).
 Off by default (`SURVEY_ENABLED=false`) — zero overhead until both nodes opt in.
 
-**On the FIXED node (base station, e.g. `chase`):**
+**On the FIXED node (base station, e.g. the fixed node):**
 ```ini
 SURVEY_ENABLED=true
 GUI_ENABLED=true        # the survey endpoints ride the GUI server
@@ -1255,7 +1255,7 @@ GUI_PORT=8088
 ```
 Restart; the WiFi list gains a **Task survey** button and a **Survey** tab appears.
 
-**On the MOBILE node (spoke, e.g. `survkis`):**
+**On the MOBILE node (spoke, e.g. the mobile node):**
 ```ini
 SURVEY_ENABLED=true
 NODE_MODE=mobile

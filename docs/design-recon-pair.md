@@ -115,7 +115,7 @@ candidate *state*; the query stays manual and off until built and opsec-gated.
 ## 7. Honest limits
 
 - Only well-fingerprinted contacts are surveyable (named probe SSIDs are ~26% of WiFi clients on
-  `chase`; BLE anchors sparser), so this hunts the identifiable, not everyone.
+  the fixed node; BLE anchors sparser), so this hunts the identifiable, not everyone.
 - AP association needs the home network to actually beacon within the wardrive's reach; a
   distinctive anchor keeps false matches low, but a shared SSID name is a *candidate*, not a
   certainty.
@@ -235,8 +235,8 @@ The bench is green (39 survey unit tests + a real-HTTP end-to-end integration te
 **on-node** proof, phased, using the roadmap's soak-plan discipline (knobs → procedure → pass bar
 → safety). It runs on the live pair.
 
-**Nodes.** `chase` = fixed base station (Pi 4B+, GUI on **:8088**, `GUI_TOKEN` set),
-`survkis` = mobile spoke (Pi 3B+, WiFi+GPS, `NODE_MODE=mobile`, carried).
+**Nodes.** the fixed node = fixed base station (Pi 4B+, GUI on **:8088**, `GUI_TOKEN` set),
+the mobile node = mobile spoke (Pi 3B+, WiFi+GPS, `NODE_MODE=mobile`, carried).
 
 ## Prerequisites & config
 
@@ -247,32 +247,32 @@ every restart** (wrong mode crash-loops the service).
 
 | Node | Key `.env` | Value |
 |---|---|---|
-| **chase** (fixed) | `SURVEY_ENABLED` | `true` |
+| **the fixed node** (fixed) | `SURVEY_ENABLED` | `true` |
 | | `GUI_TOKEN` / `GUI_PORT` | already set / `8088` (readsb owns 8080) |
 | | `AIR_HOME_LAT` / `AIR_HOME_LON` | *optional* pin for stable distance banding (else live GPS) |
 | | `SURVEY_AUTOTASK` | `off` (default; the button is primary) |
-| **survkis** (mobile) | `SURVEY_ENABLED` | `true` |
-| | `SURVEY_FIXED_URL` | `http://chasingyourtail.local:8088` (or chase's IP) |
-| | `SURVEY_TOKEN` | chase's `GUI_TOKEN` value |
+| **the mobile node** (mobile) | `SURVEY_ENABLED` | `true` |
+| | `SURVEY_FIXED_URL` | `http://chasingyourtail.local:8088` (or the fixed node's IP) |
+| | `SURVEY_TOKEN` | the fixed node's `GUI_TOKEN` value |
 | | `NODE_MODE` | `mobile` (already) |
 | | `KISMET_ACTIVE_WINDOW_SECONDS` | `90`–`120` (mobile-scoring hygiene) |
 | | `SURVEY_MIN_PATROL_POLLS` | `20` default; lower for a fast not-found test |
 
 ## Ph0 — Plumbing on the real pair (no field movement)
 
-Enable both, restart, task a chase WiFi contact via the **"Task survey"** button (or
-`POST /api/tasking`). **Pass:** survkis's sync loop reports the fixed node reachable and pulls the
-tasking (it appears in survkis's `survey.db` / logs); a wrong `SURVEY_TOKEN` is refused (401/403);
-with chase unreachable, survkis keeps running (fail-soft, no errors). Confirms auth + pull/push
+Enable both, restart, task a fixed-node WiFi contact via the **"Task survey"** button (or
+`POST /api/tasking`). **Pass:** the mobile node's sync loop reports the fixed node reachable and pulls the
+tasking (it appears in the mobile node's `survey.db` / logs); a wrong `SURVEY_TOKEN` is refused (401/403);
+with the fixed node unreachable, the mobile node keeps running (fail-soft, no errors). Confirms auth + pull/push
 over the LAN before any driving.
 
 ## Ph1 — AP-association bed-down walk-test (the headline proof)
 
 Task a known device whose **distinctive home SSID is beaconed by a local AP** (e.g. your phone +
-its home-router SSID, or a cooperating AP). Carry survkis on a loop that passes within WiFi range
-of that AP. **Pass:** survkis records a `kind='ap'` observation, `compute_findings` → **`resident`**
-with `home_ap` = that AP (BSSID/SSID/location), offloads on return, and chase's **Survey tab** shows
-the home AP + its distance/locality from chase — resolved in a **single patrol**, no dwell needed.
+its home-router SSID, or a cooperating AP). Carry the mobile node on a loop that passes within WiFi range
+of that AP. **Pass:** the mobile node records a `kind='ap'` observation, `compute_findings` → **`resident`**
+with `home_ap` = that AP (BSSID/SSID/location), offloads on return, and the fixed node's **Survey tab** shows
+the home AP + its distance/locality from the fixed node — resolved in a **single patrol**, no dwell needed.
 
 ## Ph2 — Not-found → WiGLE-candidate flag
 
@@ -283,17 +283,17 @@ manual). Confirms the escalation *state* surfaces and stays inert.
 
 ## Ph3 — Store-and-forward under real disconnect + classification
 
-Take survkis out of chase's LAN range, run a survey **offline** (observations bank locally), return
-to base. **Pass:** on reconnect survkis pulls new taskings and pushes the banked findings with **no
+Take the mobile node out of the fixed node's LAN range, run a survey **offline** (observations bank locally), return
+to base. **Pass:** on reconnect the mobile node pulls new taskings and pushes the banked findings with **no
 data loss** and no errors while disconnected. Also validate the distance banding (here /
-neighborhood / distant vs chase's reference) and, optionally, the auto-task path
+neighborhood / distant vs the fixed node's reference) and, optionally, the auto-task path
 (`SURVEY_AUTOTASK=on` enrolls a high-severity strong-fp contact).
 
 ## Ph4 — Multi-day pair endurance
 
-Run the pair for a multi-day window. **Pass:** survkis loop stable (no watchdog SIGABRT from the
+Run the pair for a multi-day window. **Pass:** the mobile node loop stable (no watchdog SIGABRT from the
 sync loop — it is off the poll hot path), `survey.db` bounded (observation retention sweep,
-`SURVEY_OBS_RETENTION_DAYS`), chase endpoints stable, no memory drift on either node, sync survives
+`SURVEY_OBS_RETENTION_DAYS`), the fixed node endpoints stable, no memory drift on either node, sync survives
 a reboot of either. **Judge liveness by counter advancement, not health-banner ✓ flags** (the node
 has silently stalled green before).
 

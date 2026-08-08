@@ -78,7 +78,7 @@ OFF_SCHEDULE_MIN_BASELINE_HOURS = 12
 # meaningfully STRONGER (numerically higher dBm — less negative) than its frozen
 # baseline mean is physically closing distance. RSSI is jittery, so three guards
 # (each env-overridable, like the off-schedule guard above) keep it from firing
-# on noise or thin data. Defaults below; calibrate against real RSSI on chase.
+# on noise or thin data. Defaults below; calibrate against real RSSI on the fixed node.
 APPROACHING_MIN_BASELINE_SAMPLES = 10   # trust the baseline mean only past this
 APPROACHING_MIN_RECENT_SAMPLES = 5      # trust the recent average only past this
 APPROACHING_SIGMA_MARGIN = 2.0          # rise must exceed this many baseline std devs
@@ -88,7 +88,7 @@ APPROACHING_MIN_DB_MARGIN = 6.0         # ...and at least this many dB (absolute
 # fully suppress alerting. A live signal at or above this strength (dBm; less
 # negative = physically closer) flags as egregiously close even while learning —
 # a device in the operator's immediate space, not street traffic. Env-overridable;
-# the key knob the on-chase test calibrates so it flags a deliberately-close
+# the key knob the fixed-node test calibrates so it flags a deliberately-close
 # device without flooding on ordinary nearby traffic.
 EGREGIOUS_SIGNAL_DBM = -45.0
 
@@ -103,7 +103,7 @@ _EGREGIOUS_DENSITY_PRESETS = {"dense": -30.0, "suburban": -40.0, "rural": -50.0}
 # presets above are Wi-Fi-calibrated and far too strict for Bluetooth. A BLE radio
 # reports much lower RSSI than Wi-Fi for the same distance, and BLE is inherently a
 # short-range (~10 m) proximity signal, so any reasonably strong advert is already
-# "in the operator's space". On chase the ambient BLE floor clusters around -55 dBm
+# "in the operator's space". On the fixed node the ambient BLE floor clusters around -55 dBm
 # (the persistent neighbour-beacon mass), while genuinely-close adverts reach
 # -32..-45; -50 separates the two. Not density-keyed (BLE's short range makes the
 # ambient floor roughly density-independent). Override with EGREGIOUS_BLE_SIGNAL_DBM;

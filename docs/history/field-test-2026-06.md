@@ -1,7 +1,7 @@
-# Field Test & Soak Report — June 2026 (node: chase)
+# Field Test & Soak Report — June 2026 (node: the fixed node)
 
 **Date:** 2026-06-01 → 2026-06-03
-**Node:** `chase` (`chasingyourtail`)
+**Node:** the fixed node (`chasingyourtail`)
 **Purpose:** Validate core functions on real hardware and measure stability over a long unattended soak. This is a validation record — results are reported as measured, including the failure we found.
 
 ---

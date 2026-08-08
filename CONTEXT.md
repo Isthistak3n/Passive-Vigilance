@@ -3,7 +3,7 @@
 > **Maintained by:** Claude Code (updated at session close and on merges to `main`)
 > **Read by:** Claude Code at the start of every session
 > **Last updated:** 2026-07-01
-> **Updated by:** [claude-code] (chase) — ADS-B+AIS+ACARS decode cycle live on the single dongle; AIS reception field-confirmed
+> **Updated by:** [claude-code] (fixed node) — ADS-B+AIS+ACARS decode cycle live on the single dongle; AIS reception field-confirmed
 >
 > **Scope note:** this file holds *live state* only (hardware, ports, branches,
 > handoffs). How-the-code-works lives in `CLAUDE.md`; how-we-work (roles, branch
@@ -13,13 +13,13 @@
 
 ## Current Sprint Focus
 
-**Active goal:** Validate the fixed-node prototype end to end. `chase` is up and
+**Active goal:** Validate the fixed-node prototype end to end. the fixed node is up and
 running fixed-mode scoring; the gate is a multi-day soak that crosses the baseline
 freeze. See `docs/design-and-roadmap.md` (design plan + roadmap + soak validation).
 
 **Recently landed (weekend of 2026-06-21/22):**
 - **SDR pivot** (#158/#160/#159) — DroneRF retired; single dongle runs an N-band
-  time-share of ADS-B + AIS + ACARS. Now **live and field-validated** on `chase` with a
+  time-share of ADS-B + AIS + ACARS. Now **live and field-validated** on the fixed node with a
   VHF splitter (2026-07-01): AIS decoded a real vessel (MarineTraffic-verified), ACARS
   (dumpvdl2, #176) decoded real traffic, handoffs clean.
 - **Dashboard map reverted to plain online OSM** (#161/#162) — the offline-basemap
@@ -30,7 +30,7 @@ freeze. See `docs/design-and-roadmap.md` (design plan + roadmap + soak validatio
   the stamped position no longer drifts behind real time (was minutes-to-hours on long
   runs; cosmetic on a fixed node, a real fix for mobile).
 
-**`chase` config note:** **ADS-B + AIS + ACARS all live** on the single dongle. A VHF
+**the fixed node config note:** **ADS-B + AIS + ACARS all live** on the single dongle. A VHF
 antenna was added via an SMA splitter, so the coordinator time-shares
 `SDR_CYCLE_SLICES=adsb:600,ais:30` (ADS-B base, short AIS slice), with ACARS
 preemption-driven on a >30s-held aircraft (`ACARS_ENABLED=true`, `ACARS_SERVICE=dumpvdl2`).
@@ -38,14 +38,14 @@ AIS reception is field-confirmed (real vessel decoded + MarineTraffic-verified);
 decode validated with real traffic. Handoffs stay clean on the settle barrier
 (`SDR_HANDOFF_USB_RESET=false`; 0 wedges). Dashboard map = direct online OSM.
 
-**Next:** the **recon-pair pair-validation** (P8 — `chase`+`survkis`, `design-recon-pair.md`
+**Next:** the **recon-pair pair-validation** (P8 — the fixed and mobile nodes, `design-recon-pair.md`
 Part II) is now the lead two-node exercise; plus P3 rolling baseline (alert-fatigue), P4
 cross-session entity resolution, P5 fixed-mode GUI framing. One open residual: a bounded
 `_current_fix` oscillation when the asyncio GPS poll stalls (separate from the gps.py reader;
 self-correcting).
 
-**Recon pair (multi-node, first layer) — BUILT (PR #195):** `chase` (fixed) can now task
-`survkis` (mobile) to survey where a flagged device beds down, and receive the findings back
+**Recon pair (multi-node, first layer) — BUILT (PR #195):** the fixed node (fixed) can now task
+the mobile node (mobile) to survey where a flagged device beds down, and receive the findings back
 (`SURVEY_ENABLED`, default off). Design + on-node validation plan: **`docs/design-recon-pair.md`**.
 The broader tiered coordination layer beyond this pipeline is still direction, not state.
 
@@ -53,7 +53,7 @@ The broader tiered coordination layer beyond this pipeline is still direction, n
 
 ## Architectural Direction (target — base station up, recon-pair layer built)
 
-> The target architecture. `chase` as a base station is up and running, and the
+> The target architecture. the fixed node as a base station is up and running, and the
 > FIRST multi-node layer — the fixed↔mobile reconnaissance pair (PR #195,
 > `docs/design-recon-pair.md`) — is built and entering on-node validation. The broader
 > tiered coordination below (registration, health, distributed aggregation) is still direction.
@@ -61,13 +61,13 @@ The broader tiered coordination layer beyond this pipeline is still direction, n
 **Tiered base-station + spoke model** (replaces the original single mega-node plan):
 
 ```
-chase (Pi 4B+) — base station
+Fixed node (Pi 4B+) — base station
   ├── RTL-SDR (ADS-B + Drone RF)
   ├── LoRaWAN/GNSS HAT (GPS)
   ├── DSI touchscreen (local display)
   └── coordination hub for spoke nodes
 
-survkis (Pi 3B+) — spoke node (WiFi + GPS)
+Mobile node (Pi 3B+) — spoke node (WiFi + GPS)
   ├── RTL8811CU WiFi adapter (monitor mode, Kismet)
   └── u-blox 8 GNSS (ttyACM0)
 
@@ -87,7 +87,7 @@ future spoke nodes — niche sensor subsets per Pi hardware/power limits
 - The WiGLE home-AP lookup for a not-located target (deliberate, opsec-gated — follow-up PR)
 
 **Near-term focus:** the **recon-pair pair-validation** (`design-recon-pair.md` Part II, Ph0–Ph4)
-on `chase`+`survkis` — the first live two-node exercise. `survkis` is the mobile recon spoke.
+on the fixed and mobile nodes — the first live two-node exercise. the mobile node is the mobile recon spoke.
 
 ---
 
@@ -97,13 +97,11 @@ Logical roles and aliases live in **`AGENTS.md` → Node Roles**. Live per-node
 hardware and verified status are in **Hardware & Adapter Map** below — that is the
 authority for what is actually present and working on each node.
 
-> `pi3` / `pi4` are logical aliases only
-
 ---
 
 ## Hardware & Adapter Map
 
-### survkis (Pi 3B+) — active, verified 2026-05-30
+### Mobile node (Pi 3B+) — active, verified 2026-05-30
 
 | Component | Detail | Interface / Path | Status |
 |-----------|--------|-----------------|--------|
@@ -111,11 +109,11 @@ authority for what is actually present and working on each node.
 | RTL8811CU WiFi adapter | Realtek RTL8811CU (0bda:c811), driver rtl8821cu/rtw88, 1×1 dual-band | `wlan1` — monitor mode (Kismet) | ✅ Active |
 | GNSS receiver | u-blox 8 (1546:01a8), cdc_acm driver | `/dev/ttyACM0` | ✅ Active |
 | Ethernet | — | `eth0` — DOWN (no cable) | — |
-| RTL-SDR | — | not present | — (intended for chase) |
+| RTL-SDR | — | not present | — (intended for the fixed node) |
 
-> **GPS device path note:** Native-USB GNSS receivers (u-blox, like this one) enumerate as `ttyACM*` via cdc_acm. USB-serial-bridge dongles enumerate as `ttyUSB*`. HAT-over-UART uses `ttyAMA*` or `ttyS*`. The code default `GPS_DEVICE=/dev/ttyUSB0` does NOT match this Pi — set `GPS_DEVICE=/dev/ttyACM0` in `.env` (already set on survkis).
+> **GPS device path note:** Native-USB GNSS receivers (u-blox, like this one) enumerate as `ttyACM*` via cdc_acm. USB-serial-bridge dongles enumerate as `ttyUSB*`. HAT-over-UART uses `ttyAMA*` or `ttyS*`. The code default `GPS_DEVICE=/dev/ttyUSB0` does NOT match this Pi — set `GPS_DEVICE=/dev/ttyACM0` in `.env` (already set on the mobile node).
 
-### chase (Pi 4B+) — active, verified 2026-06-06
+### Fixed node (Pi 4B+) — active, verified 2026-06-06
 
 | Component | Detail | Interface / Path | Status |
 |-----------|--------|-----------------|--------|
@@ -132,14 +130,14 @@ authority for what is actually present and working on each node.
 > `source=hci0:name=bluetooth,type=linuxbluetooth` in `/etc/kismet/kismet_site.conf`
 > makes it durable. Leave `bluetoothd` off.
 >
-> **Node mode:** chase runs `NODE_MODE=fixed` (set in `.env`) — fixed-node
+> **Node mode:** the fixed node runs `NODE_MODE=fixed` (set in `.env`) — fixed-node
 > baseline-deviation scoring.
 
 ---
 
 ## Capabilities vs. Deployed Hardware
 
-| Capability | Code status | Deployed on survkis | Deployed on chase |
+| Capability | Code status | Deployed on the mobile node | Deployed on the fixed node |
 |---|---|---|---|
 | WiFi/BT scan (Kismet) | ✅ Complete | ✅ Hardware present | ✅ wlan1 + hci0 (BT dongle) active |
 | GPS stamping | ✅ Complete | ✅ u-blox 8 on ttyACM0 | ✅ L76K on ttyAMA0 (3D fix) |
@@ -169,7 +167,7 @@ per module are in **`CLAUDE.md` → Deploy Directory**.
 
 Single-tier model: all work branches cut from `main` and merge back via PR — no
 integration branch. In-flight branches and their status are the **open PRs on
-GitHub**; this file no longer mirrors that list (it drifts). `chase` currently runs
+GitHub**; this file no longer mirrors that list (it drifts). the fixed node currently runs
 `main` — the P2/P3 detection-quality work and the full SDR decode cycle (ADS-B/AIS/
 ACARS) are all merged and live.
 
@@ -181,13 +179,13 @@ ACARS) are all merged and live.
 |---------|------|-----------|-------|
 | Kismet Web UI | 2501 | 0.0.0.0 | Auth via cookie token |
 | readsb / dump1090 | 8080 | localhost | JSON aircraft feed (`/data/aircraft.json`) |
-| Main orchestrator + Web GUI | 8088 | 0.0.0.0 | `GUI_PORT=8088` on both nodes — avoids the readsb :8080 collision on chase. Also serves the recon-pair `/api/tasking` + `/api/survey` endpoints (token-gated); mobile `SURVEY_FIXED_URL=http://<chase>:8088` |
+| Main orchestrator + Web GUI | 8088 | 0.0.0.0 | `GUI_PORT=8088` on both nodes — avoids the readsb :8080 collision on the fixed node. Also serves the recon-pair `/api/tasking` + `/api/survey` endpoints (token-gated); mobile `SURVEY_FIXED_URL=http://<fixed-node-host>:8088` |
 
 > **Port note:** readsb/tar1090 and the GUI both *default* to 8080, so co-locating
-> them needs the GUI moved. On `chase` this is resolved with `GUI_PORT=8088` in
-> `.env` (GUI reachable at `http://<chase>:8088`). On `survkis` there is no SDR, so
+> them needs the GUI moved. On the fixed node this is resolved with `GUI_PORT=8088` in
+> `.env` (GUI reachable at `http://<fixed-node-host>:8088`). On the mobile node there is no SDR, so
 > no collision, but `GUI_PORT=8088` is set the same way for consistency —
-> `GUI_ENABLED=true`, serving the standalone mobile GUI at `http://<survkis>:8088`.
+> `GUI_ENABLED=true`, serving the standalone mobile GUI at `http://<mobile-node-host>:8088`.
 
 ---
 
@@ -196,13 +194,13 @@ ACARS) are all merged and live.
 | Issue | Affects | Node | Severity | Status |
 |-------|---------|------|----------|--------|
 | Multi-node coordination missing | Entire system | Both | High | Next major milestone — see Architectural Direction |
-| GUI/readsb port collision (both default 8080) | chase deployment | chase | Low | ✅ Resolved — `GUI_PORT=8088` on chase |
+| GUI/readsb port collision (both default 8080) | the fixed node deployment | the fixed node | Low | ✅ Resolved — `GUI_PORT=8088` on the fixed node |
 | Branch-creation ruleset blocks non-admin contributors | All contributors | — | Low | Admin bypass in use; bypass-list decision pending |
-| Unsigned Pi commits hard-rejected if signature rule tightened | survkis, chase | Both | Medium | Fix: `git config gpg.format ssh` + `git config user.signingkey ~/.ssh/id_ed25519` — reuses existing deploy key, no new GPG setup needed |
+| Unsigned Pi commits hard-rejected if signature rule tightened | the mobile node, the fixed node | Both | Medium | Fix: `git config gpg.format ssh` + `git config user.signingkey ~/.ssh/id_ed25519` — reuses existing deploy key, no new GPG setup needed |
 | Telegram/Discord require manual credentials | Alert backends | Both | Low | Config gap only |
 | No comprehensive frontend tests for Web GUI | gui/server.py | Both | Low | Partial unit tests exist |
 | DroneRF retired — replaced by the AIS/ADS-B/ACARS decode cycle (#158) | Drone detection | — | — | `DRONE_RF_ENABLED=false`; code kept for reversibility. Not a blocker |
-| DSI touchscreen non-functional | Local display | chase | Medium | Blocks field readiness |
+| DSI touchscreen non-functional | Local display | the fixed node | Medium | Blocks field readiness |
 
 ---
 
@@ -269,19 +267,19 @@ scan). Commit signing is not yet configured on the Pis — see Known Issues.
 
 [2026-05-06] Completed Drone Remote ID detection module (`modules/remote_id.py`) + `test_remote_id.py`. Also added backend coverage in `test_alerts.py`. CollectedEvents switched to dataclass. gh CLI not installed on Pis — recommend `sudo apt install gh` + `gh auth login`.
 
-[2026-05-30] Context refresh session (survkis). Diagnosed Grok's gutted CLAUDE.md (stub restored from 20e6484, PR #38 merged). Created fresh `dev` from main (old `dev/improvements` retired — its only unique commit 4b6fa69 gutted CI workflows). Reconciled branch strategy docs across AGENTS.md/CONTRIBUTING.md/README.md/CLAUDE.md/SECURITY.md (PRs merged to dev, then to main). Verified: no secrets in history, u-blox 8 on ttyACM0 (not ttyUSB0), GPS_DEVICE set in .env. Port collision noted: GUI + readsb both default 8080. ModuleHealth (Step 4) confirmed not yet built.
+[2026-05-30] Context refresh session (mobile node). Diagnosed Grok's gutted CLAUDE.md (stub restored from 20e6484, PR #38 merged). Created fresh `dev` from main (old `dev/improvements` retired — its only unique commit 4b6fa69 gutted CI workflows). Reconciled branch strategy docs across AGENTS.md/CONTRIBUTING.md/README.md/CLAUDE.md/SECURITY.md (PRs merged to dev, then to main). Verified: no secrets in history, u-blox 8 on ttyACM0 (not ttyUSB0), GPS_DEVICE set in .env. Port collision noted: GUI + readsb both default 8080. ModuleHealth (Step 4) confirmed not yet built.
 
 [2026-05-30] Branch model simplified to single-tier: all work branches → main directly. `dev` was bypassed in practice (all PRs during this session went to main); retired. Commit-style conflict resolved: AGENTS.md governs agent commit subjects ([agent] type(scope):); CLAUDE.md governs PR titles, release notes, human commits. Version string bumped to 0.4.3-alpha. README/setup.md/CLAUDE.md architecture tree synced. `dev` pending deletion after this PR cycle.
 
-[2026-06-07] chase fixed-node session. Landed P0 endurance hardening (#74), the approaching trigger (#75), Bluetooth reboot durability (#76), reliability fixes — stall watchdog + GUI bind-retry (#79), and the dashboard baseline header + aircraft-panel fixes (#80). Diagnosed and fixed two chase outages: a silent sensor stall (counters frozen while the health banner stayed green — hence the watchdog) and a post-reboot crash loop (NODE_MODE missing from `.env`). Restarted chase clean on a wiped baseline; a 48h soak is running the P0+P1+P2 stack (`feat/egregious-during-baseline`), freezing ~2026-06-09 22:55 UTC, after which the P1 walk-test runs. Bluetooth re-enabled and made durable. Test suite at 417. Docs de-duplicated (#81) and refreshed (this pass); `_VERSION` bumped to 0.6.0-alpha. Open finding: DSI touchscreen still non-functional; DroneRF still disabled on #63.
+[2026-06-07] fixed-node session. Landed P0 endurance hardening (#74), the approaching trigger (#75), Bluetooth reboot durability (#76), reliability fixes — stall watchdog + GUI bind-retry (#79), and the dashboard baseline header + aircraft-panel fixes (#80). Diagnosed and fixed two fixed-node outages: a silent sensor stall (counters frozen while the health banner stayed green — hence the watchdog) and a post-reboot crash loop (NODE_MODE missing from `.env`). Restarted the fixed node clean on a wiped baseline; a 48h soak is running the P0+P1+P2 stack (`feat/egregious-during-baseline`), freezing ~2026-06-09 22:55 UTC, after which the P1 walk-test runs. Bluetooth re-enabled and made durable. Test suite at 417. Docs de-duplicated (#81) and refreshed (this pass); `_VERSION` bumped to 0.6.0-alpha. Open finding: DSI touchscreen still non-functional; DroneRF still disabled on #63.
 
-[2026-06-14] survkis mobile-GUI session. `NODE_MODE=mobile` + `GUI_ENABLED=true`/`GUI_PORT=8088` now active on survkis (previously disabled). Landed a standalone mobile GUI (#113): `gui/templates/mobile.html` + `gui/static/mobile.js`, served instead of the Leaflet `index.html` when `NODE_MODE=mobile`; new `/api/nearby` live proximity feed (independent of the persistence/GPS-cluster gate), with a "Nearby" tab showing RSSI-sorted device cards, proximity dots, and alert-tier accents cross-referenced from the persistence feed. Followed up (#116) with a CSS selector bug fix (`.nearby-feed` never matched `#nearby-feed`, so the feed couldn't scroll past the first screenful) and added floating up/down paging buttons as a touchscreen fallback. Verified end-to-end: service restarted clean, `/api/nearby` serving live data, kiosk on the 800x480 DSI screen rendering and scrolling correctly (`grim` screenshots). Test suite at 537. Planned: a drive test to validate Nearby-feed behavior at speed and mobile persistence scoring (location-diversity) against real traffic.
+[2026-06-14] mobile-node GUI session. `NODE_MODE=mobile` + `GUI_ENABLED=true`/`GUI_PORT=8088` now active on the mobile node (previously disabled). Landed a standalone mobile GUI (#113): `gui/templates/mobile.html` + `gui/static/mobile.js`, served instead of the Leaflet `index.html` when `NODE_MODE=mobile`; new `/api/nearby` live proximity feed (independent of the persistence/GPS-cluster gate), with a "Nearby" tab showing RSSI-sorted device cards, proximity dots, and alert-tier accents cross-referenced from the persistence feed. Followed up (#116) with a CSS selector bug fix (`.nearby-feed` never matched `#nearby-feed`, so the feed couldn't scroll past the first screenful) and added floating up/down paging buttons as a touchscreen fallback. Verified end-to-end: service restarted clean, `/api/nearby` serving live data, kiosk on the 800x480 DSI screen rendering and scrolling correctly (`grim` screenshots). Test suite at 537. Planned: a drive test to validate Nearby-feed behavior at speed and mobile persistence scoring (location-diversity) against real traffic.
 
-[2026-07-01] chase SDR-decode-cycle bring-up + doc/OPSEC pass. Brought the single-dongle ADS-B+AIS+ACARS cycle fully live: added a VHF antenna via SMA splitter, enabled AIS (`adsb:600,ais:30`) — reception field-confirmed (real vessel decoded, MarineTraffic-verified) — and ACARS via dumpvdl2 (built libacars 2.2.1 + dumpvdl2 2.6.0 from source; deploy unit #176), decode validated on real traffic; built the offline aircraft registry (516k rows, OpenSky) for tail↔reg correlation. Handoffs clean on the settle barrier (0 wedges); fixed the usbreset arg (#171, now off). Also shipped: Kismet boot-readiness retry (#169), GUI sensor-health honesty + "Sightings" relabel (#170), docs refresh + retrospective (#172/#173), and a location-fixture OPSEC scrub (#174). Hourly health+tracking cron extended to cover AIS/ACARS. Test suite ~770.
+[2026-07-01] fixed-node SDR-decode-cycle bring-up + doc/OPSEC pass. Brought the single-dongle ADS-B+AIS+ACARS cycle fully live: added a VHF antenna via SMA splitter, enabled AIS (`adsb:600,ais:30`) — reception field-confirmed (real vessel decoded, MarineTraffic-verified) — and ACARS via dumpvdl2 (built libacars 2.2.1 + dumpvdl2 2.6.0 from source; deploy unit #176), decode validated on real traffic; built the offline aircraft registry (516k rows, OpenSky) for tail↔reg correlation. Handoffs clean on the settle barrier (0 wedges); fixed the usbreset arg (#171, now off). Also shipped: Kismet boot-readiness retry (#169), GUI sensor-health honesty + "Sightings" relabel (#170), docs refresh + retrospective (#172/#173), and a location-fixture OPSEC scrub (#174). Hourly health+tracking cron extended to cover AIS/ACARS. Test suite ~770.
 
-[2026-07-06] Recon-pair weekend — patrols, the wardrive index, and the mobile survey UI. Landed the operator-bounded patrol backstop and the §11 **wardrive index** (a patrol banks every AP it hears for retroactive, target-independent bed-down, #202), lifted the survey logic out of the orchestrator into `SurveyCoordinator` (#200), keyed the WiFi alert cooldown on the contact fingerprint rather than the MAC (#194), and killed a cross-file test-isolation flake so the GUI + survey suites pass together (#203). Closed the mobile-node gaps a `survkis` bring-up surfaced (#204): ported the patrol start/end control, the wardrive AP count, and the Survey tab into the **mobile** template (they had only ever shipped on the fixed Leaflet dashboard the mobile node never serves), and made a patrol running without a GPS fix warn the operator instead of silently banking nothing. Clarified in `.env.example` that a mobile node needs its own `GUI_TOKEN` (to unlock its local patrol/survey endpoints) in addition to `SURVEY_TOKEN` (the fixed node's token, for sync). Test suite at 915. Still owed: a positive Ph1 bed-down walk on the live `chase`↔`survkis` pair.
+[2026-07-06] Recon-pair weekend — patrols, the wardrive index, and the mobile survey UI. Landed the operator-bounded patrol backstop and the §11 **wardrive index** (a patrol banks every AP it hears for retroactive, target-independent bed-down, #202), lifted the survey logic out of the orchestrator into `SurveyCoordinator` (#200), keyed the WiFi alert cooldown on the contact fingerprint rather than the MAC (#194), and killed a cross-file test-isolation flake so the GUI + survey suites pass together (#203). Closed the mobile-node gaps a mobile-node bring-up surfaced (#204): ported the patrol start/end control, the wardrive AP count, and the Survey tab into the **mobile** template (they had only ever shipped on the fixed Leaflet dashboard the mobile node never serves), and made a patrol running without a GPS fix warn the operator instead of silently banking nothing. Clarified in `.env.example` that a mobile node needs its own `GUI_TOKEN` (to unlock its local patrol/survey endpoints) in addition to `SURVEY_TOKEN` (the fixed node's token, for sync). Test suite at 915. Still owed: a positive Ph1 bed-down walk on the live fixed↔mobile node pair.
 
-[2026-07-11] Durability week + fingerprinting exploration. **entities.db crash-loop resolved:** the observation history was outgrowing SD storage until a WAL-backed read stalled the poll loop past the systemd watchdog (recurring SIGABRT restart loop). Bounded it three ways — age retention + hard row cap + periodic WAL TRUNCATE (#206) — plus an optional off-loop writer (#207), and documented the required high-density fixed-node `.env` profile (#212). Node-local safety nets added: `pv-wal-watch` (proactive restart before a runaway WAL can hang even a clean stop) and `pv-async-watch` (hourly soak log). chase then ran **45 h+ unattended with 0 restarts**, DB flat at its 250k-row cap. **SDR honest-release (#216/#217):** a decoder overrunning its slice used to get readsb started onto the still-busy dongle → crash-loop with no recovery, both mid-cycle and on shutdown; the coordinator now waits for a confirmed release before acquiring/restarting readsb and keeps `healthy` truthful, and `_reconnect("sdr")` no longer reports success while the SDR is still down. **Offline OUI manufacturer lookup (#210 + BLE wiring #213):** `OUIDatabase`/`get_manufacturer` names devices from the Wireshark `manuf` file (longest-prefix MA-L/M/S), used as a Kismet fallback and as BLE's only manuf source; randomized MACs stay honestly Unknown. Also: human-friendly ACARS breakout (#208), WiFi tab column fix (#209), dumpvdl2 re-centred on 136.975 (#187). **Fingerprinting exploration (held, not merged):** built + soaked two enhancements on a branch — an RSSI signal-motion co-presence veto and AP-side WPS identity — then split them (`feat/copresence-rssi-motion-gate`, `feat/ap-wps-identity`). A 45 h fixed-node soak proved neither earns merge *here*: the motion gate only ever abstained (0 confirms/0 vetoes — a stationary household never exercises the veto; needs mobile/foot-traffic validation), and WPS rich identity (model/serial) held at 0% coverage the entire run. Reclaimed 16 GB of archived crash-era DB snapshots (disk 79%→51%). Test suite ~966; node back on `main` with #217 live. Still owed: mobile validation of the motion gate; a decision on the SD→SSD durable fix for #211.
+[2026-07-11] Durability week + fingerprinting exploration. **entities.db crash-loop resolved:** the observation history was outgrowing SD storage until a WAL-backed read stalled the poll loop past the systemd watchdog (recurring SIGABRT restart loop). Bounded it three ways — age retention + hard row cap + periodic WAL TRUNCATE (#206) — plus an optional off-loop writer (#207), and documented the required high-density fixed-node `.env` profile (#212). Node-local safety nets added: `pv-wal-watch` (proactive restart before a runaway WAL can hang even a clean stop) and `pv-async-watch` (hourly soak log). the fixed node then ran **45 h+ unattended with 0 restarts**, DB flat at its 250k-row cap. **SDR honest-release (#216/#217):** a decoder overrunning its slice used to get readsb started onto the still-busy dongle → crash-loop with no recovery, both mid-cycle and on shutdown; the coordinator now waits for a confirmed release before acquiring/restarting readsb and keeps `healthy` truthful, and `_reconnect("sdr")` no longer reports success while the SDR is still down. **Offline OUI manufacturer lookup (#210 + BLE wiring #213):** `OUIDatabase`/`get_manufacturer` names devices from the Wireshark `manuf` file (longest-prefix MA-L/M/S), used as a Kismet fallback and as BLE's only manuf source; randomized MACs stay honestly Unknown. Also: human-friendly ACARS breakout (#208), WiFi tab column fix (#209), dumpvdl2 re-centred on 136.975 (#187). **Fingerprinting exploration (held, not merged):** built + soaked two enhancements on a branch — an RSSI signal-motion co-presence veto and AP-side WPS identity — then split them (`feat/copresence-rssi-motion-gate`, `feat/ap-wps-identity`). A 45 h fixed-node soak proved neither earns merge *here*: the motion gate only ever abstained (0 confirms/0 vetoes — a stationary household never exercises the veto; needs mobile/foot-traffic validation), and WPS rich identity (model/serial) held at 0% coverage the entire run. Reclaimed 16 GB of archived crash-era DB snapshots (disk 79%→51%). Test suite ~966; node back on `main` with #217 live. Still owed: mobile validation of the motion gate; a decision on the SD→SSD durable fix for #211.
 
 ---
 

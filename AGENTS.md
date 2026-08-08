@@ -17,10 +17,10 @@ any action on the codebase.
 
 ## Node Roles
 
-| Node   | Hostname   | Logical Alias | Role                                                                 |
-|--------|------------|---------------|---------------------------------------------------------------------|
-| Pi 3B+ | `survkis`  | `pi3`         | Active dev + mobile node — WiFi/BT, mobile-node scoring; the **mobile recon spoke** (pulls survey taskings from chase, offloads bed-down findings — `design-recon-pair.md`) |
-| Pi 4B+ | `chase`    | `pi4`         | Active fixed base station — WiFi/BT + ADS-B + Remote ID, fixed-mode scoring; the **recon-pair survey server** (issues taskings, receives findings on :8088) |
+| Node   | Role                                                                 |
+|--------|----------------------------------------------------------------------|
+| Pi 3B+ | Mobile node — WiFi/BT, mobile-node scoring; the **mobile recon spoke** (pulls survey taskings from the fixed node, offloads bed-down findings — `design-recon-pair.md`) |
+| Pi 4B+ | Fixed base station — WiFi/BT + ADS-B + Remote ID, fixed-mode scoring; the **recon-pair survey server** (issues taskings, receives findings on :8088) |
 
 Live per-node hardware, adapters, and verified status are in **`CONTEXT.md` →
 Hardware & Adapter Map** — the authority for what is actually present on each
@@ -132,14 +132,14 @@ written — for every agent and human contributor.
 [agent] type(scope): short, plain English description
 
 Body (optional): what changed and why
-Tested: <node> / untested        (e.g. Tested: chase, Tested: survkis)
+Tested: <node> / untested        (e.g. Tested: fixed-node, Tested: mobile-node)
 Refs: #issue-number
 ```
 
 **Examples:**
 ```
 [claude-code] feat(sdr): harden SHARED mode with lock + handshake (P1)
-Tested: chase
+Tested: fixed-node
 Refs: #22
 
 [grok] refactor(main): integrate SDR health into orchestrator
@@ -185,7 +185,7 @@ that read like a debug log, or bury the user benefit in implementation detail.
 ## Merge Checklist (Grok enforces on every PR)
 
 - [ ] Commit messages follow `[agent] type(scope):` format
-- [ ] At least one `Tested: <node>` (e.g. `Tested: chase`) in commit history (required on every PR to `main`)
+- [ ] At least one `Tested: <node>` (e.g. `Tested: fixed-node`) in commit history (required on every PR to `main`)
 - [ ] No hardcoded credentials, API keys, or local paths
 - [ ] New modules added to `CLAUDE.md` → Module Map
 - [ ] systemd unit file included if module runs as a service

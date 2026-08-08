@@ -222,7 +222,7 @@ matched to a location retroactively and even for a device tasked *after* the wal
 target whose home network is never found locally is flagged as a WiGLE lookup
 candidate rather than left silent.
 
-The weekend was as much about honesty as features. A live `survkis` bring-up
+The weekend was as much about honesty as features. A live the mobile node bring-up
 surfaced that the patrol controls had only ever landed on the fixed Leaflet
 dashboard — the very template a mobile node never serves — so the mobile operator
 had no way to start a patrol; the controls and a Survey tab were ported onto the
@@ -320,7 +320,7 @@ GIS/KML/WiGLE output — behind **915 passing tests** and three multi-day soaks.
 ## What's next
 
 The recon pair's remaining gate is a positive **Ph1 bed-down walk** on the live
-`chase`↔`survkis` pair — the one thing the feature still owes. Beyond it: finish the
+the fixed and mobile nodes pair — the one thing the feature still owes. Beyond it: finish the
 detection-quality calibration owed by P2/P3, and the identity depth that raises what
 alerts *mean* — cross-session returning-entity resolution (P4) and cross-PHY
 WiFi↔BLE fusion. See [design-and-roadmap.md](../design-and-roadmap.md) for the full
