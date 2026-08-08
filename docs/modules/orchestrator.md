@@ -28,7 +28,7 @@ This keeps the capture modules interchangeable and the scoring engines pure.
 ### PassiveVigilance (`main.py`)
 
 1. Loads `.env` / environment.
-2. Resolves `NODE_MODE` (`fixed`, `mobile`, or `auto` from GPS motion heuristics).
+2. Resolves `NODE_MODE` — **required**, either `fixed` or `mobile`. It fails loud (aborts) if the value is unset or invalid rather than guessing; there is no `auto` and no silent default. (`SDR_MODE`, a separate setting, is the one that has an `auto`.)
 3. Constructs the sensor graph (GPS, Kismet, optional BLE / Remote ID / ADS-B / AIS / ACARS, SDR coordinator when needed).
 4. Instantiates the appropriate scoring engine (`PersistenceEngine` or `FixedScoring`).
 5. Starts the orchestrator and (optionally) the Flask GUI thread.
@@ -56,7 +56,7 @@ GPS fix (or None)
     → distinctive anchors from EntityStore
     → contact identity resolution (device_identity)
     → co-presence / person linking (optional)
-    → ScoringEngine.process_devices / update
+    → ScoringEngine.update
     → DetectionEvent list
     → rate-limited alerts + GUI SSE + JSONL forensic logs
     → GIS writers on session close
@@ -89,7 +89,7 @@ Fixed-mode nodes also drive BaselineStore upserts inside FixedScoring; mobile no
 
 ### survkis (mobile node)
 
-- Mode `mobile` (or `auto`).
+- Mode `mobile`.
 - PersistenceEngine only; BaselineStore never opened.
 - EntityStore still records (orthogonal) so cross-session identity and contact designators continue to work.
 - No SDR → ADS-B / AIS / ACARS stay dark.
@@ -99,7 +99,7 @@ Fixed-mode nodes also drive BaselineStore upserts inside FixedScoring; mobile no
 
 | Variable | Default | Notes |
 |---|---|---|
-| `NODE_MODE` | auto | fixed / mobile / auto |
+| `NODE_MODE` | *required* | `fixed` / `mobile` — no default; aborts if unset or invalid |
 | `KISMET_ACTIVE_WINDOW_SECONDS` | 300 | Critical for both modes |
 | `ENTITY_AUDIBLE_WINDOW_SECONDS` | 0 | Tightening recommended on fixed |
 | `FIXED_BASELINE_HOURS` | 72 | |

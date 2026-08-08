@@ -6,7 +6,7 @@ FAA Remote ID (ASTM F3411-22a) detection via Kismet’s device REST API. Parses 
 
 Kismet 2025-09 does not expose a dedicated Remote ID endpoint (its drone support is DJI DroneID only). This module therefore:
 
-1. Polls `/devices/last-time/{ts}/devices.json` requesting the raw IE tag list and content.
+1. Polls (HTTP POST) `/devices/last-time/{ts}/devices.json`, requesting the raw IE tag list and content.
 2. Filters for Vendor Specific IE (tag 221) with OUI `FA:0B:BC` and vendor type `0x0D`.
 3. Parses the 25-byte ASTM message units with `struct`.
 

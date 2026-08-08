@@ -17,8 +17,8 @@ Mobile and fixed surveillance are different problems. A device that follows a mo
 
 ## ScoringEngine ABC
 
-- `process_devices` / `update` — ingest a poll.
-- Emits zero or more `DetectionEvent`s (type, score, reason, device snapshot, identity key).
+- `update(devices, *, gps_fix=None)` — ingest a poll; returns a list of `DetectionEvent`s.
+- `status()` — current engine state (learning/frozen, counts) for the health banner and GUI.
 - Never talks to the network, filesystem, or GPS directly; pure logic on the records handed to it.
 
 ## PersistenceEngine (mobile)
@@ -29,20 +29,23 @@ Mobile and fixed surveillance are different problems. A device that follows a mo
 
 ## FixedScoring (fixed)
 
-- During the learning window (`FIXED_BASELINE_HOURS`) every device is upserted into BaselineStore; no alerts are raised for novelty.
+- During the learning window (`FIXED_BASELINE_HOURS`) every device is upserted into BaselineStore. Novelty and off-schedule are not raised yet — but the *egregious-during-baseline* safety net still pages (via `force_page`) for a device in the operator's immediate space, so an already-present threat is not silently learned as normal.
 - After freeze, a device is interesting if it is novel, off-schedule, or (Phase 2.5) approaching (RSSI rising relative to the frozen baseline mean).
 - Rolling adaptation (P3) can later promote persistent post-freeze fingerprints into the baseline so the node does not keep flagging permanent new residents.
 - Uses `BaselineStore.batch()` so thousands of upserts become a single commit and stay under the watchdog.
 
 ## DetectionEvent
 
-Canonical alert / GUI / GIS payload:
+Canonical alert / GUI / GIS payload (`modules/persistence.py`); both engines emit the same dataclass:
 
-- event type (novel, persistent, approaching, aircraft-of-interest, …)
-- numeric score / confidence
-- human reason string
-- device snapshot + identity key
-- GPS stamp at detection time
+- `mac`, `fingerprint` (rotation-stable identity key), `fingerprint_label`, `mac_type`, `ssid`
+- `score` and `score_breakdown` — the per-signal contributions (mobile: temporal / location / frequency / signal; fixed: novelty / off_schedule / approaching)
+- `alert_level` — `suspicious` (0.5–0.7) / `likely` (0.7–0.9) / `high` (0.9+)
+- `first_seen`, `last_seen`, `observation_count`, `manufacturer`, `device_type`
+- `locations` — GPS cluster centroids at detection time (empty in fixed mode; no location gate)
+- `force_page` — bypasses the paging bar for the egregious-during-baseline safety net
+
+The *kind* of detection is read from `score_breakdown` / `alert_level`, not a separate "type" field.
 
 ## Pitfalls
 
