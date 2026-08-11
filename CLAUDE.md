@@ -64,6 +64,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
 | `modules/mac_utils.py` | — | MAC randomization detection, type classification, device fingerprinting |
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
+| `modules/alert_policy.py` | `AlertPolicy` / `PageVerdict` | The single "should this event page?" decision — thresholds, cooldown keys (composes `alert_suppression`), and windows for every alerting path (WiFi/BT, aircraft, drone, Remote ID, WIDS); the orchestrator acts on its verdict |
 | `modules/kml_writer.py` | `KMLWriter` | Pure Python XML; Google Earth KML with color-coded placemarks and track lines |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson + .kml |
 | `modules/sdr_manager.py` | `SDRManager` | RTL-SDR inventory detection via rtl_test, SDRMode enum resolution |
@@ -360,6 +361,18 @@ Re-run the monitor mode commands after any NM restart.
 ## Alert Engine
 
 - `modules/alerts.py` — `AlertBackend` ABC + `NtfyBackend` + `TelegramBackend` + `DiscordBackend` + `ConsoleBackend`
+- `modules/alert_policy.py` — `AlertPolicy` is the single page/suppress decision for every
+  alerting path (WiFi/BT persistence, aircraft, drone RF, Remote ID, Kismet WIDS). The
+  orchestrator poll loops hand it each candidate event and act on the returned
+  `PageVerdict`; thresholds, cooldown keys (via `alert_suppression`), and per-path
+  cooldown windows all live there. Dispatch, stats, and the durable alert record stay in
+  the orchestrator.
+- **Kismet WIDS consumption:** the orchestrator drains Kismet's raised alerts each poll
+  (`KismetModule.poll_alerts`, `/alerts/last-time/<ts>/alerts.json`) and pages the
+  survivors (severity ≥ `WIDS_MIN_SEVERITY`, headers not in `WIDS_IGNORE_HEADERS`)
+  through the backend — Kismet is the WIDS, PV routes and pages
+  (docs/design-ap-identity-evil-twin.md). `scripts/generate_apspoof.py` turns the learned
+  `beacon_evidence` BSSID↔SSID set into Kismet `apspoof=` rules so APSPOOF can fire.
 - `AlertFactory.get_backend(name)` reads `ALERT_BACKEND` from `.env`; falls back to `ConsoleBackend` if unconfigured
 - `RateLimiter`: in-memory cooldown dict, resets on restart (intentional)
 - Default cooldowns: drone 600 s, persistence 300 s, aircraft 60 s (override in `.env`)

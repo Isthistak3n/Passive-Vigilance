@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from modules import air_geometry, air_scoring, contact_designator, device_identity
-from modules import alert_suppression
+from modules.alert_policy import AlertPolicy, BELOW_THRESHOLD, COOLDOWN
 from modules.copresence import CoPresenceLinker
 from modules.mac_utils import get_manufacturer, get_mac_type, is_randomized_mac, normalize_mac
 from modules.sdr_manager import SDRMode
@@ -243,6 +243,7 @@ class SensorOrchestrator:
             "alerts_rate_limited": 0,
             "alerts_dropped": 0,
             "alerts_below_threshold": 0,
+            "wids_alerts": 0,
             "persistent_detections": 0,
             "aircraft_idless_skipped": 0,
             "aircraft_returns": 0,
@@ -352,6 +353,31 @@ class SensorOrchestrator:
         # deliberately-present device is surfaced, not flooded — see #193).
         self._egregious_alert_cooldown = int(
             os.getenv("EGREGIOUS_ALERT_COOLDOWN_SECONDS", "3600"))
+        # The single "should this event page?" decision — thresholds, cooldown
+        # keys, and windows for every alerting path live in AlertPolicy
+        # (modules/alert_policy.py), composing the shared rate limiter. The poll
+        # loops act on its verdict; dispatch/stats/records stay here.
+        self.alert_policy = AlertPolicy(
+            rate_limiter,
+            wifi_page_min_score=self._wifi_page_min_score,
+            egregious_cooldown_seconds=self._egregious_alert_cooldown,
+            wids_cooldown_seconds=float(
+                os.getenv("WIDS_ALERT_COOLDOWN_SECONDS", "600")),
+        )
+        # Kismet WIDS consumption (evil-twin direction §III.1): surface Kismet's
+        # own intrusion alerts (CRYPTODROP / BSSTIMESTAMP / APSPOOF / …) through
+        # PV's alert backend. Severity floor drops the chatty client-side noise
+        # (NOCLIENTMFP is sev 5); the ignore set drops named headers regardless
+        # of severity. Polling starts "now" — alerts raised before this PV
+        # session (Kismet's buffer persists across PV restarts) are not replayed.
+        self._wids_enabled = os.getenv(
+            "WIDS_ALERTS_ENABLED", "true").strip().lower() in ("true", "1", "yes", "on")
+        self._wids_min_severity = int(os.getenv("WIDS_MIN_SEVERITY", "10"))
+        self._wids_ignore_headers = {
+            h.strip().upper() for h in os.getenv(
+                "WIDS_IGNORE_HEADERS", "NOCLIENTMFP").split(",") if h.strip()
+        }
+        self._wids_last_ts: float = time.time()
         self.drone_detections: list[dict] = []
         # Index freq-band -> the drone event already in drone_detections, so a
         # persistent emitter heard on every sweep becomes ONE event (refreshed
@@ -786,36 +812,26 @@ class SensorOrchestrator:
             label = aircraft.get("callsign") or aircraft.get("registration") or icao
             body = (f"{label}: alt {aircraft.get('altitude', '?')} ft, "
                     f"spd {aircraft.get('speed', '?')} kt")
-            if emergency:
-                # Emergencies rate-limit on their OWN key so a routine
-                # of-interest alert can never suppress the first emergency page
-                # — but a squawk held in view must not re-page on every 5 s
-                # poll (it did: one backend send + one alerts.jsonl line per
-                # poll for the whole duration).
-                if await self.rate_limiter.is_allowed(f"aircraft-emergency:{icao}"):
-                    self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
-                    self._stats["alerts_sent"] += 1
+            # Emergency-vs-of-interest precedence and the per-ICAO cooldown keys
+            # are AlertPolicy's call (rationale in modules/alert_policy.py);
+            # routine transit is display-only and never reaches the limiter.
+            verdict = await self.alert_policy.aircraft(
+                icao, emergency=emergency, of_interest=air.of_interest)
+            if verdict.page:
+                self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
+                self._stats["alerts_sent"] += 1
+                if emergency:
                     self._record_alert("aircraft", f"EMERGENCY — {label}", body,
                                        severity="high", icao=icao)
                 else:
-                    self._stats["alerts_rate_limited"] += 1
-            elif air.of_interest:
-                # P7: only an aircraft OF INTEREST alerts — a loiterer/orbiter near
-                # the node, or a returner — never routine transit (which used to
-                # alert on every airframe). No geometry reference (GPS down) ->
-                # nothing scores of-interest, so only emergencies alert.
-                if await self.rate_limiter.is_allowed(f"aircraft:{icao}"):
-                    self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
-                    self._stats["alerts_sent"] += 1
                     self._record_alert(
                         "aircraft", f"Aircraft of interest — {label}",
                         f"{body} — {air.severity} (score {air.score})",
                         severity=air.severity, icao=icao,
                         air_score=air.score, air_breakdown=air.breakdown,
                     )
-                else:
-                    self._stats["alerts_rate_limited"] += 1
-            # else: transit / not-yet-of-interest — display-only, no alert.
+            elif verdict.reason == COOLDOWN:
+                self._stats["alerts_rate_limited"] += 1
         # Drop aircraft gone from the sky so the index stays the live picture and
         # bounded across a multi-day run (runs in the asyncio thread; the GUI reads
         # a snapshot via current_aircraft()).
@@ -1453,37 +1469,16 @@ class SensorOrchestrator:
                 self._append_jsonl(self._session_dir / "events.jsonl", event_dict)
                 if self.gui_server is not None:
                     self.gui_server.push_event("wifi", event_dict)
-            if event.score < self._wifi_page_min_score and not event.force_page:
-                # Below the paging bar — shown in the WiFi panel above, but not paged
-                # (no backend send, no Alerts-feed entry). Keeps low-confidence
-                # suspicious flags visible without drowning the operator.
-                # force_page events (egregious-during-baseline, design 5.2) are the
-                # deliberate exception: a single egregious signal scores 0.5, which
-                # never clears the bar, but it is a safety-net alert that must page.
+            # Page or suppress is AlertPolicy's call (threshold gate, the
+            # rotation-stable / proximity-bucketed cooldown key, the egregious
+            # force_page window — rationale lives in modules/alert_policy.py).
+            verdict = await self.alert_policy.wifi_persistence(
+                event, signal=(device.get("last_signal") if device else None))
+            if verdict.reason == BELOW_THRESHOLD:
+                # Shown in the WiFi panel above, but not paged (no backend send,
+                # no Alerts-feed entry).
                 self._stats["alerts_below_threshold"] = self._stats.get("alerts_below_threshold", 0) + 1
-            # Cooldown key is the rotation-stable scoring fingerprint (fp:/mac:),
-            # NOT the raw MAC: a randomized-MAC device rotates its address every
-            # few minutes, so keying on event.mac gave each rotation a fresh key
-            # and defeated the cooldown entirely (#193 — one logical contact fired
-            # 3,385 alerts across 65 MACs). event.fingerprint collapses the
-            # rotations into one bucket while keeping un-fingerprintable devices on
-            # mac: (the over-merge guard — distinct devices never share a bucket).
-            # A randomized device with NO strong fingerprint has only a mac: key,
-            # which still rotates; the one path that pages such a device is the
-            # egregious-during-baseline safety net (force_page). alert_suppression
-            # collapses those into a coarse proximity:<modality>:<band> bucket so a
-            # dense-node learning window can't flood per rotation, while every
-            # rotation-stable contact keeps its per-identity key unchanged.
-            # force_page (egregious-during-baseline) events use the longer window.
-            elif await self.rate_limiter.is_allowed(
-                alert_suppression.cooldown_key(
-                    fingerprint=event.fingerprint, mac=event.mac,
-                    mac_type=event.mac_type, device_type=event.device_type,
-                    signal=(device.get("last_signal") if device else None),
-                ),
-                cooldown_override=(
-                    self._egregious_alert_cooldown if event.force_page else None),
-            ):
+            elif verdict.page:
                 self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
                 self._stats["alerts_sent"] += 1
                 self._record_alert(
@@ -1501,7 +1496,61 @@ class SensorOrchestrator:
         # path). Person ids attach to events on the next poll.
         self._update_copresence(present_mobile_keys, datetime.now(timezone.utc),
                                 signals=present_mobile_signals)
+        # Ride the same 30 s cycle to drain Kismet's WIDS alerts (guarded — a
+        # WIDS-poll failure never affects the device poll that just completed).
+        await self._poll_wids_alerts()
         self._write_session_summary()
+
+    async def _poll_wids_alerts(self) -> None:
+        """Consume Kismet's WIDS alerts and page the survivors through PV.
+
+        Kismet is the WIDS; PV is the sensor-fusion and alerting layer (evil-twin
+        direction, docs/design-ap-identity-evil-twin.md §III.1). Each poll drains
+        the alerts raised since the last one, drops the configured noise
+        (severity floor + ignored headers), and routes what remains through
+        AlertPolicy — keyed per alert type per transmitter BSSID — to the
+        backend's generic send plus the durable Alerts feed.
+        """
+        if not self._wids_enabled:
+            return
+        try:
+            alerts = await self.kismet.poll_alerts(self._wids_last_ts)
+        except Exception as exc:
+            logger.warning("WIDS alert poll failed: %s", exc)
+            return
+        prev_ts = self._wids_last_ts
+        for alert in alerts:
+            ts = alert.get("timestamp") or 0.0
+            if ts > self._wids_last_ts:
+                self._wids_last_ts = ts
+            # Guard against an inclusive since-boundary: an alert at exactly the
+            # previous watermark was already handled last poll.
+            if ts <= prev_ts:
+                continue
+            header = (alert.get("header") or "").upper()
+            if not header or header in self._wids_ignore_headers:
+                continue
+            if alert.get("severity", 0) < self._wids_min_severity:
+                continue
+            self._stats["wids_alerts"] += 1
+            verdict = await self.alert_policy.wids(
+                header, alert.get("transmitter_mac") or "")
+            if not verdict.page:
+                self._stats["alerts_rate_limited"] += 1
+                continue
+            title = f"WIDS — {header}"
+            body = alert.get("text") or f"Kismet raised {header}"
+            self._dispatch_alert(
+                self.alert_backend.send, title, body, "high", ["rotating_light"])
+            self._stats["alerts_sent"] += 1
+            self._record_alert(
+                "wids", title, body, severity="high",
+                wids_header=header, wids_class=alert.get("class"),
+                transmitter_mac=alert.get("transmitter_mac"),
+                source_mac=alert.get("source_mac"),
+                channel=alert.get("channel"),
+                kismet_severity=alert.get("severity"),
+            )
 
     async def _poll_drone_rf(self) -> None:
         '''Drain DroneRF detections buffer; append events and fire alerts.'''
@@ -1570,7 +1619,8 @@ class SensorOrchestrator:
                 "freq_mhz": freq, "power_db": power,
                 "lat": detection.get("gps_lat") or 0.0, "lon": detection.get("gps_lon") or 0.0,
             }
-            if await self.rate_limiter.is_allowed(f"drone:{int(freq)}mhz"):
+            verdict = await self.alert_policy.drone(freq)
+            if verdict.page:
                 self._dispatch_alert(self.alert_backend.send_drone_alert, alert_detection)
                 self._stats["alerts_sent"] += 1
                 self._record_alert(
@@ -1907,7 +1957,8 @@ class SensorOrchestrator:
                 self.remote_id_detections.append(event)
                 if self.gui_server is not None:
                     self.gui_server.push_event("remote_id", event)
-            if await self.rate_limiter.is_allowed(f"remote_id:{uas_id}"):
+            verdict = await self.alert_policy.remote_id(uas_id)
+            if verdict.page:
                 self._dispatch_alert(self.alert_backend.send_remote_id_alert, detection)
                 self._stats["alerts_sent"] += 1
                 self._record_alert(

@@ -554,5 +554,68 @@ class TestKismetConnectOffloadsInterfaceCheck(unittest.TestCase):
         _run(km.close())
 
 
+# ---------------------------------------------------------------------------
+# poll_alerts() — WIDS alert consumption
+# ---------------------------------------------------------------------------
+
+# Shape verified against the live 2025.09 daemon (kismet.alert.* flat keys).
+_SAMPLE_ALERTS = [
+    {
+        "kismet.alert.header": "CRYPTODROP",
+        "kismet.alert.class": "SPOOF",
+        "kismet.alert.severity": 15,
+        "kismet.alert.timestamp": 1786319978.279465,
+        "kismet.alert.transmitter_mac": "AA:BB:CC:DD:EE:FF",
+        "kismet.alert.source_mac": "11:22:33:44:55:66",
+        "kismet.alert.channel": "6",
+        "kismet.alert.text": "SSID 'Example' stopped advertising encryption",
+    }
+]
+
+
+class TestKismetModulePollAlerts(unittest.TestCase):
+
+    def test_poll_alerts_normalizes_the_live_field_names(self):
+        from modules.kismet import KismetModule
+        km = KismetModule()
+        km._session = _mock_session(get_status=200, get_json=_SAMPLE_ALERTS)
+        alerts = _run(km.poll_alerts(0.0))
+        self.assertEqual(len(alerts), 1)
+        alert = alerts[0]
+        self.assertEqual(alert["header"], "CRYPTODROP")
+        self.assertEqual(alert["class"], "SPOOF")
+        self.assertEqual(alert["severity"], 15)
+        self.assertEqual(alert["transmitter_mac"], "AA:BB:CC:DD:EE:FF")
+        self.assertEqual(alert["source_mac"], "11:22:33:44:55:66")
+        self.assertEqual(alert["channel"], "6")
+        self.assertAlmostEqual(alert["timestamp"], 1786319978.279465)
+        self.assertIn("stopped advertising", alert["text"])
+
+    def test_poll_alerts_before_connect_returns_empty(self):
+        from modules.kismet import KismetModule
+        km = KismetModule()
+        self.assertEqual(_run(km.poll_alerts(0.0)), [])
+
+    def test_poll_alerts_http_error_returns_empty(self):
+        from modules.kismet import KismetModule
+        km = KismetModule()
+        km._session = _mock_session(get_status=500)
+        self.assertEqual(_run(km.poll_alerts(0.0)), [])
+
+    def test_poll_alerts_network_error_returns_empty(self):
+        from modules.kismet import KismetModule
+        km = KismetModule()
+        session = MagicMock()
+        session.get = MagicMock(side_effect=RuntimeError("connection reset"))
+        km._session = session
+        self.assertEqual(_run(km.poll_alerts(0.0)), [])
+
+    def test_poll_alerts_non_list_payload_returns_empty(self):
+        from modules.kismet import KismetModule
+        km = KismetModule()
+        km._session = _mock_session(get_status=200, get_json={"unexpected": True})
+        self.assertEqual(_run(km.poll_alerts(0.0)), [])
+
+
 if __name__ == "__main__":
     unittest.main()
