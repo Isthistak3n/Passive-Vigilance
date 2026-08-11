@@ -475,6 +475,33 @@ def test_alert_factory_reads_alert_backend_env():
     assert isinstance(backend, NtfyBackend)
 
 
+def test_alert_factory_unconfigured_fallback_is_loud_and_actionable(caplog):
+    """A selected-but-unconfigured real backend must ERROR (not just warn) and
+    name the exact .env slots to fill — a silent console fallback means the
+    operator believes they are paged while nothing pages."""
+    import logging
+    with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}):
+        with caplog.at_level(logging.ERROR, logger="modules.alerts"):
+            backend = AlertFactory.get_backend("telegram")
+    assert isinstance(backend, ConsoleBackend)
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "fallback must log at ERROR level"
+    joined = "\n".join(r.getMessage() for r in errors)
+    assert "TELEGRAM_BOT_TOKEN" in joined
+    assert "TELEGRAM_CHAT_ID" in joined
+    assert "NO ALERTS WILL PAGE" in joined
+
+
+def test_alert_factory_unknown_backend_error_lists_valid_choices(caplog):
+    import logging
+    with caplog.at_level(logging.ERROR, logger="modules.alerts"):
+        backend = AlertFactory.get_backend("signal")
+    assert isinstance(backend, ConsoleBackend)
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "unknown backend must log at ERROR level"
+    assert "console" in "\n".join(errors)
+
+
 # ---------------------------------------------------------------------------
 # send_remote_id_alert — all four backends
 # ---------------------------------------------------------------------------
