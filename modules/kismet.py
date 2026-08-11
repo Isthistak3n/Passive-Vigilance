@@ -316,6 +316,57 @@ class KismetModule:
         return devices
 
     # ------------------------------------------------------------------
+    # WIDS alert polling
+    # ------------------------------------------------------------------
+
+    async def poll_alerts(self, since_ts: float) -> list:
+        """Return WIDS alerts Kismet has raised since *since_ts* (epoch seconds).
+
+        Kismet ships a WIDS (50 alert definitions; CRYPTODROP, BSSTIMESTAMP,
+        APSPOOF, … fire automatically) — PV consumes those alerts rather than
+        reimplementing the detectors (see docs/design-ap-identity-evil-twin.md).
+        Calls ``/alerts/last-time/<ts>/alerts.json`` and returns each alert
+        normalized to simple keys (verified against the live 2025.09 daemon):
+
+        ``header`` (definition name, e.g. ``"APSPOOF"``), ``class``,
+        ``severity`` (int), ``timestamp`` (float epoch),
+        ``transmitter_mac``, ``source_mac``, ``channel``, ``text``.
+
+        No filtering happens here — severity/header policy belongs to the
+        caller. Returns ``[]`` on any error (an alert-poll failure must never
+        affect capture).
+        """
+        if self._session is None:
+            logger.warning("poll_alerts() called before connect()")
+            return []
+        try:
+            async with self._session.get(
+                f"{_BASE_URL}/alerts/last-time/{since_ts}/alerts.json",
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("Kismet alerts endpoint returned %d", resp.status)
+                    return []
+                raw = await resp.json(content_type=None)
+        except Exception as exc:
+            logger.warning("Error polling Kismet alerts: %s", exc)
+            return []
+
+        alerts = []
+        for entry in raw if isinstance(raw, list) else []:
+            alerts.append({
+                "header":          entry.get("kismet.alert.header", ""),
+                "class":           entry.get("kismet.alert.class", ""),
+                "severity":        entry.get("kismet.alert.severity", 0),
+                "timestamp":       entry.get("kismet.alert.timestamp", 0.0),
+                "transmitter_mac": entry.get("kismet.alert.transmitter_mac", ""),
+                "source_mac":      entry.get("kismet.alert.source_mac", ""),
+                "channel":         entry.get("kismet.alert.channel", ""),
+                "text":            entry.get("kismet.alert.text", ""),
+            })
+        return alerts
+
+    # ------------------------------------------------------------------
     # Interface status
     # ------------------------------------------------------------------
 

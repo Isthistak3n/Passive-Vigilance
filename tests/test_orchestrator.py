@@ -134,6 +134,7 @@ def orch(tmp_path):
         mock_kis.connect = AsyncMock()
         mock_kis.close = AsyncMock()
         mock_kis.poll_devices = AsyncMock(return_value=[])
+        mock_kis.poll_alerts = AsyncMock(return_value=[])
         mock_kis.get_wigle_csv_path.return_value = None
         mock_kis_cls.return_value = mock_kis
 
@@ -2777,3 +2778,104 @@ async def test_flagged_contact_carries_survey_evidence(orch):
     assert pushed["surveyable"] is True
     assert pushed["survey_evidence"] == evidence
 
+
+
+# ---------------------------------------------------------------------------
+# WIDS alert consumption (_poll_wids_alerts)
+# ---------------------------------------------------------------------------
+
+
+def _wids_alert(so, **overrides) -> dict:
+    """A normalized Kismet WIDS alert as KismetModule.poll_alerts returns it."""
+    alert = {
+        "header": "CRYPTODROP", "class": "SPOOF", "severity": 15,
+        "timestamp": so._wids_last_ts + 10.0,
+        "transmitter_mac": "AA:BB:CC:DD:EE:FF", "source_mac": "",
+        "channel": "6", "text": "SSID 'Example' stopped advertising encryption",
+    }
+    alert.update(overrides)
+    return alert
+
+
+@pytest.mark.asyncio
+async def test_wids_alert_pages_through_the_backend(orch):
+    so = orch.sensor_orchestrator
+    so.kismet.poll_alerts = AsyncMock(return_value=[_wids_alert(so)])
+    await so._poll_wids_alerts()
+    await _drain_alerts(orch)
+    orch._mock_backend.send.assert_called_once()
+    title = orch._mock_backend.send.call_args[0][0]
+    assert "CRYPTODROP" in title
+    assert so._stats["wids_alerts"] == 1
+    assert so._stats["alerts_sent"] == 1
+
+
+@pytest.mark.asyncio
+async def test_wids_alert_lands_in_the_durable_alerts_feed(orch):
+    so = orch.sensor_orchestrator
+    so.kismet.poll_alerts = AsyncMock(return_value=[_wids_alert(so)])
+    await so._poll_wids_alerts()
+    feed = (so._session_dir / "alerts.jsonl").read_text()
+    assert "CRYPTODROP" in feed
+    assert "wids" in feed
+
+
+@pytest.mark.asyncio
+async def test_wids_noise_is_filtered(orch):
+    """The severity floor and the ignored-header set drop the chatty defaults."""
+    so = orch.sensor_orchestrator
+    so.kismet.poll_alerts = AsyncMock(return_value=[
+        _wids_alert(so, header="NOCLIENTMFP", severity=5),   # ignored header
+        _wids_alert(so, header="CHANCHANGE", severity=5),    # below the floor
+    ])
+    await so._poll_wids_alerts()
+    await _drain_alerts(orch)
+    orch._mock_backend.send.assert_not_called()
+    assert so._stats["wids_alerts"] == 0
+
+
+@pytest.mark.asyncio
+async def test_wids_inclusive_boundary_is_not_reprocessed(orch):
+    """If Kismet's since-boundary is inclusive, the newest alert comes back on
+    the next poll — it must not page or count twice."""
+    so = orch.sensor_orchestrator
+    alert = _wids_alert(so)
+    so.kismet.poll_alerts = AsyncMock(return_value=[alert])
+    await so._poll_wids_alerts()
+    await so._poll_wids_alerts()
+    await _drain_alerts(orch)
+    orch._mock_backend.send.assert_called_once()
+    assert so._stats["wids_alerts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_wids_repeat_from_one_ap_is_rate_limited(orch):
+    """Kismet re-raises a persisting condition; one page per AP per window."""
+    so = orch.sensor_orchestrator
+    so.kismet.poll_alerts = AsyncMock(return_value=[
+        _wids_alert(so),
+        _wids_alert(so, timestamp=so._wids_last_ts + 20.0),
+    ])
+    limited_before = so._stats["alerts_rate_limited"]
+    await so._poll_wids_alerts()
+    await _drain_alerts(orch)
+    orch._mock_backend.send.assert_called_once()
+    assert so._stats["alerts_rate_limited"] == limited_before + 1
+
+
+@pytest.mark.asyncio
+async def test_wids_disabled_never_polls(orch):
+    so = orch.sensor_orchestrator
+    so._wids_enabled = False
+    so.kismet.poll_alerts = AsyncMock()
+    await so._poll_wids_alerts()
+    so.kismet.poll_alerts.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wids_poll_failure_never_raises(orch):
+    """An alert-poll failure must never affect the capture cycle it rides on."""
+    so = orch.sensor_orchestrator
+    so.kismet.poll_alerts = AsyncMock(side_effect=RuntimeError("kismet gone"))
+    await so._poll_wids_alerts()  # must not raise
+    orch._mock_backend.send.assert_not_called()

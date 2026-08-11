@@ -7,7 +7,20 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
-_Nothing yet._
+- **Evil-twin and infrastructure attacks now page the operator.** The node consumes
+  Kismet's built-in wireless IDS: a crypto downgrade on a known network, a cloned
+  access point, a deauth flood, or an impostor SSID now reaches the operator through
+  the normal alert backend instead of sitting unread inside Kismet. Client-side noise
+  is filtered, and each condition pages once per offending AP per cooldown window. A
+  new tool generates Kismet's impostor-SSID allowlist from the APs the node has
+  already learned, so the one detector Kismet can't run out of the box gets its
+  missing ground truth.
+- **One place decides what pages.** Every sensor path (WiFi/BT, aircraft, drone RF,
+  Remote ID, and the new WIDS feed) now asks a single alert-policy object whether an
+  event should page. The thresholds, flood containment, and cooldown behaviour are
+  unchanged — but the policy is now auditable in one file instead of spread across
+  the poll loops, which is what "production-wired alerting" (#191) needs to be
+  trustworthy.
 
 ---
 
