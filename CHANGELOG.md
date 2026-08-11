@@ -7,6 +7,20 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+- **The configuration surface is now validated at startup.** PV has ~170 settings, and
+  until now nothing checked any of them: a typo'd name silently did nothing, a garbage
+  number crashed deep inside whichever module read it, and an out-of-range value quietly
+  distorted behaviour. Every setting now has a declared type, range, and allowed values,
+  checked once at startup along with the interactions between them — a paging backend
+  missing its credentials, the baseline-smearing recency-filter footgun, RSSI thresholds
+  that could never match. Misspelled settings in the configuration file are flagged with
+  a "did you mean" suggestion. Problems are reported in one prominent startup block and
+  the node keeps running — a validation bug must never brick a field node — so a broken
+  value still fails where it always did, but now with an explanation logged first. A test
+  keeps the registry complete: any new setting added to the code without a declaration
+  fails CI. Run against this node's real configuration it produced exactly three
+  findings, all genuine (leftover settings that no longer exist, now also removed from
+  the reference file).
 - **Evil-twin and infrastructure attacks now page the operator.** The node consumes
   Kismet's built-in wireless IDS: a crypto downgrade on a known network, a cloned
   access point, a deauth flood, or an impostor SSID now reaches the operator through
