@@ -629,15 +629,31 @@ function renderRemoteId() {
   tables.remoteId.render();
 }
 
+// Alerts-feed severity filter: 'all' | 'wids' | 'high'. WIDS alerts are the
+// infrastructure attacks (evil twin / crypto downgrade / clone) — the operator
+// must be able to pull them out of the routine persistence-flag flow.
+let alertFilter = 'all';
+
+function alertMatchesFilter(a) {
+  if (alertFilter === 'wids') return a.kind === 'wids';
+  if (alertFilter === 'high') return a.severity === 'high' || a.kind === 'wids';
+  return true;
+}
+
 function renderAlerts() {
   document.getElementById('alerts-feed').innerHTML = state.alerts
+    .filter(alertMatchesFilter)
     .slice(-100)
     .reverse()
     .map(a => {
       const ts = a.timestamp ? new Date(a.timestamp).toLocaleString() : '';
+      const sev = a.severity || 'default';
+      const kindChip = a.kind
+        ? `<span class="alert-kind kind-${esc(a.kind)}">${esc(a.kind.toUpperCase())}</span>` : '';
       return `
-      <div class="alert-card ${a.kind || ''}">
+      <div class="alert-card ${a.kind || ''} sev-${esc(sev)}">
         <div class="alert-head">
+          ${kindChip}
           <span class="alert-title">${esc(a.title || a.type || 'Alert')}</span>
           <span class="alert-time">${esc(ts)}</span>
         </div>
@@ -645,6 +661,61 @@ function renderAlerts() {
       </div>`;
     }).join('');
 }
+
+document.querySelectorAll('.alert-filter').forEach(btn => {
+  btn.addEventListener('click', () => {
+    alertFilter = btn.dataset.af;
+    document.querySelectorAll('.alert-filter').forEach(b =>
+      b.classList.toggle('active', b === btn));
+    renderAlerts();
+  });
+});
+
+// ── High-severity notification ping ─────────────────────────────────────────
+// A field dashboard often sits on an unattended kiosk screen; a browser
+// notification plus a short chime turns a serious alert into something that
+// gets attention. Off by default, toggled per-browser (localStorage), and only
+// high-severity / WIDS alerts ping — the routine feed stays silent.
+let alertNotify = localStorage.getItem('pv-alert-notify') === 'on';
+
+function updateNotifyButton() {
+  const btn = document.getElementById('alerts-notify');
+  if (btn) { btn.textContent = alertNotify ? '🔔 On' : '🔔 Off'; btn.classList.toggle('active', alertNotify); }
+}
+
+function chime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator(); const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 880; gain.gain.value = 0.08;
+    osc.start(); osc.stop(ctx.currentTime + 0.18);
+    osc.onended = () => ctx.close();
+  } catch (e) { /* audio unavailable — notification alone is fine */ }
+}
+
+function maybeNotify(a) {
+  if (!alertNotify) return;
+  if (!(a.severity === 'high' || a.kind === 'wids')) return;
+  chime();
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(a.title || 'Passive Vigilance alert', {
+        body: a.body || '', tag: 'pv-alert',
+      });
+    }
+  } catch (e) { /* Notification API unavailable (e.g. non-secure origin) */ }
+}
+
+document.getElementById('alerts-notify')?.addEventListener('click', () => {
+  alertNotify = !alertNotify;
+  localStorage.setItem('pv-alert-notify', alertNotify ? 'on' : 'off');
+  updateNotifyButton();
+  if (alertNotify && 'Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+});
+updateNotifyButton();
 
 // Search inputs are wired inside createTable (per-tab, persisted), so no separate
 // search-filter wiring is needed here.
@@ -851,6 +922,7 @@ function connectSSE() {
       state.alerts.push(data);
       setBadge('badge-alerts', state.alerts.length);
       renderAlerts();
+      maybeNotify(data);
     } else if (type === 'survey') {
       // A tasking was issued, findings offloaded, or a patrol toggled — refetch.
       if (surveyEnabled) loadSurvey();
@@ -1206,16 +1278,37 @@ function renderSettings(payload) {
   const root = document.getElementById('settings-root');
   const groups = {};
   payload.settings.forEach(s => { (groups[s.group] ||= []).push(s); });
-  root.innerHTML = Object.entries(groups).map(([name, items]) => `
+
+  // Startup config-validator findings, surfaced where the operator edits
+  // settings (they otherwise live only in the journal). Findings on a setting
+  // shown below render inline on its row; the rest go in the banner.
+  const findings = payload.findings || [];
+  const shownKeys = new Set(payload.settings.map(s => s.key));
+  const inline = {};
+  findings.filter(f => shownKeys.has(f.var))
+    .forEach(f => (inline[f.var] ||= []).push(f));
+  const bannerItems = findings.filter(f => !shownKeys.has(f.var));
+  const banner = findings.length ? `
+    <div class="settings-findings">
+      <b>${findings.length} configuration finding(s) at startup validation:</b>
+      ${bannerItems.map(f => `
+        <div class="setting-finding ${esc(f.severity)}">${esc(f.var)}: ${esc(f.message)}</div>`).join('')}
+      ${Object.keys(inline).length
+        ? `<div class="setting-finding-hint">Findings on editable settings are shown inline below.</div>` : ''}
+    </div>` : '';
+
+  root.innerHTML = banner + Object.entries(groups).map(([name, items]) => `
     <div class="settings-group">
       <h3>${name}</h3>
       ${items.map(s => `
-        <div class="setting-row">
+        <div class="setting-row${inline[s.key] ? ' flagged' : ''}">
           <label>
             <span class="setting-label">${s.label}</span>
             ${settingInput(s)}
           </label>
           <p class="settings-note">${s.help}</p>
+          ${(inline[s.key] || []).map(f => `
+            <p class="setting-finding ${esc(f.severity)}">${esc(f.message)}</p>`).join('')}
         </div>`).join('')}
     </div>`).join('');
 

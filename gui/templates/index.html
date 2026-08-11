@@ -180,6 +180,12 @@
     <!-- Alerts tab -->
     <section id="tab-alerts" class="tab-panel">
       <div class="toolbar">
+        <span class="alert-filters">
+          <button class="btn-sm alert-filter active" data-af="all">All</button>
+          <button class="btn-sm alert-filter" data-af="wids">WIDS</button>
+          <button class="btn-sm alert-filter" data-af="high">High</button>
+        </span>
+        <button id="alerts-notify" class="btn-sm" title="Browser notification + chime on high-severity and WIDS alerts">🔔 Off</button>
         <button id="alerts-clear" class="btn-sm">Clear</button>
       </div>
       <div id="alerts-feed"></div>

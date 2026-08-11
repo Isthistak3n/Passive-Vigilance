@@ -7,7 +7,17 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
-- **The configuration surface is now validated at startup.** PV has ~170 settings, and
+- **The dashboard stays alive under load, and the alerts that matter stand out.** A busy
+  node used to be able to freeze an operator's dashboard silently — a burst of activity
+  overflowed the live-update stream and the browser was quietly disconnected until a manual
+  refresh, during exactly the activity worth watching. Now a burst sheds individual updates
+  instead of dropping the whole dashboard, and alerts are protected so a page always gets
+  through. The Alerts tab distinguishes the serious events: intrusion (WIDS) alerts get a red
+  label and their own card styling, and a filter lets the operator pull up just the WIDS or
+  just the high-severity alerts. An optional per-browser toggle plays a chime and raises a
+  desktop notification on high-severity and intrusion alerts — useful for an unattended kiosk
+  screen, off by default. And the Settings tab now shows the startup configuration checks
+  inline: a bad value is flagged right on its row instead of only in the logs. PV has ~170 settings, and
   until now nothing checked any of them: a typo'd name silently did nothing, a garbage
   number crashed deep inside whichever module read it, and an out-of-range value quietly
   distorted behaviour. Every setting now has a declared type, range, and allowed values,
