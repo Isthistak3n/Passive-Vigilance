@@ -64,6 +64,7 @@ and a Bluetooth dongle to passively observe the RF environment without transmitt
 | `modules/ignore_list.py` | `IgnoreList` | MAC/OUI/SSID filter; atomic JSON persistence |
 | `modules/mac_utils.py` | — | MAC randomization detection, type classification, device fingerprinting |
 | `modules/alerts.py` | `AlertBackend` / `NtfyBackend` / `TelegramBackend` / `DiscordBackend` / `ConsoleBackend` | Pluggable alert engine — ABC + four backends |
+| `modules/config.py` | `REGISTRY` / `validate_environment` | Declarative registry of every env var (type/range/choices) + cross-field checks + .env typo detection; validated once at startup, report-only (never blocks startup); tests enforce registry completeness against the codebase |
 | `modules/alert_policy.py` | `AlertPolicy` / `PageVerdict` | The single "should this event page?" decision — thresholds, cooldown keys (composes `alert_suppression`), and windows for every alerting path (WiFi/BT, aircraft, drone, Remote ID, WIDS); the orchestrator acts on its verdict |
 | `modules/kml_writer.py` | `KMLWriter` | Pure Python XML; Google Earth KML with color-coded placemarks and track lines |
 | `modules/shapefile.py` | `ShapefileWriter` | geopandas/fiona; write WiFi/aircraft/drone detections as .shp + .geojson + .kml |

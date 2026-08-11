@@ -20,6 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+from modules import config
 from modules.alerts import AlertFactory, RateLimiter
 from modules.dump1090 import ADSBModule
 from modules.ble_scanner import BLEScanner
@@ -115,6 +116,16 @@ def resolve_node_mode(env_value: Optional[str], cli_mode: Optional[str]) -> str:
 class PassiveVigilance:
 
     def __init__(self, cli_mode: Optional[str] = None) -> None:
+        # Validate the whole configuration surface before anything is built, so
+        # the operator gets one complete report (even if NODE_MODE resolution
+        # aborts right after). Findings are logged, never fatal — a validator
+        # bug must not brick a field node — and the guard means even a crash in
+        # validation itself cannot stop startup.
+        try:
+            config.report(config.validate_environment())
+        except Exception as exc:  # defense in depth; validation is best-effort
+            logger.warning("Config validation skipped (internal error: %s)", exc)
+
         # Resolve the scoring mode first — fail loud BEFORE constructing any
         # sensor modules or the scoring engine (design 2.1). .env wins over the
         # --mode flag; an unset/invalid mode aborts startup here.
