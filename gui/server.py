@@ -182,8 +182,9 @@ _SETTINGS_SPEC = [
      "type": "int", "min": 1, "max": 365, "default": "7"},
     {"key": "ENTITY_ROLLUP_HOUR_UTC", "group": "Sighting rollup",
      "label": "Rollup hour (UTC, 0-23)",
-     "help": "When the nightly fold runs. Pick the local dead of night — "
-             "13 is 3 AM Hawaii time.",
+     "help": "When the nightly fold runs, in UTC (0-23). Pick the hour that "
+             "falls in the quiet dead-of-night for your location, converted "
+             "to UTC.",
      "type": "int", "min": 0, "max": 23, "default": "3"},
     {"key": "ENTITY_ROLLUP_BATCH_ROWS", "group": "Sighting rollup",
      "label": "Rollup batch size (rows)",
