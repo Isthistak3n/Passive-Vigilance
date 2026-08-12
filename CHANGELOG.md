@@ -18,6 +18,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
   desktop notification on high-severity and intrusion alerts — useful for an unattended kiosk
   screen, off by default. And the Settings tab now shows the startup configuration checks
   inline: a bad value is flagged right on its row instead of only in the logs. PV has ~170 settings, and
+- **The configuration surface is now validated at startup.** PV has ~170 settings, and
   until now nothing checked any of them: a typo'd name silently did nothing, a garbage
   number crashed deep inside whichever module read it, and an out-of-range value quietly
   distorted behaviour. Every setting now has a declared type, range, and allowed values,
@@ -45,6 +46,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
   unchanged — but the policy is now auditable in one file instead of spread across
   the poll loops, which is what "production-wired alerting" (#191) needs to be
   trustworthy.
+- **A backend can be proven working in one command.** A new test-fire tool sends a
+  synthetic page through the exact path real detections use, so credentials are
+  validated the moment they're filled in — no waiting for a genuine detection to find
+  out nothing arrives. And a real backend that's selected but misconfigured no longer
+  degrades to console quietly: startup logs an error naming the exact settings to fix,
+  and every health banner repeats the warning until it's resolved.
 
 ---
 

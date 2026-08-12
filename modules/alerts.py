@@ -691,6 +691,14 @@ _BACKENDS: dict[str, type[AlertBackend]] = {
     "console": ConsoleBackend,
 }
 
+# Which .env slots each backend needs — so a misconfiguration error can say
+# exactly what to fill in instead of just "not configured".
+_REQUIRED_ENV: dict[str, str] = {
+    "ntfy": "NTFY_TOPIC (and optionally NTFY_SERVER)",
+    "telegram": "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID",
+    "discord": "DISCORD_WEBHOOK_URL",
+}
+
 
 class AlertFactory:
     """Creates and returns configured alert backend instances."""
@@ -703,8 +711,12 @@ class AlertFactory:
         """Return the appropriate backend instance.
 
         Reads ALERT_BACKEND from .env if backend_name is not provided.
-        Falls back to ConsoleBackend if the requested backend is not configured.
-        Logs a warning if requested backend is unknown or unconfigured.
+        Falls back to ConsoleBackend if the requested backend is not configured —
+        capture and detection must never die over a paging problem — but the
+        fallback is LOUD (logger.error with the missing .env slots): an operator
+        who explicitly selected a real backend believes they will be paged, so a
+        silent downgrade to console means alerts go nowhere for weeks. The
+        health banner also surfaces the mismatch (see _log_health_banner).
 
         Args:
             backend_name: Override the backend name (ignores ALERT_BACKEND env var).
@@ -716,8 +728,10 @@ class AlertFactory:
 
         backend_class = _BACKENDS.get(backend_name)
         if backend_class is None:
-            logger.warning(
-                "Unknown alert backend %r — falling back to ConsoleBackend", backend_name
+            logger.error(
+                "Unknown alert backend %r — falling back to ConsoleBackend. "
+                "Valid choices: %s. NO ALERTS WILL PAGE until this is fixed.",
+                backend_name, ", ".join(sorted(_BACKENDS)),
             )
             return ConsoleBackend()
 
@@ -727,9 +741,12 @@ class AlertFactory:
         else:
             backend = backend_class(persist_path=persist_path)
         if not backend.is_configured():
-            logger.warning(
-                "Alert backend %r is not configured — falling back to ConsoleBackend",
+            logger.error(
+                "Alert backend %r selected but not configured — falling back to "
+                "ConsoleBackend. Set %s in .env (validate with "
+                "scripts/send_test_alert.py). NO ALERTS WILL PAGE until this is fixed.",
                 backend_name,
+                _REQUIRED_ENV.get(backend_name, "its credentials"),
             )
             return ConsoleBackend()
 

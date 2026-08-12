@@ -2418,6 +2418,15 @@ class SensorOrchestrator:
             return "✓ Active" if self._sensor_health.get(key, False) else "✗ Degraded"
 
         backend_name = type(self.alert_backend).__name__.replace("Backend", "")
+        # A real backend that failed configuration silently degrades to console
+        # (capture must survive a paging problem) — but the operator believes
+        # they will be paged, so every banner repeats the mismatch until fixed.
+        intended_backend = os.getenv("ALERT_BACKEND", "console").strip().lower()
+        if intended_backend and backend_name.lower() != intended_backend:
+            backend_name = (
+                f"{backend_name} (✗ FALLBACK — {intended_backend} misconfigured, "
+                f"no alerts are paging)"
+            )
         sep = "─" * 54
         sdr_status = "✓ Healthy" if getattr(self.sdr_coordinator, "healthy", True) else "✗ Degraded"
 

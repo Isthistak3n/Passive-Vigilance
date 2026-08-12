@@ -2879,3 +2879,33 @@ async def test_wids_poll_failure_never_raises(orch):
     so.kismet.poll_alerts = AsyncMock(side_effect=RuntimeError("kismet gone"))
     await so._poll_wids_alerts()  # must not raise
     orch._mock_backend.send.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Health banner — backend fallback visibility
+# ---------------------------------------------------------------------------
+
+
+def test_health_banner_flags_a_misconfigured_backend_fallback(orch, caplog):
+    """When the operator selected a real backend but the node fell back to
+    console, every banner must repeat the mismatch until it's fixed."""
+    import logging
+    from modules.alerts import ConsoleBackend
+    so = orch.sensor_orchestrator
+    so.alert_backend = ConsoleBackend()
+    with patch.dict(os.environ, {"ALERT_BACKEND": "telegram"}):
+        with caplog.at_level(logging.INFO):
+            so._log_health_banner()
+    assert "FALLBACK" in caplog.text
+    assert "telegram" in caplog.text
+
+
+def test_health_banner_clean_when_backend_matches_selection(orch, caplog):
+    import logging
+    from modules.alerts import ConsoleBackend
+    so = orch.sensor_orchestrator
+    so.alert_backend = ConsoleBackend()
+    with patch.dict(os.environ, {"ALERT_BACKEND": "console"}):
+        with caplog.at_level(logging.INFO):
+            so._log_health_banner()
+    assert "FALLBACK" not in caplog.text
