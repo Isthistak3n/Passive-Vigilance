@@ -28,7 +28,7 @@ Handles both decoder formats:
 - Flat-ish `acarsdec` objects.
 - Nested `dumpvdl2` objects (`vdl2 → avlc → acars`).
 
-Extracts: tail / registration, flight ID, ARINC label, free-text body, origin / destination, position (structured fields first, then three strict regexes for decimal, degree-minute, and the common AOC “POSN21207W157466” form).
+Extracts: tail / registration, flight ID, ARINC label, free-text body, origin / destination, position (structured fields first, then three strict regexes for decimal, degree-minute, and the common AOC “POSN51507W000127” form).
 
 ### Classification & enrichment
 - Tries **application-layer** decode first (CPDLC, ADS-C, MIAM, media advisory) by walking the nested tree that libacars already produced.

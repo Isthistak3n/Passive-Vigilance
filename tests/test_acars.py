@@ -133,16 +133,16 @@ def _parsed(**payload):
 
 def test_category_position_report_with_fields():
     d = _parsed(tail="N1", flight="UAL638", label="H1", text="POSN",
-                lat=21.207, lon=-157.466)
+                lat=51.507, lon=-0.127)
     assert d["category"] == "Position report"
     names = {f["name"]: f["value"] for f in d["fields"]}
-    assert names["Position"] == "N21.207, W157.466"
+    assert names["Position"] == "N51.507, W0.127"
     assert names["Flight"] == "UAL638"
 
 
 def test_category_performance_engine():
     d = _parsed(tail="N807AA", flight="AAL115", label="H1",
-                text="APM    5 N807AA  AAL115  KDFWPHNL020726205041 .853")
+                text="APM    5 N807AA  AAL115  KDFWEGLL020726205041 .853")
     assert d["category"] == "Performance / engine"
 
 
@@ -154,11 +154,11 @@ def test_category_oooi_extracts_event_times():
 
 
 def test_category_route_dispatch():
-    d = _parsed(tail="N3", label="H1", depa="KLAX", dsta="PHNL",
+    d = _parsed(tail="N3", label="H1", depa="KLAX", dsta="EGLL",
                 text="dispatch remarks with no numbers")
     assert d["category"] == "Route / dispatch"
     names = {f["name"]: f["value"] for f in d["fields"]}
-    assert names["Route"] == "KLAX→PHNL"
+    assert names["Route"] == "KLAX→EGLL"
 
 
 def test_category_link_management_from_label():
@@ -192,37 +192,37 @@ def test_label_name_known_and_fallback():
 
 def test_compact_position_report_parses_and_breaks_out():
     d = _parsed(tail="N57869", flight="UA0638", label="H1",
-                text="POSN21207W157466,CKH,073636,80,ALANA,074034,YEPGU,"
+                text="POSN51507W000127,XYZ,073636,80,ALPHA,074034,BRAVO,"
                      "P14,06727,133,/TS073636,0707262BDD")
     assert d["category"] == "Position report"
     # implied-decimal degrees, NOT degree-minutes
-    assert abs(d["lat"] - 21.207) < 1e-6 and abs(d["lon"] + 157.466) < 1e-6
+    assert abs(d["lat"] - 51.507) < 1e-6 and abs(d["lon"] + 0.127) < 1e-6
     names = {f["name"]: f["value"] for f in d["fields"]}
-    assert names["Position"] == "N21.207, W157.466"
-    assert names["Over"] == "CKH at 07:36:36"
+    assert names["Position"] == "N51.507, W0.127"
+    assert names["Over"] == "XYZ at 07:36:36"
     assert names["Flight level"] == "FL080"
-    assert names["Next"] == "ALANA · ETA 07:40:34"
-    assert names["Then"] == "YEPGU"
-    assert d["text"].startswith("POSN21207W157466")   # raw still intact
+    assert names["Next"] == "ALPHA · ETA 07:40:34"
+    assert names["Then"] == "BRAVO"
+    assert d["text"].startswith("POSN51507W000127")   # raw still intact
 
 
 def test_compact_position_with_subtype_prefix():
-    # "POSA1N..." — a 2-char report subtype sits before the hemisphere; and 157.701
-    # must read as decimal degrees (as minutes it would be an impossible 70.1').
+    # "POSA1N..." — a 2-char report subtype sits before the hemisphere; and 0.678
+    # must read as decimal degrees (as minutes it would be an impossible 67.8').
     d = _parsed(tail="N1", flight="AA0115", label="H1",
-                text="POSA1N21318W157701,GRITL  ,214315, 96,SELIC  ,215025,,10.43")
+                text="POSA1N51318W000678,CHARL  ,214315, 96,DELTA  ,215025,,10.43")
     assert d["category"] == "Position report"
-    assert abs(d["lon"] + 157.701) < 1e-6
+    assert abs(d["lon"] + 0.678) < 1e-6
     names = {f["name"]: f["value"] for f in d["fields"]}
-    assert names["Over"] == "GRITL at 21:43:15"
+    assert names["Over"] == "CHARL at 21:43:15"
     assert names["Flight level"] == "FL096"
-    assert names["Next"] == "SELIC · ETA 21:50:25"
+    assert names["Next"] == "DELTA · ETA 21:50:25"
     assert "Then" not in names                          # trailing empty → degrades cleanly
 
 
 def test_compact_position_requires_pos_anchor():
     # A bare digit run without the POS prefix must NOT be read as a position.
-    d = _parsed(tail="N2", label="H1", text="SEQ N21207W157466 COUNTER")
+    d = _parsed(tail="N2", label="H1", text="SEQ N51507W000127 COUNTER")
     assert d["lat"] is None and d["category"] != "Position report"
 
 
@@ -230,12 +230,12 @@ def test_reclassify_backfills_old_record_without_mutating_it():
     from modules.acars import reclassify
     # An old stored record: raw text + null position, no category (pre-classifier).
     old = {"tail": "N1", "flight_id": "UA0638", "label": "H1", "lat": None, "lon": None,
-           "text": "POSN21207W157466,CKH,073636,80,ALANA,074034,YEPGU,P14"}
+           "text": "POSN51507W000127,XYZ,073636,80,ALPHA,074034,BRAVO,P14"}
     new = reclassify(old)
     assert new["category"] == "Position report"
-    assert abs(new["lat"] - 21.207) < 1e-6
+    assert abs(new["lat"] - 51.507) < 1e-6
     names = {f["name"]: f["value"] for f in new["fields"]}
-    assert names["Over"] == "CKH at 07:36:36" and names["Flight level"] == "FL080"
+    assert names["Over"] == "XYZ at 07:36:36" and names["Flight level"] == "FL080"
     assert old.get("category") is None and old["lat"] is None   # original untouched
 
 
@@ -251,14 +251,14 @@ def test_reclassify_upgrades_record_from_older_schema():
     so a schema improvement reaches captured history without rewriting the logs."""
     from modules.acars import reclassify, _CLASSIFY_VERSION
     old = {"label": "H1", "category": "Free text / other", "fields": [],
-           "text": "++86501,N8774Q,B7378MAX,260722,WN2879,KOAK,PHNL,0946,X\n1\n"
-                   "N2144.5,W15712.7,222335,16782,-00.3,196,017,DC,00000,0,"}
+           "text": "++86501,N8774Q,B7378MAX,260722,WN2879,KOAK,EGLL,0946,X\n1\n"
+                   "N5130.4,W00007.6,222335,16782,-00.3,196,017,DC,00000,0,"}
     new = reclassify(old)
     assert new is not old
     assert new["category"] == "Position report"
     assert new["cver"] == _CLASSIFY_VERSION
     names = {f["name"]: f["value"] for f in new["fields"]}
-    assert names["Route"] == "KOAK→PHNL" and names["Aircraft type"] == "B7378MAX"
+    assert names["Route"] == "KOAK→EGLL" and names["Aircraft type"] == "B7378MAX"
     assert old["category"] == "Free text / other"    # original untouched
 
 
@@ -363,49 +363,49 @@ def _fields(d):
 
 
 def test_apm_report_header_and_mach():
-    text = ("APM    6 N45905         UAL345  KIADPHNL010726200452,\n"
+    text = ("APM    6 N45905         UAL345  KIADEGLL010726200452,\n"
             ",70000017,.850,,,258.6,,,-27.68,,,40000,,,363259")
     d = _parsed(tail=".N45905", flight="UA0345", label="H1", text=text)
     assert d["category"] == "Performance / engine"
     f = _fields(d)
     assert f["Report"] == "Engine performance (APM)"
     assert f["Registration"] == "N45905"
-    assert f["Route"] == "KIAD→PHNL"
+    assert f["Route"] == "KIAD→EGLL"
     assert f["Report time"] == "20:04:52Z"
     assert f["Mach"] == "0.850"          # the .850 header field, not a lat/lon decimal
 
 
 def test_apm_mach_not_taken_from_position_decimals():
-    # A later "31.8860" latitude must not be mistaken for a Mach number.
-    text = "APM  4 N781HA  ASA121  KSEAPHNL020726042750,,X,.848,,,31.8860,,,-156.1558"
+    # A later "51.8860" latitude must not be mistaken for a Mach number.
+    text = "APM  4 N781HA  ASA121  KSEAEGLL020726042750,,X,.848,,,51.8860,,,-0.1558"
     d = _parsed(tail=".N781HA", flight="HA0121", label="H1", text=text)
     assert _fields(d)["Mach"] == "0.848"
 
 
 def test_s701_engine_report_identity_and_route():
-    text = ("<701>IEG\n N13013UAL219    ER 243210726215737KORDPHNL42681810C  7\n"
+    text = ("<701>IEG\n N13013UAL219    ER 243210726215737KORDEGLL42681810C  7\n"
             " 360002876861-110 250336ENGD330NOTA")
     d = _parsed(tail=".N13013", flight="UA0219", label="H1", text=text)
     assert d["category"] == "Performance / engine"
     f = _fields(d)
     assert f["Report"] == "Engine data (<701>)"
     assert f["Registration"] == "N13013"
-    assert f["Route"] == "KORD→PHNL"     # digit-bounded run, not the trailing NOTA
+    assert f["Route"] == "KORD→EGLL"     # digit-bounded run, not the trailing NOTA
 
 
 def test_track_report_header_position_and_summary():
-    text = ("++86501,N8774Q,B7378MAX,260722,WN2879,KOAK,PHNL,0946,SMX34-2502-F320\n"
+    text = ("++86501,N8774Q,B7378MAX,260722,WN2879,KOAK,EGLL,0946,SMX34-2502-F320\n"
             "4\n"
-            "N2144.5,W15712.7,222335,16782,-00.3,196,017,DC,00000,0,\n"
-            "N2140.0,W15717.5,222336,14525, 03.8,182,008,DC,00000,0,")
+            "N5130.4,W00007.6,222335,16782,-00.3,196,017,DC,00000,0,\n"
+            "N5130.0,W00007.5,222336,14525, 03.8,182,008,DC,00000,0,")
     d = _parsed(tail=".N8774Q", flight="WN2879", label="H1", text=text)
     assert d["category"] == "Position report"
     # First waypoint (degree-minute, comma-separated) becomes the message fix.
-    assert abs(d["lat"] - (21 + 44.5 / 60.0)) < 1e-6      # N2144.5
-    assert abs(d["lon"] - -(157 + 12.7 / 60.0)) < 1e-6    # W15712.7
+    assert abs(d["lat"] - (51 + 30.4 / 60.0)) < 1e-6      # N5130.4
+    assert abs(d["lon"] - -(0 + 7.6 / 60.0)) < 1e-6    # W00007.6
     f = _fields(d)
     assert f["Aircraft type"] == "B7378MAX"
-    assert f["Route"] == "KOAK→PHNL"
+    assert f["Route"] == "KOAK→EGLL"
     assert f["Fixes"] == "2 positions"
     assert f["Altitude"] == "FL145–FL168"
 

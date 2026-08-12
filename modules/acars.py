@@ -49,9 +49,9 @@ _POS_DEGMIN_RE = re.compile(
     r"(?P<lath>[NS])(?P<latd>\d{2})(?P<latm>\d{2}\.\d+)(?P<lonh>[EW])(?P<lond>\d{3})(?P<lonm>\d{2}\.\d+)"
 )
 # AOC position-report encoding: implied-decimal degrees with NO decimal point, e.g.
-# "POSN21207W157466" = 21.207 N, 157.466 W (lat DD + 3 fractional digits, lon DDD + 3).
-# NOT degree-minutes — verified against real reports ("POSA1N21318W157701" → 157.701,
-# which as minutes would be an impossible 70.1'). An optional 2-char report subtype may
+# "POSN51500W000100" = 51.500 N, 0.100 W (lat DD + 3 fractional digits, lon DDD + 3).
+# NOT degree-minutes — verified against real reports (a "…W000678" → 0.678, which as
+# minutes would be an impossible 67.8'). An optional 2-char report subtype may
 # sit between POS and the hemisphere. Anchored on "POS" so it can't fire on stray digits.
 _POS_ACARS_RE = re.compile(
     r"POS(?:[A-Z0-9]{2})?(?P<lath>[NS])(?P<latd>\d{2})(?P<latf>\d{3})"
@@ -118,7 +118,7 @@ def _extract_position(acars: dict, outer: dict, text: Optional[str]):
             if abs(lat) <= 90 and abs(lon) <= 180:
                 return lat, lon
         # Comma-separated degree-minute fix as written in a "++865xx" track row
-        # ("N2144.5,W15712.7") — the first waypoint locates the message.
+        # ("N5130.4,W00007.6") — the first waypoint locates the message.
         fix = _degmin_comma(text)
         if fix:
             return fix
@@ -180,7 +180,7 @@ _OOOI_PAIR_RE = re.compile(r"\b(OUT|OFF|ON|IN)\s*(\d{4})\b", re.I)
 
 
 def _fmt_pos(lat, lon) -> str:
-    """A position as a compact hemisphere string, e.g. 'N21.207, W157.466'."""
+    """A position as a compact hemisphere string, e.g. 'N51.500, W000.100'."""
     return (f"{'N' if lat >= 0 else 'S'}{abs(lat):.3f}, "
             f"{'E' if lon >= 0 else 'W'}{abs(lon):.3f}")
 
@@ -309,7 +309,7 @@ _APM_HEADER_RE = re.compile(
 # keeps it from matching an unrelated word (e.g. a trailing "ENGD330NOTA").
 _S701_ID_RE = re.compile(r"\b(?P<reg>N[A-Z0-9]{4,5})(?P<flight>[A-Z]{2,3}\d{2,4})\b")
 _S701_ROUTE_RE = re.compile(r"(?<=\d)(?P<orig>[A-Z]{4})(?P<dest>[A-Z]{4})(?=\d)")
-# A degree-minute fix as written in a comma-delimited track row: "N2144.5,W15712.7".
+# A degree-minute fix as written in a comma-delimited track row: "N5130.4,W00007.6".
 _DEGMIN_COMMA_RE = re.compile(
     r"\b(?P<lath>[NS])(?P<latd>\d{2})(?P<latm>\d{2}\.\d+)\s*,\s*"
     r"(?P<lonh>[EW])(?P<lond>\d{3})(?P<lonm>\d{2}\.\d+)"
