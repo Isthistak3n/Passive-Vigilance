@@ -155,7 +155,7 @@ function renderAlerts() {
     .slice(-100)
     .reverse()
     .map(a => `
-      <div class="alert-card ${a.kind || ''}">
+      <div class="alert-card ${a.kind || ''} sev-${a.severity || 'default'}">
         <div class="alert-title">${a.title || a.type || 'Alert'}</div>
         <div class="alert-body">${a.body || JSON.stringify(a)}</div>
       </div>`).join('');

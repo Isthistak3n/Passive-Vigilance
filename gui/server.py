@@ -282,6 +282,8 @@ class GUIServer:
 
         self._clients: list[queue.Queue] = []
         self._clients_lock = threading.Lock()
+        # SSE load-shedding counter (see push_event) — dropped payloads, cumulative.
+        self._sse_dropped: int = 0
 
         self._recent_wifi: list[dict] = []
         self._recent_aircraft: list[dict] = []
@@ -571,9 +573,31 @@ class GUIServer:
                 return read_env_value(key, self._env_path) or spec["default"]
 
             if _req.method == "GET":
+                # Surface the startup config validator's findings where the
+                # operator actually edits settings, instead of only in the
+                # journal. Best-effort: the Settings tab must render even if
+                # validation itself fails.
+                findings: list[dict] = []
+                try:
+                    from dotenv import dotenv_values
+                    from modules import config as _pvconfig
+                    # Validate the .env file's PENDING state (what a restart would
+                    # load), not just the running process env — so a bad value the
+                    # operator just saved is flagged before they restart into it.
+                    merged = {**os.environ,
+                              **{k: v for k, v in dotenv_values(self._env_path).items()
+                                 if v is not None}}
+                    findings = [
+                        {"severity": f.severity, "var": f.var, "message": f.message}
+                        for f in _pvconfig.validate_environment(
+                            env=merged, dotenv_path=self._env_path)
+                    ]
+                except Exception as exc:
+                    logger.debug("Settings: config validation unavailable: %s", exc)
                 return jsonify({
                     "control_enabled": bool(gui_token),
                     "restart_required": True,
+                    "findings": findings,
                     "settings": [
                         {**{k: s[k] for k in s if k != "default"},
                          "default": s["default"],
@@ -1086,19 +1110,38 @@ class GUIServer:
             elif event_type == "remote_id":
                 self._remember(self._recent_remote_id, data, "uas_id")
 
-        # Broadcast to all SSE clients
+        # Broadcast to all SSE clients — shedding load, never shedding clients.
+        # The old behaviour removed a client whose queue was full, which meant a
+        # dense-node event burst silently froze the operator's dashboard until a
+        # manual refresh — during exactly the activity worth watching. A full
+        # queue now sheds EVENTS instead: an ordinary sensor event is dropped
+        # (the next poll re-pushes the same entity anyway, and a refresh reseeds
+        # from the REST caches), while an alert/survey payload evicts the oldest
+        # queued event to make room — pages must survive the burst that caused
+        # them. A genuinely dead client still cleans itself up: its generator's
+        # finally block removes it when the connection breaks.
+        is_priority = event_type in ("alert", "survey")
         with self._clients_lock:
-            dead: list[queue.Queue] = []
             for client_queue in self._clients:
                 try:
                     client_queue.put_nowait(payload)
+                    continue
                 except queue.Full:
-                    dead.append(client_queue)
-            for client_queue in dead:
-                try:
-                    self._clients.remove(client_queue)
-                except ValueError:
                     pass
+                if is_priority:
+                    try:
+                        client_queue.get_nowait()  # evict oldest to make room
+                        client_queue.put_nowait(payload)
+                        continue
+                    except (queue.Empty, queue.Full):
+                        pass  # lost a race with the consumer; fall through
+                self._sse_dropped += 1
+                if self._sse_dropped % 1000 == 1:
+                    logger.warning(
+                        "SSE backlog: shed %d event(s) to slow dashboard "
+                        "client(s) so far this session (dashboards stay "
+                        "connected; tables reseed on refresh)",
+                        self._sse_dropped)
 
     def stop(self) -> None:
         """Signal all SSE clients to disconnect (sends None sentinel)."""

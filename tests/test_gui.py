@@ -137,16 +137,33 @@ class TestGUIServerPushEvent(unittest.TestCase):
         self.assertEqual(data["type"], "wifi")
         self.assertEqual(data["mac"], "de:ad:be:ef:00:01")
 
-    def test_push_event_removes_full_client_queues(self):
-        # A queue with maxsize=1 that is already full
+    def test_full_queue_sheds_ordinary_event_but_keeps_the_client(self):
+        # A backlogged dashboard must NOT be disconnected on a burst (the old
+        # behaviour): the sensor event is shed, the client stays connected so a
+        # refresh reseeds it from the REST caches.
         full_q: queue.Queue = queue.Queue(maxsize=1)
         full_q.put("existing")
         with self.gui._clients_lock:
             self.gui._clients.append(full_q)
-        # Should not raise and should remove the dead client
         self.gui.push_event("wifi", {"mac": "xx:xx:xx:xx:xx:xx"})
         with self.gui._clients_lock:
-            self.assertNotIn(full_q, self.gui._clients)
+            self.assertIn(full_q, self.gui._clients)
+        self.assertEqual(full_q.get_nowait(), "existing")  # unchanged
+        self.assertEqual(self.gui._sse_dropped, 1)
+
+    def test_full_queue_evicts_oldest_for_a_priority_alert(self):
+        # A page must survive the burst that produced it: an alert on a full
+        # queue evicts the oldest queued sensor event to make room.
+        full_q: queue.Queue = queue.Queue(maxsize=1)
+        full_q.put("stale-sensor-event")
+        with self.gui._clients_lock:
+            self.gui._clients.append(full_q)
+        self.gui.push_event("alert", {"kind": "wids", "title": "CRYPTODROP"})
+        payload = json.loads(full_q.get_nowait())
+        self.assertEqual(payload["type"], "alert")
+        self.assertEqual(payload["kind"], "wids")
+        with self.gui._clients_lock:
+            self.assertIn(full_q, self.gui._clients)
 
     def test_recent_list_capped_at_max(self):
         from gui.server import _MAX_RECENT
@@ -1128,6 +1145,20 @@ class TestSettingsEndpoint(unittest.TestCase):
         body = client.get("/api/settings?token=secret").get_json()
         by_key = {s["key"]: s for s in body["settings"]}
         self.assertEqual(by_key["FIXED_BASELINE_HOURS"]["value"], "108")
+
+    def test_get_includes_config_validation_findings(self):
+        # A clean fixture produces no findings; a bad value surfaces one keyed
+        # to its variable so the Settings tab can render it inline.
+        client = self._client("secret", self._env())
+        body = client.get("/api/settings?token=secret").get_json()
+        self.assertIn("findings", body)
+        self.assertEqual(body["findings"], [])
+
+        bad = self._env(FIXTURE_ENV + "FIXED_BASELINE_HOURS=banana\n")
+        client = self._client("secret", bad)
+        body = client.get("/api/settings?token=secret").get_json()
+        flagged = {f["var"] for f in body["findings"]}
+        self.assertIn("FIXED_BASELINE_HOURS", flagged)
 
     # ---- POST auth ----
 

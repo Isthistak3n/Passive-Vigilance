@@ -344,8 +344,9 @@ Re-run the monitor mode commands after any NM restart.
 - `GUI_ENABLED=false` by default — import of `gui.server` never happens unless opt-in; zero overhead
 - `GUIServer.__init__(host, port, orchestrator)` — stores back-reference to orchestrator for `/api/status`
 - `GUIServer.start()` — launches Flask in a `daemon=True` thread; returns `False` if Flask not installed
-- `GUIServer.push_event(event_type, data)` — thread-safe broadcast; updates `_recent_*` caches; drops dead clients
+- `GUIServer.push_event(event_type, data)` — thread-safe broadcast; updates `_recent_*` caches; **sheds events, never clients** under backlog (a full client queue drops the sensor event; an alert/survey payload evicts the oldest queued event so pages survive a dense-node burst). Cumulative `_sse_dropped` counter logged periodically. A dead client is removed by its own generator's finally block on disconnect.
 - SSE pattern: one `threading.Queue(maxsize=500)` per client; `threading.Lock` protects client list
+- Alerts tab: severity/kind styling (WIDS = red kind-chip + tinted card), a severity filter (All / WIDS / High), and an opt-in browser-notification + chime on high/WIDS alerts (`localStorage` per-browser, off by default). The Settings tab renders the `modules/config` startup validation findings inline (bad values flagged on their row) + a banner for non-editable ones; `/api/settings` GET returns a `findings` list validated against the .env's pending state.
 - `/stream` sends a `{"type":"heartbeat"}` every 20 s of silence to keep connections alive
 - REST endpoints: `/api/status`, `/api/wifi`, `/api/aircraft`, `/api/ais`, `/api/alerts`, `/api/nearby`, `/api/remote_id`, and `/api/mode` (GET/POST, `GUI_TOKEN`-gated). Panels rebuild from on-disk session logs (durable history, P5), so a refresh/restart shows real history, not just the in-memory cache
 - `_MAX_RECENT = 200` — max events per category kept in memory

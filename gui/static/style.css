@@ -379,6 +379,43 @@ tr:hover td { background: #161b22; }
 .alert-card.aircraft { border-left-color: #58a6ff; }
 .alert-card.drone    { border-left-color: #bc8cff; }
 .alert-card.system   { border-left-color: #f85149; }
+/* Severity accent (overrides the per-kind hue for the alerts worth reacting to);
+   WIDS = infrastructure attack, always red regardless of kind. */
+.alert-card.sev-high { border-left-color: #f85149; }
+.alert-card.wids     { border-left-color: #f85149; background: #21171b; }
+
+/* Kind chip — a small label so WIDS/evil-twin alerts read at a glance. */
+.alert-card .alert-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #30363d;
+  color: #c9d1d9;
+}
+.alert-card .alert-kind.kind-wids { background: #f85149; color: #0d1117; }
+
+/* Alerts-tab severity filter buttons. */
+.alert-filters { display: inline-flex; gap: 4px; margin-right: auto; }
+.alert-filter.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+#alerts-notify.active { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+
+/* Settings-tab config-validation findings. */
+.settings-findings {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-left: 4px solid #d29922;
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 12px;
+}
+.setting-finding { font-size: 11px; font-family: monospace; margin-top: 3px; }
+.setting-finding.error { color: #f85149; }
+.setting-finding.warning { color: #d29922; }
+.setting-finding-hint { color: #6e7681; font-size: 11px; margin-top: 4px; }
+.setting-row.flagged { border-left: 2px solid #f85149; padding-left: 8px; }
 
 .alert-card .alert-head {
   display: flex;
