@@ -2909,3 +2909,64 @@ def test_health_banner_clean_when_backend_matches_selection(orch, caplog):
         with caplog.at_level(logging.INFO):
             so._log_health_banner()
     assert "FALLBACK" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Startup paging warm-up (begin_alert_warmup / _dispatch_alert force gate)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_warmup_holds_backend_send_but_still_records(orch):
+    """During warm-up a paged WiFi alert is withheld from the backend but still
+    recorded to the durable feed, and the cooldown is primed."""
+    so = orch.sensor_orchestrator
+    so._alert_warmup_seconds = 300
+    so.begin_alert_warmup()
+    assert so._in_alert_warmup()
+    ok = so._dispatch_alert(orch._mock_backend.send_persistence_alert, object())
+    await _drain_alerts(orch)
+    assert ok is False
+    orch._mock_backend.send_persistence_alert.assert_not_called()
+    assert so._stats["alerts_suppressed_warmup"] == 1
+
+
+@pytest.mark.asyncio
+async def test_warmup_expires_and_sends_resume(orch):
+    so = orch.sensor_orchestrator
+    # An already-past deadline means the window is closed.
+    so._alert_warmup_until = time.monotonic() - 1
+    assert not so._in_alert_warmup()
+    ok = so._dispatch_alert(orch._mock_backend.send_persistence_alert, object())
+    await _drain_alerts(orch)
+    assert ok is True
+    orch._mock_backend.send_persistence_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_warmup_force_bypasses_for_emergency_and_wids(orch):
+    so = orch.sensor_orchestrator
+    so._alert_warmup_seconds = 300
+    so.begin_alert_warmup()
+    ok = so._dispatch_alert(orch._mock_backend.send, "t", "b", "high", [], force=True)
+    await _drain_alerts(orch)
+    assert ok is True
+    orch._mock_backend.send.assert_called_once()
+    assert so._stats["alerts_suppressed_warmup"] == 0
+
+
+@pytest.mark.asyncio
+async def test_warmup_disabled_when_seconds_zero(orch):
+    so = orch.sensor_orchestrator
+    so._alert_warmup_seconds = 0
+    so.begin_alert_warmup()
+    assert so._alert_warmup_until == 0.0
+    assert not so._in_alert_warmup()
+
+
+@pytest.mark.asyncio
+async def test_warmup_not_active_before_begin(orch):
+    # __init__ must NOT arm the window (radio bring-up would consume it).
+    so = orch.sensor_orchestrator
+    assert so._alert_warmup_until == 0.0
+    assert not so._in_alert_warmup()

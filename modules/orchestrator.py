@@ -243,6 +243,7 @@ class SensorOrchestrator:
             "alerts_rate_limited": 0,
             "alerts_dropped": 0,
             "alerts_below_threshold": 0,
+            "alerts_suppressed_warmup": 0,
             "wids_alerts": 0,
             "persistent_detections": 0,
             "aircraft_idless_skipped": 0,
@@ -427,6 +428,18 @@ class SensorOrchestrator:
         )
         self._alert_max_inflight = int(os.getenv("ALERT_MAX_INFLIGHT", "32"))
         self._alerts_inflight = 0
+        # Post-startup paging warm-up. On a restart the in-memory rate limiter is
+        # empty, so the first poll re-flags every device present and would page
+        # the whole set at once — a burst of backend notifications on every
+        # reboot (harmless on console, a phone-buzz storm on a real backend). The
+        # warm-up holds back backend SENDS for a short window while the first
+        # poll(s) prime the cooldowns; the durable feed/GUI still record every
+        # alert, and emergencies/WIDS bypass it (not re-warm artifacts). The
+        # window is armed by begin_alert_warmup() when polling starts — NOT here —
+        # so the (long, sequential) radio bring-up doesn't consume it.
+        self._alert_warmup_seconds = float(
+            os.getenv("ALERT_STARTUP_WARMUP_SECONDS", "120"))
+        self._alert_warmup_until = 0.0  # monotonic deadline; 0 = not warming
 
     @property
     def collected_events(self) -> CollectedEvents:
@@ -818,8 +831,11 @@ class SensorOrchestrator:
             verdict = await self.alert_policy.aircraft(
                 icao, emergency=emergency, of_interest=air.of_interest)
             if verdict.page:
-                self._dispatch_alert(self.alert_backend.send_aircraft_alert, aircraft)
-                self._stats["alerts_sent"] += 1
+                # Emergencies bypass the startup warm-up (force) — a real squawk
+                # is not a re-warm artifact; an of-interest contact is gated.
+                if self._dispatch_alert(self.alert_backend.send_aircraft_alert,
+                                        aircraft, force=emergency):
+                    self._stats["alerts_sent"] += 1
                 if emergency:
                     self._record_alert("aircraft", f"EMERGENCY — {label}", body,
                                        severity="high", icao=icao)
@@ -1479,8 +1495,8 @@ class SensorOrchestrator:
                 # no Alerts-feed entry).
                 self._stats["alerts_below_threshold"] = self._stats.get("alerts_below_threshold", 0) + 1
             elif verdict.page:
-                self._dispatch_alert(self.alert_backend.send_persistence_alert, event)
-                self._stats["alerts_sent"] += 1
+                if self._dispatch_alert(self.alert_backend.send_persistence_alert, event):
+                    self._stats["alerts_sent"] += 1
                 self._record_alert(
                     "wifi", f"{contact} — {event.alert_level}",
                     f"{event.device_type or 'device'} {event.mac}: score "
@@ -1540,9 +1556,12 @@ class SensorOrchestrator:
                 continue
             title = f"WIDS — {header}"
             body = alert.get("text") or f"Kismet raised {header}"
-            self._dispatch_alert(
-                self.alert_backend.send, title, body, "high", ["rotating_light"])
-            self._stats["alerts_sent"] += 1
+            # WIDS bypasses the warm-up (force): a fresh intrusion alert isn't a
+            # re-warm artifact (the poller starts from "now" on restart).
+            if self._dispatch_alert(
+                    self.alert_backend.send, title, body, "high",
+                    ["rotating_light"], force=True):
+                self._stats["alerts_sent"] += 1
             self._record_alert(
                 "wids", title, body, severity="high",
                 wids_header=header, wids_class=alert.get("class"),
@@ -1621,8 +1640,8 @@ class SensorOrchestrator:
             }
             verdict = await self.alert_policy.drone(freq)
             if verdict.page:
-                self._dispatch_alert(self.alert_backend.send_drone_alert, alert_detection)
-                self._stats["alerts_sent"] += 1
+                if self._dispatch_alert(self.alert_backend.send_drone_alert, alert_detection):
+                    self._stats["alerts_sent"] += 1
                 self._record_alert(
                     "drone", f"Drone RF — {freq:.0f} MHz",
                     f"{freq:.0f} MHz at {power:.1f} dB",
@@ -1959,8 +1978,8 @@ class SensorOrchestrator:
                     self.gui_server.push_event("remote_id", event)
             verdict = await self.alert_policy.remote_id(uas_id)
             if verdict.page:
-                self._dispatch_alert(self.alert_backend.send_remote_id_alert, detection)
-                self._stats["alerts_sent"] += 1
+                if self._dispatch_alert(self.alert_backend.send_remote_id_alert, detection):
+                    self._stats["alerts_sent"] += 1
                 self._record_alert(
                     "aircraft", f"Remote ID — {uas_id}",
                     f"UAS {uas_id}: "
@@ -1977,7 +1996,29 @@ class SensorOrchestrator:
     # Alert dispatch (off the event loop)
     # ------------------------------------------------------------------
 
-    def _dispatch_alert(self, send_fn, *args) -> bool:
+    def begin_alert_warmup(self) -> None:
+        """Arm the post-startup paging warm-up window (called when polling begins).
+
+        Deferred to here rather than ``__init__`` so the (long, sequential) radio
+        bring-up in ``startup()`` doesn't burn the window before the first poll.
+        During the window ``_dispatch_alert`` withholds backend sends so a restart
+        re-flags the whole present device set WITHOUT re-paging it — the first
+        poll(s) still run the full page decision (priming the cooldowns), and the
+        durable feed/GUI still record every alert; only the backend transmit is
+        held. See ``_alert_warmup_until``.
+        """
+        if self._alert_warmup_seconds > 0:
+            self._alert_warmup_until = time.monotonic() + self._alert_warmup_seconds
+            logger.info(
+                "Alert warm-up: holding backend pages for %.0fs while cooldowns "
+                "prime (durable feed, emergencies and WIDS unaffected)",
+                self._alert_warmup_seconds)
+
+    def _in_alert_warmup(self) -> bool:
+        return (self._alert_warmup_until > 0.0
+                and time.monotonic() < self._alert_warmup_until)
+
+    def _dispatch_alert(self, send_fn, *args, force: bool = False) -> bool:
         """Fire an alert off the event loop, fire-and-forget and bounded.
 
         ``send_fn`` is a blocking backend method (``send_persistence_alert`` etc.)
@@ -1986,10 +2027,15 @@ class SensorOrchestrator:
         unreachable backend becomes a systemd-watchdog kill loop (the soak-#3
         cascade). Offload to the single-thread alert pool and never await: a hung
         backend can only delay alerts, never the loop. Returns True if the send was
-        scheduled, False if it was dropped because too many sends are already in
-        flight (backlog bound — better to drop noise than grow an unbounded queue
-        behind a wedged backend).
+        scheduled, False if it was suppressed — either by the startup warm-up
+        (``begin_alert_warmup``; ``force=True`` bypasses it for emergencies/WIDS)
+        or because too many sends are already in flight (backlog bound — better to
+        drop noise than grow an unbounded queue behind a wedged backend). The
+        caller still records the alert to the durable feed regardless.
         """
+        if not force and self._in_alert_warmup():
+            self._stats["alerts_suppressed_warmup"] += 1
+            return False
         if self._alerts_inflight >= self._alert_max_inflight:
             self._stats["alerts_dropped"] += 1
             return False
@@ -2442,7 +2488,8 @@ class SensorOrchestrator:
         logger.info("DroneRF:   %s | Detections: %d", _status("drone_rf"), self._stats["drone_detections"])
         logger.info("RemoteID:  %s | Detections: %d", _status("remote_id"), self._stats["remote_id_detections"])
         logger.info("SDR:       %s | Mode: %s | Owner: %s", sdr_status, self.sdr_mode.value, self.sdr_coordinator.current_owner)
-        logger.info("Alerts:    %s | Sent: %d | Rate-limited: %d | Dropped: %d", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"], self._stats["alerts_dropped"])
+        warmup_note = " | Warm-up held: %d" % self._stats["alerts_suppressed_warmup"] if self._in_alert_warmup() else ""
+        logger.info("Alerts:    %s | Sent: %d | Rate-limited: %d | Dropped: %d%s", backend_name, self._stats["alerts_sent"], self._stats["alerts_rate_limited"], self._stats["alerts_dropped"], warmup_note)
         logger.info("Events:    %d persistent | %d aircraft-sightings | %d drone | %d remote_id", self._stats["persistent_detections"], self._stats["aircraft_seen"], self._stats["drone_detections"], self._stats["remote_id_detections"])
         self._log_entity_store_footprint()
         logger.info(sep)

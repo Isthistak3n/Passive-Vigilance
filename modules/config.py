@@ -149,6 +149,7 @@ REGISTRY: dict[str, Spec] = {
     "AIRCRAFT_ALERT_COOLDOWN_SECONDS": _i(),
     "EGREGIOUS_ALERT_COOLDOWN_SECONDS": _i(),
     "ALERT_MAX_INFLIGHT": _i(lo=1),
+    "ALERT_STARTUP_WARMUP_SECONDS": _f(),
     "WIFI_ALERT_MIN_SCORE": _FRACTION,
     # --- WIDS consumption ---
     "WIDS_ALERTS_ENABLED": _b(),

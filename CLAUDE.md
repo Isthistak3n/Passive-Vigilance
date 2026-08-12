@@ -377,6 +377,13 @@ Re-run the monitor mode commands after any NM restart.
   `beacon_evidence` BSSID↔SSID set into Kismet `apspoof=` rules so APSPOOF can fire.
 - `AlertFactory.get_backend(name)` reads `ALERT_BACKEND` from `.env`; falls back to `ConsoleBackend` if unconfigured
 - `RateLimiter`: in-memory cooldown dict, resets on restart (intentional)
+- **Startup paging warm-up** (`ALERT_STARTUP_WARMUP_SECONDS`, default 120): the limiter reset
+  above means the first poll after a restart re-flags every present device and would page the
+  whole set at once (a notification burst per reboot). `begin_alert_warmup()` (armed by
+  `main.event_loop` once radios are up, not in `__init__`) holds backend SENDS in
+  `_dispatch_alert` for the window while the first poll(s) prime the cooldowns; the durable
+  feed/GUI still record every alert, and emergencies + WIDS bypass via `force=True`. Suppressed
+  count in `_stats["alerts_suppressed_warmup"]` + health banner. Set 0 to disable.
 - Default cooldowns: drone 600 s, persistence 300 s, aircraft 60 s (override in `.env`)
 - `ConsoleBackend` always configured — use it for testing without external services
 - Ntfy is the primary backend: single HTTP POST, no SDK, no account required
