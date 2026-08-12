@@ -344,6 +344,10 @@ class PassiveVigilance:
 
     async def event_loop(self) -> None:
         so = self.sensor_orchestrator
+        # Arm the paging warm-up now that startup() (radio bring-up) is done and
+        # polling is about to begin, so a restart's re-flag burst primes the
+        # cooldowns without paging the backend. See begin_alert_warmup().
+        so.begin_alert_warmup()
         tasks = [
             asyncio.create_task(so._poll_gps_loop(), name="poll-gps"),
             asyncio.create_task(so._poll_adsb_loop(), name="poll-adsb"),

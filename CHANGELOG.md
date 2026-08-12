@@ -7,6 +7,16 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com).
 
 ## [Unreleased]
 
+- **A restart no longer fires a burst of notifications.** Because the rate limiter starts empty
+  after a restart, the first sensor sweep re-flags everything currently in range and, on a real
+  paging backend, that would arrive as a wall of notifications every time the node reboots. The
+  node now holds back backend pages for a short warm-up window while that first sweep settles the
+  cooldowns — so a reboot re-learns what's present silently instead of paging all of it. The live
+  dashboard still shows every alert during the window, and genuine emergencies and intrusion
+  alerts page immediately regardless. This is what makes it safe to point the node at a phone or
+  chat backend without a reboot becoming a nuisance. Off by default only if you set the window to
+  zero; otherwise 120 seconds.
+
 - **The dashboard stays alive under load, and the alerts that matter stand out.** A busy
   node used to be able to freeze an operator's dashboard silently — a burst of activity
   overflowed the live-update stream and the browser was quietly disconnected until a manual
